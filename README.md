@@ -78,18 +78,18 @@ A high-performance, professional-grade integrated PDF editor with 100% local, of
 
 ## Downloads
 
-No development environment (Node.js, Rust, Docker) is required. Download the pre-built binary for your operating system from the [Releases](https://github.com/AI-SLOP-BOX/docforge/releases) page:
+No development environment (Node.js, Rust, Docker) is required. Download the pre-built binary for your operating system from the [Releases](https://github.com/AI-SLOP-BOX/nagisa-pdf/releases) page:
 
 | Platform | Format | Installation |
 | :--- | :--- | :--- |
-| **macOS** (Apple Silicon / Intel) | `.dmg` | Download `.dmg` from [Releases](https://github.com/AI-SLOP-BOX/docforge/releases), drag to `Applications`, and launch. |
-| **Android** (Mobile / Tablet) | `.apk` | Download `.apk` from [Releases](https://github.com/AI-SLOP-BOX/docforge/releases) and tap to install. |
+| **macOS** (Apple Silicon / Intel) | `.dmg` | Download `.dmg` from [Releases](https://github.com/AI-SLOP-BOX/nagisa-pdf/releases), drag to `Applications`, and launch. |
+| **Android** (Mobile / Tablet) | `.apk` | Download `.apk` from [Releases](https://github.com/AI-SLOP-BOX/nagisa-pdf/releases) and tap to install. |
 | **Linux** (Ubuntu, Fedora, Arch, etc.) | `.AppImage`, `.deb` | Download `.AppImage`, make executable (`chmod +x`), and run directly. |
-| **Windows** (10 / 11) | `.exe` | Download `.exe` from [Releases](https://github.com/AI-SLOP-BOX/docforge/releases) and run installer or portable executable. |
+| **Windows** (10 / 11) | `.exe` | Download `.exe` from [Releases](https://github.com/AI-SLOP-BOX/nagisa-pdf/releases) and run installer or portable executable. |
 
 ### One-Line Install Script (macOS / Linux)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AI-SLOP-BOX/docforge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AI-SLOP-BOX/nagisa-pdf/main/install.sh | bash
 ```
 
 ---
@@ -107,8 +107,8 @@ curl -fsSL https://raw.githubusercontent.com/AI-SLOP-BOX/docforge/main/install.s
 brew install node rust poppler tesseract tesseract-lang
 
 # Clone repository
-git clone https://github.com/AI-SLOP-BOX/docforge.git
-cd docforge
+git clone https://github.com/AI-SLOP-BOX/nagisa-pdf.git
+cd nagisa-pdf
 
 # Install dependencies
 npm install
@@ -124,8 +124,8 @@ sudo apt install -y build-essential curl wget file libssl-dev libgtk-3-dev \
     libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
     poppler-utils tesseract-ocr tesseract-ocr-jpn
 
-git clone https://github.com/AI-SLOP-BOX/docforge.git
-cd docforge
+git clone https://github.com/AI-SLOP-BOX/nagisa-pdf.git
+cd nagisa-pdf
 npm install
 npx tauri dev
 ```
@@ -136,8 +136,8 @@ sudo dnf install -y gcc gcc-c++ make openssl-devel gtk3-devel \
     webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel patchelf \
     poppler-utils tesseract tesseract-langpack-jpn
 
-git clone https://github.com/AI-SLOP-BOX/docforge.git
-cd docforge
+git clone https://github.com/AI-SLOP-BOX/nagisa-pdf.git
+cd nagisa-pdf
 npm install
 npx tauri dev
 ```
@@ -150,8 +150,8 @@ choco install nodejs rust poppler tesseract
 # Visual Studio C++ Build Tools required:
 # https://visual.microsoft.com/visual-cpp-build-tools
 
-git clone https://github.com/AI-SLOP-BOX/docforge.git
-cd docforge
+git clone https://github.com/AI-SLOP-BOX/nagisa-pdf.git
+cd nagisa-pdf
 npm install
 npx tauri dev
 ```

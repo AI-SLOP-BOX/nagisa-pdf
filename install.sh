@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# DocForge One-Line Installer
-REPO="AI-SLOP-BOX/docforge"
+# Nagisa PDF One-Line Installer
+REPO="AI-SLOP-BOX/nagisa-pdf"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
