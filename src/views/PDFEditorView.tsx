@@ -28,7 +28,14 @@ import { buildEditorCommandItems } from '../components/editorCommands'
 
 type Tab = 'edit' | 'annotate' | 'forms' | 'organize' | 'pages' | 'security' | 'text' | 'tools'
 
-export default function PDFEditorView() {
+import type { View } from '../types'
+
+interface PDFEditorViewProps {
+  currentView?: View
+  onNavigateView?: (view: View) => void
+}
+
+export default function PDFEditorView({ currentView, onNavigateView }: PDFEditorViewProps) {
   const { data: pdfData, setData: setPdfData, pushHistory, undo: fallbackUndo, redo: fallbackRedo, canUndo: fallbackCanUndo, canRedo: fallbackCanRedo } = useHistory(null, 30)
   const { toast, toastType, showToast, showError, showSuccess } = useToast(2800)
 
@@ -393,7 +400,7 @@ export default function PDFEditorView() {
         />
       )}
 
-      {/* Top Toolbar */}
+      {/* Top Toolbar with integrated tab bar */}
       <EditorHeader
         onOpen={handleOpen}
         onSave={handleSave}
@@ -409,34 +416,13 @@ export default function PDFEditorView() {
         pageCount={pageCount}
         currentPage={currentPage}
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+        activeTab={activeTab}
+        onSelectTab={handleSelectTab}
+        currentView={currentView}
+        onNavigateView={onNavigateView}
       />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Tab Sidebar */}
-        <div style={{
-          width: 124, background: 'var(--bg-1)', borderRight: '1px solid var(--border)',
-          display: 'flex', flexDirection: 'column', flexShrink: 0, padding: '8px 0',
-        }}>
-          {([
-            ['edit', <EditIcon size={14} />, t().tabEdit],
-            ['annotate', <AnnotateIcon size={14} />, t().tabAnnotate],
-            ['forms', <FormIcon size={14} />, t().tabForms],
-            ['organize', <OrganizeIcon size={14} />, t().tabOrganize],
-            ['pages', <FileIcon size={14} />, t().tabPages],
-            ['security', <LockIcon size={14} />, t().tabSecurity],
-            ['text', <TypeIcon size={14} />, t().tabText],
-            ['tools', <ToolsIcon size={14} />, t().tabTools],
-          ] as const).map(([tab, icon, label]) => (
-            <button
-              key={tab}
-              onClick={() => handleSelectTab(tab)}
-              className={`editor-tab-btn ${activeTab === tab ? 'active' : ''}`}
-            >
-              <span style={{ display: 'flex', alignItems: 'center' }}>{icon}</span>
-              <span>{label}</span>
-            </button>
-          ))}
-        </div>
 
         {/* Tool Panel (Contextual Drawer) */}
         {activeTab && (

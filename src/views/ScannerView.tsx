@@ -11,7 +11,14 @@ interface ScannedFile {
   thumbnail?: string
 }
 
-export default function ScannerView() {
+import type { View } from '../types'
+
+interface ScannerViewProps {
+  currentView?: View
+  onNavigateView?: (view: View) => void
+}
+
+export default function ScannerView({ currentView = 'scanner', onNavigateView }: ScannerViewProps) {
   const [files, setFiles] = useState<ScannedFile[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const { toast, toastType, showToast, showError, showSuccess } = useToast(2800)
@@ -132,30 +139,69 @@ export default function ScannerView() {
 
       {/* Header */}
       <div style={{
-        padding: '12px 16px', background: 'var(--bg-1)', borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
+        padding: '8px 16px', background: 'var(--bg-1)', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
       }}>
-        <div style={{
-          width: 32, height: 32, borderRadius: 8, background: 'var(--bg-2)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)',
-          border: '1px solid var(--border)',
-        }}>
-          <CameraIcon size={18} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 6 }}>
+          <img
+            src="/favicon.png"
+            alt="Nagisa PDF"
+            style={{ width: 22, height: 22, borderRadius: 4, boxShadow: '0 2px 8px rgba(47, 129, 247, 0.4)' }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.02em' }}>
+            Nagisa PDF
+          </span>
         </div>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Scanner — スキャン補正</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            影除去・台形補正・高解像度PDF化
+
+        {/* Global Workspace View Switcher */}
+        {onNavigateView && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 2,
+              padding: 2,
+              background: 'var(--bg-0)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            <button
+              onClick={() => onNavigateView('pdf-editor')}
+              className={`mode-switcher-btn ${currentView === 'pdf-editor' ? 'active' : ''}`}
+              title="PDF 編集・閲覧"
+            >
+              <span>PDF編集</span>
+            </button>
+            <button
+              onClick={() => onNavigateView('scanner')}
+              className={`mode-switcher-btn ${currentView === 'scanner' ? 'active' : ''}`}
+              title="カメラ・画像スキャン補正"
+            >
+              <span>スキャナ</span>
+            </button>
+            <button
+              onClick={() => onNavigateView('ocr')}
+              className={`mode-switcher-btn ${currentView === 'ocr' ? 'active' : ''}`}
+              title="OCR文字認識 & EPUB/テキスト変換"
+            >
+              <span>OCR</span>
+            </button>
           </div>
-        </div>
+        )}
+
+        <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
+
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)' }}>スキャン補正 (影除去・台形補正・高画質化)</div>
+
         <div style={{ flex: 1 }} />
         <button onClick={handleAddFiles} style={{
-          padding: '7px 16px', background: 'var(--accent)', color: 'var(--bg-0)',
-          border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 600,
+          padding: '6px 14px', background: 'var(--accent)', color: 'var(--bg-0)',
+          border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
         }}>画像を追加</button>
         <button onClick={handleProcess} disabled={files.length === 0 || isProcessing} style={{
-          padding: '7px 16px', background: 'var(--purple)', color: 'var(--bg-0)',
-          border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 600,
+          padding: '6px 14px', background: 'var(--purple)', color: 'var(--bg-0)',
+          border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
           opacity: files.length === 0 || isProcessing ? 0.4 : 1,
         }}>
           {isProcessing ? (batchProgress ? `処理中 (${batchProgress.current}/${batchProgress.total})...` : '処理中...') : 'PDF化 / 保存'}

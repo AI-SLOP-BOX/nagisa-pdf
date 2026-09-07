@@ -132,30 +132,6 @@ export const PDFViewerToolbar: React.FC<PDFViewerToolbarProps> = ({
         リセット
       </button>
 
-      <div style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
-
-      {/* Current Mode Badge */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '3px 10px',
-          borderRadius: 12,
-          fontSize: 11,
-          background: interactiveMode === 'view' ? 'var(--bg-2)' : 'var(--accent)',
-          color: interactiveMode === 'view' ? 'var(--text-muted)' : 'var(--bg-0)',
-          fontWeight: 600,
-        }}
-      >
-        {interactiveMode === 'view' && <><EyeIcon size={13} /> 閲覧モード</>}
-        {interactiveMode === 'select-text' && <><TypeIcon size={13} /> テキスト選択・移動</>}
-        {interactiveMode === 'draw-rect' && <><RectIcon size={13} /> 四角描画モード</>}
-        {interactiveMode === 'draw-highlight' && <><HighlightIcon size={13} /> ハイライト描画</>}
-        {interactiveMode === 'draw-redact' && <><RedactIcon size={13} /> 黒塗り描画モード</>}
-        {interactiveMode === 'place-form' && <><FormIcon size={13} /> フォーム配置モード</>}
-      </div>
-
       <div style={{ flex: 1 }} />
 
       <button

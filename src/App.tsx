@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import type { View } from './types'
-import Sidebar from './components/Sidebar'
 import PDFEditorView from './views/PDFEditorView'
 import ScannerView from './views/ScannerView'
 import OCRView from './views/OCRView'
@@ -11,14 +10,17 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <Sidebar currentView={currentView} onNavigate={setCurrentView} />
-        <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {currentView === 'pdf-editor' && <PDFEditorView />}
-          {currentView === 'scanner' && <ScannerView />}
-          {currentView === 'ocr' && <OCRView />}
-        </main>
-      </div>
+      <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {currentView === 'pdf-editor' && (
+          <PDFEditorView currentView={currentView} onNavigateView={setCurrentView} />
+        )}
+        {currentView === 'scanner' && (
+          <ScannerView currentView={currentView} onNavigateView={setCurrentView} />
+        )}
+        {currentView === 'ocr' && (
+          <OCRView currentView={currentView} onNavigateView={setCurrentView} />
+        )}
+      </main>
 
       {/* Mobile Bottom Navigation Bar (iPhone / Android Phone <= 640px) */}
       <nav
