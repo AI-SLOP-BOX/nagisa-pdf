@@ -1,5 +1,107 @@
 use super::common::*;
+use super::font_unicode::parse_tounicode_cmap;
+use super::page_tree::materialize_inherited_page_attrs;
 use lopdf::{Dictionary, Document, Object, Stream};
+use std::collections::HashMap;
+
+#[derive(Clone, Default)]
+struct FontInfo {
+    is_type0: bool,
+    cmap: Option<HashMap<u16, String>>,
+}
+
+impl FontInfo {
+    fn decode(&self, bytes: &[u8]) -> String {
+        if let Some(ref cmap) = self.cmap {
+            if self.is_type0 || bytes.len() >= 2 {
+                let mut decoded = String::new();
+                for chunk in bytes.chunks(2) {
+                    let cid = if chunk.len() == 2 {
+                        u16::from_be_bytes([chunk[0], chunk[1]])
+                    } else {
+                        chunk[0] as u16
+                    };
+                    if let Some(s) = cmap.get(&cid) {
+                        decoded.push_str(s);
+                    } else if let Some(ch) = char::from_u32(cid as u32) {
+                        decoded.push(ch);
+                    }
+                }
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            } else {
+                let mut decoded = String::new();
+                for &b in bytes {
+                    let cid = b as u16;
+                    if let Some(s) = cmap.get(&cid) {
+                        decoded.push_str(s);
+                    } else {
+                        decoded.push(b as char);
+                    }
+                }
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+        }
+
+        // Fallback UTF-16BE
+        if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+            if bytes.starts_with(&[0xFE, 0xFF]) {
+                let u16s: Vec<u16> = bytes[2..]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                if let Ok(s) = String::from_utf16(&u16s) {
+                    return s;
+                }
+            }
+        }
+
+        String::from_utf8_lossy(bytes).to_string()
+    }
+}
+
+fn extract_font_infos(
+    res_dict: Option<&Dictionary>,
+    doc: &Document,
+) -> HashMap<Vec<u8>, FontInfo> {
+    let mut fonts = HashMap::new();
+    if let Some(res) = res_dict {
+        let font_sub = res.get(b"Font").ok().and_then(|f| match f {
+            Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+            Object::Dictionary(d) => Some(d),
+            _ => None,
+        });
+        if let Some(fsub) = font_sub {
+            for (fname, fobj) in fsub.iter() {
+                let fdict = match fobj {
+                    Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+                    Object::Dictionary(d) => Some(d),
+                    _ => None,
+                };
+                if let Some(fd) = fdict {
+                    let is_type0 = fd.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Type0");
+                    let mut cmap = None;
+                    if let Ok(to_unicode_ref) = fd.get(b"ToUnicode").and_then(|o| o.as_reference()) {
+                        if let Some(Object::Stream(st)) = doc.objects.get(&to_unicode_ref) {
+                            let decompressed = st
+                                .decompressed_content()
+                                .unwrap_or_else(|_| st.content.clone());
+                            let parsed = parse_tounicode_cmap(&decompressed);
+                            if !parsed.is_empty() {
+                                cmap = Some(parsed);
+                            }
+                        }
+                    }
+                    fonts.insert(fname.clone(), FontInfo { is_type0, cmap });
+                }
+            }
+        }
+    }
+    fonts
+}
 
 // ===== REDACTION =====
 
@@ -153,16 +255,40 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
             }
         }
 
+        let page_attrs = materialize_inherited_page_attrs(&doc, page_id);
+        let res_dict = page_attrs.get(b"Resources").ok().and_then(|r| match r {
+            Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+            Object::Dictionary(d) => Some(d),
+            _ => None,
+        });
+        let font_map = extract_font_infos(res_dict, &doc);
+
         let mut new_operations = Vec::new();
         let mut modified = false;
+        let mut current_font_info: Option<&FontInfo> = None;
 
         for mut op in operations {
             match op.operator.as_str() {
+                "Tf" => {
+                    if let Some(Object::Name(fname)) = op.operands.first() {
+                        current_font_info = font_map.get(fname);
+                    }
+                    new_operations.push(op);
+                }
                 "Tj" => {
                     if let Some(Object::String(bytes, _)) = op.operands.first() {
-                        let text = String::from_utf8_lossy(bytes);
-                        if text.contains(search_text) {
-                            let replaced = text.replace(search_text, replacement);
+                        let text = if let Some(fi) = current_font_info {
+                            fi.decode(bytes)
+                        } else {
+                            String::from_utf8_lossy(bytes).to_string()
+                        };
+                        let raw_lossy = String::from_utf8_lossy(bytes);
+                        if text.contains(search_text) || raw_lossy.contains(search_text) {
+                            let replaced = if text.contains(search_text) {
+                                text.replace(search_text, replacement)
+                            } else {
+                                raw_lossy.replace(search_text, replacement)
+                            };
                             op.operands[0] =
                                 Object::String(replaced.into_bytes(), lopdf::StringFormat::Literal);
                             modified = true;
@@ -175,7 +301,13 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                         let mut has_match = false;
                         for item in arr.iter() {
                             if let Object::String(bytes, _) = item {
-                                if String::from_utf8_lossy(bytes).contains(search_text) {
+                                let text = if let Some(fi) = current_font_info {
+                                    fi.decode(bytes)
+                                } else {
+                                    String::from_utf8_lossy(bytes).to_string()
+                                };
+                                let raw_lossy = String::from_utf8_lossy(bytes);
+                                if text.contains(search_text) || raw_lossy.contains(search_text) {
                                     has_match = true;
                                     break;
                                 }
@@ -184,9 +316,18 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                         if has_match {
                             for item in arr.iter_mut() {
                                 if let Object::String(bytes, _) = item {
-                                    let text = String::from_utf8_lossy(bytes);
-                                    if text.contains(search_text) {
-                                        let replaced = text.replace(search_text, replacement);
+                                    let text = if let Some(fi) = current_font_info {
+                                        fi.decode(bytes)
+                                    } else {
+                                        String::from_utf8_lossy(bytes).to_string()
+                                    };
+                                    let raw_lossy = String::from_utf8_lossy(bytes);
+                                    if text.contains(search_text) || raw_lossy.contains(search_text) {
+                                        let replaced = if text.contains(search_text) {
+                                            text.replace(search_text, replacement)
+                                        } else {
+                                            raw_lossy.replace(search_text, replacement)
+                                        };
                                         *item = Object::String(
                                             replaced.into_bytes(),
                                             lopdf::StringFormat::Literal,
@@ -661,10 +802,19 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
             }
         }
 
+        let page_attrs = materialize_inherited_page_attrs(&doc, page_id);
+        let res_dict = page_attrs.get(b"Resources").ok().and_then(|r| match r {
+            Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+            Object::Dictionary(d) => Some(d),
+            _ => None,
+        });
+        let font_map = extract_font_infos(res_dict, &doc);
+
         let mut new_operations = Vec::new();
         let mut in_text = false;
         let mut current_x = 0.0f32;
         let mut current_y = 0.0f32;
+        let mut current_font_info: Option<&FontInfo> = None;
 
         for op in &operations {
             match op.operator.as_str() {
@@ -674,6 +824,12 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                 }
                 "ET" => {
                     in_text = false;
+                    new_operations.push(op.clone());
+                }
+                "Tf" => {
+                    if let Some(Object::Name(fname)) = op.operands.first() {
+                        current_font_info = font_map.get(fname);
+                    }
                     new_operations.push(op.clone());
                 }
                 "Tm" => {
@@ -699,8 +855,13 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                 "Tj" => {
                     if in_text {
                         if let Some(Object::String(bytes, _)) = op.operands.first() {
-                            let text = String::from_utf8_lossy(bytes);
-                            if text.contains(search_text) {
+                            let text = if let Some(fi) = current_font_info {
+                                fi.decode(bytes)
+                            } else {
+                                String::from_utf8_lossy(bytes).to_string()
+                            };
+                            let raw_lossy = String::from_utf8_lossy(bytes);
+                            if text.contains(search_text) || raw_lossy.contains(search_text) {
                                 // Remove this text completely
                                 continue;
                             }
@@ -711,13 +872,20 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                 "TJ" => {
                     if in_text {
                         if let Some(Object::Array(arr)) = op.operands.first() {
-                            let mut combined = String::new();
+                            let mut combined_decoded = String::new();
+                            let mut combined_lossy = String::new();
                             for item in arr {
                                 if let Object::String(bytes, _) = item {
-                                    combined.push_str(&String::from_utf8_lossy(bytes));
+                                    let text = if let Some(fi) = current_font_info {
+                                        fi.decode(bytes)
+                                    } else {
+                                        String::from_utf8_lossy(bytes).to_string()
+                                    };
+                                    combined_decoded.push_str(&text);
+                                    combined_lossy.push_str(&String::from_utf8_lossy(bytes));
                                 }
                             }
-                            if combined.contains(search_text) {
+                            if combined_decoded.contains(search_text) || combined_lossy.contains(search_text) {
                                 continue;
                             }
                         }
@@ -745,7 +913,7 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
         // Avoid removing cid manually to protect shared streams; prune_objects handles unreferenced streams safely
     }
 
-    // Also traverse and purge target text from all Form XObjects in the document
+    // Also traverse and purge target text from all Form XObjects in the document (font-aware!)
     let form_xobject_ids: Vec<OID> = doc
         .objects
         .iter()
@@ -769,6 +937,18 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
         .collect();
 
     for xoid in form_xobject_ids {
+        // First inspect Form XObject resources for fonts (extract owned FontInfo)
+        let xobj_font_map = if let Some(Object::Stream(ref stream)) = doc.objects.get(&xoid) {
+            let res = stream.dict.get(b"Resources").ok().and_then(|r| match r {
+                Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+                Object::Dictionary(d) => Some(d),
+                _ => None,
+            });
+            extract_font_infos(res, &doc)
+        } else {
+            HashMap::new()
+        };
+
         if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&xoid) {
             let bytes = stream
                 .decompressed_content()
@@ -776,13 +956,25 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
             if let Ok(content) = lopdf::content::Content::decode(&bytes) {
                 let mut new_ops = Vec::new();
                 let mut modified = false;
+                let mut current_font_info: Option<&FontInfo> = None;
 
                 for op in content.operations {
                     match op.operator.as_str() {
+                        "Tf" => {
+                            if let Some(Object::Name(fname)) = op.operands.first() {
+                                current_font_info = xobj_font_map.get(fname);
+                            }
+                            new_ops.push(op);
+                        }
                         "Tj" => {
                             if let Some(Object::String(b, _)) = op.operands.first() {
-                                let t = String::from_utf8_lossy(b);
-                                if t.contains(search_text) {
+                                let decoded = if let Some(fi) = current_font_info {
+                                    fi.decode(b)
+                                } else {
+                                    String::from_utf8_lossy(b).to_string()
+                                };
+                                let lossy = String::from_utf8_lossy(b);
+                                if decoded.contains(search_text) || lossy.contains(search_text) {
                                     modified = true;
                                     continue;
                                 }
@@ -791,13 +983,20 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                         }
                         "TJ" => {
                             if let Some(Object::Array(arr)) = op.operands.first() {
-                                let mut combined = String::new();
+                                let mut combined_decoded = String::new();
+                                let mut combined_lossy = String::new();
                                 for item in arr {
                                     if let Object::String(b, _) = item {
-                                        combined.push_str(&String::from_utf8_lossy(b));
+                                        let text = if let Some(fi) = current_font_info {
+                                            fi.decode(b)
+                                        } else {
+                                            String::from_utf8_lossy(b).to_string()
+                                        };
+                                        combined_decoded.push_str(&text);
+                                        combined_lossy.push_str(&String::from_utf8_lossy(b));
                                     }
                                 }
-                                if combined.contains(search_text) {
+                                if combined_decoded.contains(search_text) || combined_lossy.contains(search_text) {
                                     modified = true;
                                     continue;
                                 }

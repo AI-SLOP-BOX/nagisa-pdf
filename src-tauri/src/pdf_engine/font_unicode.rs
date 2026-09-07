@@ -674,3 +674,186 @@ pub fn encode_unicode_text_to_utf16be_bytes(text: &str) -> Vec<u8> {
     }
     bytes
 }
+
+/// Parses a standard ToUnicode CMap byte stream into a map from CID / character code to Unicode string.
+/// Handles both `beginbfchar ... endbfchar` and `beginbfrange ... endbfrange`.
+pub fn parse_tounicode_cmap(cmap_bytes: &[u8]) -> HashMap<u16, String> {
+    let mut map = HashMap::new();
+    let text = String::from_utf8_lossy(cmap_bytes);
+
+    let mut in_bfchar = false;
+    let mut in_bfrange = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.ends_with("beginbfchar") {
+            in_bfchar = true;
+            continue;
+        }
+        if trimmed == "endbfchar" {
+            in_bfchar = false;
+            continue;
+        }
+        if trimmed.ends_with("beginbfrange") {
+            in_bfrange = true;
+            continue;
+        }
+        if trimmed == "endbfrange" {
+            in_bfrange = false;
+            continue;
+        }
+
+        if in_bfchar {
+            // Format: <CID_HEX> <UNICODE_HEX> e.g. <0001> <3053> or <01> <0041>
+            let tokens: Vec<&str> = trimmed
+                .split_whitespace()
+                .filter(|s| s.starts_with('<') && s.ends_with('>'))
+                .collect();
+            if tokens.len() >= 2 {
+                let cid_hex = tokens[0].trim_matches(|c| c == '<' || c == '>');
+                let uni_hex = tokens[1].trim_matches(|c| c == '<' || c == '>');
+
+                if let Ok(cid) = u16::from_str_radix(cid_hex, 16) {
+                    if let Some(decoded_str) = parse_hex_to_unicode_string(uni_hex) {
+                        map.insert(cid, decoded_str);
+                    }
+                }
+            }
+        } else if in_bfrange {
+            // Format: <START_CID> <END_CID> <START_UNICODE> e.g. <0001> <0005> <0041>
+            let tokens: Vec<&str> = trimmed
+                .split_whitespace()
+                .filter(|s| s.starts_with('<') && s.ends_with('>'))
+                .collect();
+            if tokens.len() >= 3 {
+                let start_hex = tokens[0].trim_matches(|c| c == '<' || c == '>');
+                let end_hex = tokens[1].trim_matches(|c| c == '<' || c == '>');
+                let start_uni_hex = tokens[2].trim_matches(|c| c == '<' || c == '>');
+
+                if let (Ok(start_cid), Ok(end_cid), Ok(mut start_uni)) = (
+                    u16::from_str_radix(start_hex, 16),
+                    u16::from_str_radix(end_hex, 16),
+                    u32::from_str_radix(start_uni_hex, 16),
+                ) {
+                    for cid in start_cid..=end_cid {
+                        if let Some(ch) = char::from_u32(start_uni) {
+                            map.insert(cid, ch.to_string());
+                        }
+                        start_uni += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    map
+}
+
+fn parse_hex_to_unicode_string(hex: &str) -> Option<String> {
+    // Hex contains 4-digit UTF-16 code units (or 2-digit ASCII bytes)
+    let mut clean_hex = hex.to_string();
+    if clean_hex.len() % 2 != 0 {
+        clean_hex.insert(0, '0');
+    }
+    let mut bytes = Vec::new();
+    for i in (0..clean_hex.len()).step_by(2) {
+        if let Ok(b) = u8::from_str_radix(&clean_hex[i..i + 2], 16) {
+            bytes.push(b);
+        } else {
+            return None;
+        }
+    }
+
+    if bytes.len() % 2 == 0 && !bytes.is_empty() {
+        let u16s: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16(&u16s).ok()
+    } else {
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    }
+}
+
+/// Decodes PDF text operand bytes according to the font dictionary's ToUnicode CMap or encoding.
+pub fn decode_text_with_font_dict(
+    bytes: &[u8],
+    font_dict: Option<&Dictionary>,
+    doc: &Document,
+) -> String {
+    let mut cmap_opt: Option<HashMap<u16, String>> = None;
+    let mut is_type0 = false;
+
+    if let Some(fdict) = font_dict {
+        if fdict.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Type0") {
+            is_type0 = true;
+        }
+
+        // Try extracting /ToUnicode CMap
+        if let Ok(to_unicode_ref) = fdict.get(b"ToUnicode").and_then(|o| o.as_reference()) {
+            if let Some(Object::Stream(st)) = doc.objects.get(&to_unicode_ref) {
+                let decompressed = st
+                    .decompressed_content()
+                    .unwrap_or_else(|_| st.content.clone());
+                let parsed = parse_tounicode_cmap(&decompressed);
+                if !parsed.is_empty() {
+                    cmap_opt = Some(parsed);
+                }
+            }
+        }
+    }
+
+    if let Some(cmap) = cmap_opt {
+        if is_type0 || bytes.len() >= 2 {
+            // Type0 CIDs are 2 bytes big-endian
+            let mut decoded = String::new();
+            for chunk in bytes.chunks(2) {
+                let cid = if chunk.len() == 2 {
+                    u16::from_be_bytes([chunk[0], chunk[1]])
+                } else {
+                    chunk[0] as u16
+                };
+                if let Some(s) = cmap.get(&cid) {
+                    decoded.push_str(s);
+                } else if let Some(ch) = char::from_u32(cid as u32) {
+                    decoded.push(ch);
+                }
+            }
+            if !decoded.is_empty() {
+                return decoded;
+            }
+        } else {
+            // 1-byte font with ToUnicode
+            let mut decoded = String::new();
+            for &b in bytes {
+                let cid = b as u16;
+                if let Some(s) = cmap.get(&cid) {
+                    decoded.push_str(s);
+                } else {
+                    decoded.push(b as char);
+                }
+            }
+            if !decoded.is_empty() {
+                return decoded;
+            }
+        }
+    }
+
+    // Fallback if no CMap or decoding produced empty text
+    // 1. Try UTF-16BE if bytes start with BOM or look like 2-byte text
+    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+        if bytes.starts_with(&[0xFE, 0xFF]) {
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            if let Ok(s) = String::from_utf16(&u16s) {
+                return s;
+            }
+        }
+    }
+
+    // 2. Standard UTF-8 lossy fallback
+    String::from_utf8_lossy(bytes).to_string()
+}
+

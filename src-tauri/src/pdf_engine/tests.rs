@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::pdf_engine::*;
-    use lopdf::{Dictionary, Document, Object};
+    use lopdf::{Dictionary, Document, Object, Stream};
 
     fn find_tool(name: &str) -> Option<std::path::PathBuf> {
         // 1. Check PATH env variable
@@ -2018,5 +2018,259 @@ mod tests {
             "Annot /P back-reference to Page must be stripped to prevent recursive source page inclusion"
         );
     }
+
+    #[test]
+    fn test_ocr_fallback_encodes_cids_correctly() {
+        let temp_output =
+            std::env::temp_dir().join(format!("searchable_fallback_cjk_{}.pdf", std::process::id()));
+        let output_path = temp_output.to_string_lossy().to_string();
+
+        let unchi_text = "これはうんちです\nこんにちは世界";
+        crate::ocr_engine::create_searchable_pdf(&[], unchi_text, &output_path)
+            .expect("create_searchable_pdf fallback should succeed");
+
+        let pdf_bytes = std::fs::read(&output_path).expect("Read output PDF");
+        let _ = std::fs::remove_file(&output_path);
+
+        let doc = Document::load_mem(&pdf_bytes).expect("Load OCR fallback PDF");
+        let page_ids = get_page_ids(&doc);
+        assert!(!page_ids.is_empty());
+
+        // Extract with pdftotext
+        let tmp_pdf_path =
+            std::env::temp_dir().join(format!("ocr_fb_pdftotext_{}.pdf", std::process::id()));
+        std::fs::write(&tmp_pdf_path, &pdf_bytes).unwrap();
+
+        if let Some(tool) = find_tool("pdftotext") {
+            let res = std::process::Command::new(tool)
+                .arg(&tmp_pdf_path)
+                .arg("-")
+                .output()
+                .expect("pdftotext execution");
+            assert!(res.status.success());
+            let extracted = String::from_utf8_lossy(&res.stdout);
+            assert!(
+                extracted.contains("これはうんちです"),
+                "OCR fallback must produce valid CID mapped text extractable as exact Unicode. Got: {extracted}"
+            );
+            assert!(
+                extracted.contains("こんにちは世界"),
+                "OCR fallback must produce valid CID mapped text extractable as exact Unicode. Got: {extracted}"
+            );
+        }
+        let _ = std::fs::remove_file(&tmp_pdf_path);
+    }
+
+    #[test]
+    fn test_pdf_x_validation_with_inherited_mediabox_and_resources() {
+        // Construct a PDF where MediaBox and Resources are inherited from /Pages
+        let mut doc = Document::with_version("1.7");
+        let root_pages_id = doc.new_object_id();
+        let page_id = doc.new_object_id();
+
+        let mut res_dict = Dictionary::new();
+        res_dict.set("Font", Object::Dictionary(Dictionary::new()));
+        let res_id = doc.add_object(Object::Dictionary(res_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        pages_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(842.0),
+                Object::Real(1191.0), // A3 dimensions
+            ]),
+        );
+        pages_dict.set("Resources", Object::Reference(res_id));
+        doc.objects.insert(root_pages_id, Object::Dictionary(pages_dict));
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(root_pages_id));
+        // Intentionally no direct MediaBox, Resources, TrimBox on page_dict
+        doc.objects.insert(page_id, Object::Dictionary(page_dict));
+
+        let mut cat_dict = Dictionary::new();
+        cat_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        cat_dict.set("Pages", Object::Reference(root_pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat_dict));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut raw_bytes = Vec::new();
+        doc.save_to(&mut raw_bytes).unwrap();
+
+        // Convert to PDF/X-4
+        let pdfx_bytes = crate::pdf_engine::pdf_x::convert_to_pdfx_standard(
+            &raw_bytes,
+            "PDF/X-4",
+            "Japan Color 2001 Coated",
+        )
+        .expect("convert_to_pdfx_standard with inherited MediaBox");
+
+        let converted_doc = Document::load_mem(&pdfx_bytes).expect("Load converted PDF/X");
+        let pdict = converted_doc.get_dictionary(page_id).unwrap();
+
+        // TrimBox must inherit A3 dimensions (842x1191), NOT 595x842!
+        let trim_box = pdict.get(b"TrimBox").unwrap().as_array().unwrap();
+        let trim_w = trim_box[2].as_float().unwrap();
+        let trim_h = trim_box[3].as_float().unwrap();
+        assert_eq!(trim_w, 842.0, "TrimBox width must preserve inherited MediaBox A3 width");
+        assert_eq!(trim_h, 1191.0, "TrimBox height must preserve inherited MediaBox A3 height");
+
+        // Validate
+        let report = crate::pdf_engine::pdf_x::validate_pdfx_compliance(&pdfx_bytes, "PDF/X-4")
+            .expect("validate_pdfx_compliance");
+        assert!(
+            report.is_compliant,
+            "PDF/X-4 validation must succeed with inherited MediaBox and Resources"
+        );
+    }
+
+    #[test]
+    fn test_deep_redact_cid_font_in_form_xobject() {
+        // Construct the ultimate hostile fixture:
+        // Type0 CID font + Form XObject containing CID-encoded "これはうんちです" + inherited Resources + Rotate 90
+        let initial_pdf = create_test_pdf(1);
+        let unchi_str = "これはうんちです";
+
+        // 1. First embed a Type0 Unicode font in the PDF
+        let mut doc = Document::load_mem(&initial_pdf).expect("Load initial");
+        let encoder = crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, unchi_str)
+            .expect("Create unicode font encoder");
+        let type0_font_id = encoder.font_id;
+        let encoded_unchi_cids = encoder.encode_text(unchi_str);
+
+        // 2. Build Form XObject content stream using the Type0 font
+        let form_content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new(
+                    "Tf",
+                    vec![Object::Name(b"UniF".to_vec()), Object::Real(16.0)],
+                ),
+                lopdf::content::Operation::new(
+                    "Td",
+                    vec![Object::Real(100.0), Object::Real(500.0)],
+                ),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![Object::String(
+                        encoded_unchi_cids.clone(),
+                        lopdf::StringFormat::Hexadecimal,
+                    )],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let form_bytes = form_content.encode().unwrap();
+
+        let mut form_fonts = Dictionary::new();
+        form_fonts.set("UniF", Object::Reference(type0_font_id));
+        let mut form_res = Dictionary::new();
+        form_res.set("Font", Object::Dictionary(form_fonts));
+
+        let mut form_dict = Dictionary::new();
+        form_dict.set("Type", Object::Name(b"XObject".to_vec()));
+        form_dict.set("Subtype", Object::Name(b"Form".to_vec()));
+        form_dict.set(
+            "BBox",
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(500.0),
+                Object::Real(500.0),
+            ]),
+        );
+        form_dict.set("Resources", Object::Dictionary(form_res));
+
+        let form_xobj_id = doc.add_object(Stream::new(form_dict, form_bytes));
+
+        // 3. Put Form XObject into page's Resources and invoke it via /Do
+        let page_ids = get_page_ids(&doc);
+        let pid = page_ids[0];
+        if let Some(Object::Dictionary(ref mut pdict)) = doc.objects.get_mut(&pid) {
+            pdict.set("Rotate", Object::Integer(90));
+            let mut xobjs = Dictionary::new();
+            xobjs.set("Fm1", Object::Reference(form_xobj_id));
+            let mut res = Dictionary::new();
+            res.set("XObject", Object::Dictionary(xobjs));
+            pdict.set("Resources", Object::Dictionary(res));
+        }
+
+        // Draw the form on the page
+        let page_invoke = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("q", vec![]),
+                lopdf::content::Operation::new("Do", vec![Object::Name(b"Fm1".to_vec())]),
+                lopdf::content::Operation::new("Q", vec![]),
+            ],
+        };
+        let page_invoke_bytes = page_invoke.encode().unwrap();
+        let page_stream_id = doc.add_object(Stream::new(Dictionary::new(), page_invoke_bytes));
+        if let Some(Object::Dictionary(ref mut pdict)) = doc.objects.get_mut(&pid) {
+            pdict.set("Contents", Object::Reference(page_stream_id));
+        }
+
+        let mut hostile_bytes = Vec::new();
+        doc.save_to(&mut hostile_bytes).unwrap();
+
+        // 4. Verify that the hostile fixture initially contains "これはうんちです" via pdftotext
+        let tmp_hostile =
+            std::env::temp_dir().join(format!("hostile_form_before_{}.pdf", std::process::id()));
+        std::fs::write(&tmp_hostile, &hostile_bytes).unwrap();
+
+        if let Some(tool) = find_tool("pdftotext") {
+            let res = std::process::Command::new(tool)
+                .arg(&tmp_hostile)
+                .arg("-")
+                .output()
+                .expect("pdftotext execution");
+            let extracted = String::from_utf8_lossy(&res.stdout);
+            assert!(
+                extracted.contains(unchi_str),
+                "Initial hostile PDF must contain unchi inside Form XObject. Got: {extracted}"
+            );
+        }
+        let _ = std::fs::remove_file(&tmp_hostile);
+
+        // 5. DEEP REDACT "これはうんちです"
+        let redacted_bytes = crate::pdf_engine::redact::redact_text_deep(&hostile_bytes, unchi_str, "#000000")
+            .expect("redact_text_deep must successfully redact CID text inside Form XObject");
+
+        // 6. Strict assertions on redacted document:
+        // A. Form XObject stream MUST NOT contain the CID text or operator anymore
+        let redacted_doc = Document::load_mem(&redacted_bytes).expect("Load redacted doc");
+        let redacted_form_st = redacted_doc.objects.get(&form_xobj_id).unwrap().as_stream().unwrap();
+        let decompressed_form = redacted_form_st
+            .decompressed_content()
+            .unwrap_or_else(|_| redacted_form_st.content.clone());
+        let form_content_after = lopdf::content::Content::decode(&decompressed_form).unwrap();
+        let has_text_op = form_content_after.operations.iter().any(|op| op.operator == "Tj" || op.operator == "TJ");
+        assert!(!has_text_op, "Text operation inside Form XObject must be completely purged by deep redact");
+
+        // B. pdftotext on redacted PDF must NOT contain "これはうんちです"
+        let tmp_redacted =
+            std::env::temp_dir().join(format!("hostile_form_after_{}.pdf", std::process::id()));
+        std::fs::write(&tmp_redacted, &redacted_bytes).unwrap();
+
+        if let Some(tool) = find_tool("pdftotext") {
+            let res = std::process::Command::new(tool)
+                .arg(&tmp_redacted)
+                .arg("-")
+                .output()
+                .expect("pdftotext execution");
+            let extracted = String::from_utf8_lossy(&res.stdout);
+            assert!(
+                !extracted.contains(unchi_str),
+                "Redacted hostile PDF must NOT contain unchi! Got: {extracted}"
+            );
+        }
+        let _ = std::fs::remove_file(&tmp_redacted);
+    }
 }
+
 

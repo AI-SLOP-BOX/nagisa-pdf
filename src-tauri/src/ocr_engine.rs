@@ -541,11 +541,10 @@ pub fn create_searchable_pdf(
                         Object::String(line.as_bytes().to_vec(), lopdf::StringFormat::Literal),
                     )
                 } else {
-                    let utf16 =
-                        crate::pdf_engine::font_unicode::encode_unicode_text_to_utf16be_bytes(line);
+                    let encoded_cids = unicode_encoder.encode_text(line);
                     (
                         "UniF",
-                        Object::String(utf16, lopdf::StringFormat::Hexadecimal),
+                        Object::String(encoded_cids, lopdf::StringFormat::Hexadecimal),
                     )
                 };
 

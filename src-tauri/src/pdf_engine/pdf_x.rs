@@ -1,4 +1,5 @@
 use super::common::*;
+use super::page_tree::materialize_inherited_page_attrs;
 use lopdf::{Dictionary, Document, Object, Stream};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -120,21 +121,20 @@ pub fn validate_pdfx_compliance(
         violations.push("Info dictionary missing required 'Trapped' flag (True/False)".to_string());
     }
 
-    // 3. Page Boxes Check (MediaBox + either BleedBox or TrimBox)
+    // 3. Page Boxes Check (MediaBox + either BleedBox or TrimBox), resolving inherited attributes!
     let page_ids = get_page_ids(&doc);
     let mut page_boxes_valid = true;
     for (idx, &pid) in page_ids.iter().enumerate() {
-        if let Some(Object::Dictionary(ref pdict)) = doc.objects.get(&pid) {
-            let has_media = pdict.get(b"MediaBox").is_ok();
-            let has_trim_or_bleed = pdict.get(b"TrimBox").is_ok() || pdict.get(b"BleedBox").is_ok();
-            if !has_media || !has_trim_or_bleed {
-                page_boxes_valid = false;
-                violations.push(format!(
-                    "Page {} is missing required TrimBox or BleedBox",
-                    idx + 1
-                ));
-                break;
-            }
+        let pdict = materialize_inherited_page_attrs(&doc, pid);
+        let has_media = pdict.get(b"MediaBox").is_ok();
+        let has_trim_or_bleed = pdict.get(b"TrimBox").is_ok() || pdict.get(b"BleedBox").is_ok();
+        if !has_media || !has_trim_or_bleed {
+            page_boxes_valid = false;
+            violations.push(format!(
+                "Page {} is missing required TrimBox or BleedBox",
+                idx + 1
+            ));
+            break;
         }
     }
     if page_boxes_valid {
@@ -147,46 +147,87 @@ pub fn validate_pdfx_compliance(
     let mut transparency_detected = false;
 
     for (page_idx, &pid) in page_ids.iter().enumerate() {
-        if let Some(Object::Dictionary(ref pdict)) = doc.objects.get(&pid) {
-            // Check resources for transparency ExtGState (CA/ca < 1.0 or BM != /Normal)
-            if let Ok(res) = pdict.get(b"Resources") {
-                let res_dict = match res {
-                    Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
-                    Object::Dictionary(d) => Some(d),
-                    _ => None,
-                };
-                if let Some(r) = res_dict {
-                    if let Ok(egs) = r.get(b"ExtGState") {
-                        let egs_dict = match egs {
+        let pdict = materialize_inherited_page_attrs(&doc, pid);
+        // Check resources for transparency ExtGState (CA/ca < 1.0 or BM != /Normal)
+        if let Ok(res) = pdict.get(b"Resources") {
+            let res_dict = match res {
+                Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+                Object::Dictionary(d) => Some(d),
+                _ => None,
+            };
+            if let Some(r) = res_dict {
+                if let Ok(egs) = r.get(b"ExtGState") {
+                    let egs_dict = match egs {
+                        Object::Reference(id) => {
+                            doc.objects.get(id).and_then(|o| o.as_dict().ok())
+                        }
+                        Object::Dictionary(d) => Some(d),
+                        _ => None,
+                    };
+                    if let Some(states) = egs_dict {
+                        for (_, state_obj) in states.iter() {
+                            let state_dict = match state_obj {
+                                Object::Reference(id) => {
+                                    doc.objects.get(id).and_then(|o| o.as_dict().ok())
+                                }
+                                Object::Dictionary(d) => Some(d),
+                                _ => None,
+                            };
+                            if let Some(sd) = state_dict {
+                                if let Ok(ca) = sd.get(b"ca").and_then(|o| o.as_float()) {
+                                    if ca < 0.999 {
+                                        transparency_detected = true;
+                                    }
+                                }
+                                if let Ok(ca) = sd.get(b"CA").and_then(|o| o.as_float()) {
+                                    if ca < 0.999 {
+                                        transparency_detected = true;
+                                    }
+                                }
+                                if let Ok(Object::Name(bm)) = sd.get(b"BM") {
+                                    if bm != b"Normal" && bm != b"Compatible" {
+                                        transparency_detected = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check XObject in resources (Image XObjects for DeviceRGB / Subtype /Image)
+                if is_x1a {
+                    if let Ok(xobjs) = r.get(b"XObject") {
+                        let xobj_dict = match xobjs {
                             Object::Reference(id) => {
                                 doc.objects.get(id).and_then(|o| o.as_dict().ok())
                             }
                             Object::Dictionary(d) => Some(d),
                             _ => None,
                         };
-                        if let Some(states) = egs_dict {
-                            for (_, state_obj) in states.iter() {
-                                let state_dict = match state_obj {
+                        if let Some(xd) = xobj_dict {
+                            for (xname, xo) in xd.iter() {
+                                let xstream = match xo {
                                     Object::Reference(id) => {
-                                        doc.objects.get(id).and_then(|o| o.as_dict().ok())
+                                        doc.objects.get(id).and_then(|o| o.as_stream().ok())
                                     }
-                                    Object::Dictionary(d) => Some(d),
+                                    Object::Stream(st) => Some(st),
                                     _ => None,
                                 };
-                                if let Some(sd) = state_dict {
-                                    if let Ok(ca) = sd.get(b"ca").and_then(|o| o.as_float()) {
-                                        if ca < 0.999 {
-                                            transparency_detected = true;
-                                        }
-                                    }
-                                    if let Ok(ca) = sd.get(b"CA").and_then(|o| o.as_float()) {
-                                        if ca < 0.999 {
-                                            transparency_detected = true;
-                                        }
-                                    }
-                                    if let Ok(Object::Name(bm)) = sd.get(b"BM") {
-                                        if bm != b"Normal" && bm != b"Compatible" {
-                                            transparency_detected = true;
+                                if let Some(st) = xstream {
+                                    let subtype = st.dict.get(b"Subtype").ok().and_then(|s| s.as_name().ok());
+                                    if subtype == Some(b"Image") {
+                                        if let Ok(cs) = st.dict.get(b"ColorSpace") {
+                                            let is_rgb = match cs {
+                                                Object::Name(cs_name) => cs_name == b"DeviceRGB",
+                                                _ => false,
+                                            };
+                                            if is_rgb {
+                                                prohibited_rgb.push(format!(
+                                                    "Page {}: Image XObject '/{}' uses prohibited DeviceRGB",
+                                                    page_idx + 1,
+                                                    String::from_utf8_lossy(xname)
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -195,27 +236,27 @@ pub fn validate_pdfx_compliance(
                     }
                 }
             }
+        }
 
-            // Check Content operations
-            if let Ok(contents) = pdict.get(b"Contents") {
-                let content_ids: Vec<OID> = match contents {
-                    Object::Reference(id) => vec![*id],
-                    Object::Array(arr) => {
-                        arr.iter().filter_map(|o| o.as_reference().ok()).collect()
-                    }
-                    _ => vec![],
-                };
-                for cid in content_ids {
-                    if let Some(Object::Stream(ref stream)) = doc.objects.get(&cid) {
-                        if let Ok(c) = lopdf::content::Content::decode(&stream.content) {
-                            for op in &c.operations {
-                                if is_x1a && (op.operator == "rg" || op.operator == "RG") {
-                                    prohibited_rgb.push(format!(
-                                        "Page {}: DeviceRGB operator '{}'",
-                                        page_idx + 1,
-                                        op.operator
-                                    ));
-                                }
+        // Check Content operations
+        if let Ok(contents) = pdict.get(b"Contents") {
+            let content_ids: Vec<OID> = match contents {
+                Object::Reference(id) => vec![*id],
+                Object::Array(arr) => {
+                    arr.iter().filter_map(|o| o.as_reference().ok()).collect()
+                }
+                _ => vec![],
+            };
+            for cid in content_ids {
+                if let Some(Object::Stream(ref stream)) = doc.objects.get(&cid) {
+                    if let Ok(c) = lopdf::content::Content::decode(&stream.content) {
+                        for op in &c.operations {
+                            if is_x1a && (op.operator == "rg" || op.operator == "RG") {
+                                prohibited_rgb.push(format!(
+                                    "Page {}: DeviceRGB operator '{}'",
+                                    page_idx + 1,
+                                    op.operator
+                                ));
                             }
                         }
                     }
@@ -449,28 +490,43 @@ pub fn convert_to_pdfx_standard(
     }
     doc.trailer.set("Info", Object::Reference(info_id));
 
-    // 5. Ensure all pages have MediaBox, TrimBox, and BleedBox defined
+    // 5. Ensure all pages have MediaBox, TrimBox, and BleedBox defined, resolving inherited MediaBox!
     let page_ids = get_page_ids(&doc);
     for &pid in &page_ids {
-        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&pid) {
-            let (pw, ph) = (
-                page_dict
-                    .get(b"MediaBox")
-                    .ok()
-                    .and_then(|mb| mb.as_array().ok())
-                    .and_then(|arr| arr.get(2))
-                    .and_then(|w| w.as_float().ok())
-                    .unwrap_or(595.0),
-                page_dict
-                    .get(b"MediaBox")
-                    .ok()
-                    .and_then(|mb| mb.as_array().ok())
-                    .and_then(|arr| arr.get(3))
-                    .and_then(|h| h.as_float().ok())
-                    .unwrap_or(842.0),
-            );
+        let inherited_attrs = materialize_inherited_page_attrs(&doc, pid);
+        let mbox_arr = inherited_attrs
+            .get(b"MediaBox")
+            .ok()
+            .and_then(|mb| mb.as_array().ok())
+            .cloned();
 
-            // If TrimBox is missing, default to MediaBox
+        let (pw, ph) = if let Some(ref arr) = mbox_arr {
+            let w = arr.get(2).and_then(|v| v.as_float().ok()).unwrap_or(595.0);
+            let h = arr.get(3).and_then(|v| v.as_float().ok()).unwrap_or(842.0);
+            (w, h)
+        } else {
+            (595.0, 842.0)
+        };
+
+        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&pid) {
+            // Materialize MediaBox if it was inherited
+            if page_dict.get(b"MediaBox").is_err() {
+                if let Some(arr) = mbox_arr {
+                    page_dict.set("MediaBox", Object::Array(arr));
+                } else {
+                    page_dict.set(
+                        "MediaBox",
+                        Object::Array(vec![
+                            Object::Real(0.0),
+                            Object::Real(0.0),
+                            Object::Real(pw),
+                            Object::Real(ph),
+                        ]),
+                    );
+                }
+            }
+
+            // If TrimBox is missing, default to MediaBox dimensions
             if page_dict.get(b"TrimBox").is_err() {
                 page_dict.set(
                     "TrimBox",
