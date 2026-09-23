@@ -33,7 +33,7 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
               const res = await invoke<number[]>('convert_to_pdfx_standard', {
                 data: pdfData,
                 standard: 'PDF/X-1a:2001',
-                output_intent: 'Japan Color 2001 Coated'
+                outputIntent: 'Japan Color 2001 Coated'
               })
               onPdfUpdate?.(res)
               showToast('PDF/X-1a:2001 準拠変換完了 (CMYK/平坦化/TrimBox/OutputIntent適用)')
@@ -52,7 +52,7 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
               const res = await invoke<number[]>('convert_to_pdfx_standard', {
                 data: pdfData,
                 standard: 'PDF/X-4:2010',
-                output_intent: 'Japan Color 2001 Coated'
+                outputIntent: 'Japan Color 2001 Coated'
               })
               onPdfUpdate?.(res)
               showToast('PDF/X-4:2010 準拠変換完了 (透明・RGB/OutputIntent適用)')
@@ -73,7 +73,7 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
             try {
               const report = await invoke<PDFXReport>('validate_pdfx_compliance', {
                 data: pdfData,
-                target_standard: 'PDF/X-1a'
+                targetStandard: 'PDF/X-1a'
               })
               setPdfxReport(report)
             } catch (err) {
@@ -90,7 +90,7 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
             try {
               const report = await invoke<PDFXReport>('validate_pdfx_compliance', {
                 data: pdfData,
-                target_standard: 'PDF/X-4'
+                targetStandard: 'PDF/X-4'
               })
               setPdfxReport(report)
             } catch (err) {

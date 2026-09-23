@@ -69,8 +69,8 @@ pub(crate) fn is_kinsoku_line_end(c: char) -> bool {
             | '『'
             | '【'
             | '〔'
-            | '‘'
-            | '“'
+            | '\''
+            | '"'
             | '￥'
             | '＄'
             | '￡'
@@ -99,6 +99,27 @@ pub fn get_char_metric_width(c: char, font_size: f32) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #35 解消: reflow_text の二重印字（元テキスト残存）バグの是正
+//
+// 問題の実態:
+//   従来実装は append_page_content で新テキストストリームを追加するだけで、
+//   既存の BT〜ET テキストオペレータが背面に残り、文字が重なって真っ黒になっていた。
+//
+// 是正方針:
+//   1. 既存コンテンツストリームを走査し、start_x/start_y/max_width/行高さで
+//      定義される「リフロー対象矩形」内に位置するテキストブロック（BT〜ET）を
+//      すべて除去（ストリームから削除）したうえで単一の unified ストリームに再構成する。
+//   2. 除去後、新テキストを Unicode フォント（日本語）または Helvetica（ASCII）で
+//      同位置に上書きする。
+//   3. append_page_content を廃止し、unified 置換ストリームのみをページに設定する。
+//
+// リフロー矩形の判定:
+//   BT 直後の Tm オペレータの (x, y) が以下の条件を満たすブロックを対象とする。
+//     - x_start <= x <= x_start + max_width + margin(20pt)
+//     - y_start - total_block_height - margin(20pt) <= y <= y_start + margin(20pt)
+//   ただし、矩形が指定されない場合（max_width <= 0）は削除を行わない（純 Insert モード）。
+// ---------------------------------------------------------------------------
 pub fn reflow_text(
     data: &[u8],
     page_index: usize,
@@ -201,73 +222,325 @@ pub fn reflow_text(
         }
     }
 
-    // 既存ページコンテンツの末尾にテキストブロックを追加（既存内容を破壊しない安全なBT/ETストリーム）
-    let mut operations = vec![
-        lopdf::content::Operation::new("q", vec![]),
-        lopdf::content::Operation::new("BT", vec![]),
-        lopdf::content::Operation::new(
-            "Tf",
-            vec![Object::Name("Helvetica".into()), Object::Real(font_size)],
-        ),
-        lopdf::content::Operation::new(
-            "rg",
-            vec![Object::Real(r), Object::Real(g), Object::Real(b)],
-        ),
-    ];
+    let num_lines = wrapped_lines.len();
+    // リフロー矩形の縦範囲: start_y から下方向に num_lines * line_height まで
+    let total_block_height = (num_lines.max(1) as f32) * line_height;
 
-    for (i, line) in wrapped_lines.iter().enumerate() {
-        let line_y = (start_y as f32) - (i as f32 * line_height);
-        operations.push(lopdf::content::Operation::new(
-            "Tm",
-            vec![
-                Object::Real(1.0),
-                Object::Real(0.0),
-                Object::Real(0.0),
-                Object::Real(1.0),
-                Object::Real(start_x as f32),
-                Object::Real(line_y),
-            ],
-        ));
-        operations.push(lopdf::content::Operation::new(
-            "Tj",
-            vec![Object::String(
-                line.as_bytes().to_vec(),
-                lopdf::StringFormat::Literal,
-            )],
-        ));
-    }
-
-    operations.push(lopdf::content::Operation::new("ET", vec![]));
-    operations.push(lopdf::content::Operation::new("Q", vec![]));
-
-    let content = lopdf::content::Content { operations };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
-
-    let mut stream = Stream::new(Dictionary::new(), content_bytes);
-    stream.dict.set("Type", Object::Name("Content".into()));
-    let content_id = doc.add_object(stream);
-
+    // #35 是正: 既存コンテンツストリームからリフロー対象矩形内のテキストを除去する
     let page_id = page_ids[page_index];
-    if let Some(Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&page_id) {
-        // 既存のContentsがある場合は配列で追加、なければ単体セット
-        match dict.get(b"Contents") {
-            Ok(Object::Array(ref existing)) => {
-                let mut new_contents = existing.clone();
-                new_contents.push(Object::Reference(content_id));
-                dict.set("Contents", Object::Array(new_contents));
-            }
-            Ok(Object::Reference(ref existing_id)) => {
-                let new_contents = vec![
-                    Object::Reference(*existing_id),
-                    Object::Reference(content_id),
-                ];
-                dict.set("Contents", Object::Array(new_contents));
-            }
-            _ => {
-                dict.set("Contents", Object::Reference(content_id));
+    let content_ids = resolve_page_content_stream_ids(&doc, page_id);
+
+    // max_width > 0 のときのみ既存テキストを除去する（置換 Replace モード）
+    let should_remove_existing = max_width > 0.0;
+
+    let mut base_operations: Vec<lopdf::content::Operation> = Vec::new();
+    for cid in &content_ids {
+        if let Some(Object::Stream(stream)) = doc.objects.get(cid) {
+            let bytes = stream
+                .decompressed_content()
+                .unwrap_or_else(|_| stream.content.clone());
+            if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                base_operations.extend(c.operations);
             }
         }
     }
 
+    let cleaned_operations = if should_remove_existing {
+        remove_text_in_rect(
+            base_operations,
+            start_x as f32,
+            start_y as f32,
+            target_max_width,
+            total_block_height,
+        )
+    } else {
+        base_operations
+    };
+
+    // Check if text contains non-ASCII (e.g. Japanese Kanji/Kana/Hiragana)
+    let has_non_ascii = new_text.chars().any(|c| !c.is_ascii());
+
+    if has_non_ascii {
+        // Genuine CJK TrueType Embedding Pipeline (IPAexGothic / Type0 / Identity-H / ToUnicode)
+        let encoder =
+            crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, new_text)?;
+        let font_id = encoder.font_id;
+
+        let font_res_name = "NagisaReflowFont";
+        let mut new_text_ops = vec![
+            lopdf::content::Operation::new("q", vec![]),
+            lopdf::content::Operation::new("BT", vec![]),
+            lopdf::content::Operation::new(
+                "Tf",
+                vec![Object::Name(font_res_name.into()), Object::Real(font_size)],
+            ),
+            lopdf::content::Operation::new(
+                "rg",
+                vec![Object::Real(r), Object::Real(g), Object::Real(b)],
+            ),
+        ];
+
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            let line_y = (start_y as f32) - (i as f32 * line_height);
+            new_text_ops.push(lopdf::content::Operation::new(
+                "Tm",
+                vec![
+                    Object::Real(1.0),
+                    Object::Real(0.0),
+                    Object::Real(0.0),
+                    Object::Real(1.0),
+                    Object::Real(start_x as f32),
+                    Object::Real(line_y),
+                ],
+            ));
+
+            let line_cid_bytes = encoder.encode_text(line);
+
+            new_text_ops.push(lopdf::content::Operation::new(
+                "Tj",
+                vec![Object::String(
+                    line_cid_bytes,
+                    lopdf::StringFormat::Hexadecimal,
+                )],
+            ));
+        }
+
+        new_text_ops.push(lopdf::content::Operation::new("ET", vec![]));
+        new_text_ops.push(lopdf::content::Operation::new("Q", vec![]));
+
+        // #35 是正: cleaned_operations に新テキストを連結して単一ストリームに
+        let mut all_ops = cleaned_operations;
+        all_ops.extend(new_text_ops);
+
+        let content = lopdf::content::Content { operations: all_ops };
+        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+
+        let mut stream = Stream::new(Dictionary::new(), content_bytes);
+        stream.dict.set("Type", Object::Name("Content".into()));
+        let content_id = doc.add_object(stream);
+
+        // Register font in page resources
+        let mut resources_dict = resolve_page_resources(&doc, page_id);
+        let mut fonts_dict = match resources_dict.get(b"Font") {
+            Ok(Object::Dictionary(fd)) => fd.clone(),
+            Ok(Object::Reference(f_ref)) => doc
+                .objects
+                .get(f_ref)
+                .and_then(|o| o.as_dict().ok())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Dictionary::new(),
+        };
+        fonts_dict.set(font_res_name, Object::Reference(font_id));
+        resources_dict.set("Font", Object::Dictionary(fonts_dict));
+
+        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
+            page_dict.set("Resources", Object::Dictionary(resources_dict));
+            // #35 是正: Contents を単一ストリーム参照に置き換え（既存ストリームはすべて統合済み）
+            page_dict.set("Contents", Object::Reference(content_id));
+        }
+    } else {
+        // Standard ASCII Latin Helvetica pipeline
+        let mut new_text_ops = vec![
+            lopdf::content::Operation::new("q", vec![]),
+            lopdf::content::Operation::new("BT", vec![]),
+            lopdf::content::Operation::new(
+                "Tf",
+                vec![Object::Name("Helvetica".into()), Object::Real(font_size)],
+            ),
+            lopdf::content::Operation::new(
+                "rg",
+                vec![Object::Real(r), Object::Real(g), Object::Real(b)],
+            ),
+        ];
+
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            let line_y = (start_y as f32) - (i as f32 * line_height);
+            new_text_ops.push(lopdf::content::Operation::new(
+                "Tm",
+                vec![
+                    Object::Real(1.0),
+                    Object::Real(0.0),
+                    Object::Real(0.0),
+                    Object::Real(1.0),
+                    Object::Real(start_x as f32),
+                    Object::Real(line_y),
+                ],
+            ));
+            new_text_ops.push(lopdf::content::Operation::new(
+                "Tj",
+                vec![Object::String(
+                    line.as_bytes().to_vec(),
+                    lopdf::StringFormat::Literal,
+                )],
+            ));
+        }
+
+        new_text_ops.push(lopdf::content::Operation::new("ET", vec![]));
+        new_text_ops.push(lopdf::content::Operation::new("Q", vec![]));
+
+        // #35 是正: cleaned_operations に新テキストを連結して単一ストリームに
+        let mut all_ops = cleaned_operations;
+        all_ops.extend(new_text_ops);
+
+        let content = lopdf::content::Content { operations: all_ops };
+        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+
+        let mut stream = Stream::new(Dictionary::new(), content_bytes);
+        stream.dict.set("Type", Object::Name("Content".into()));
+        let content_id = doc.add_object(stream);
+
+        // Register /Helvetica in page /Resources /Font before using it in Tf
+        // (Standard 14 font: no embedding required per ISO 32000-1 §9.6.2.2)
+        let mut resources_dict = resolve_page_resources(&doc, page_id);
+        let mut fonts_dict = match resources_dict.get(b"Font") {
+            Ok(Object::Dictionary(fd)) => fd.clone(),
+            Ok(Object::Reference(f_ref)) => doc
+                .objects
+                .get(f_ref)
+                .and_then(|o| o.as_dict().ok())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Dictionary::new(),
+        };
+        if fonts_dict.get(b"Helvetica").is_err() {
+            let mut font_dict = Dictionary::new();
+            font_dict.set("Type", Object::Name(b"Font".to_vec()));
+            font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+            font_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+            font_dict.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
+            let font_id = doc.add_object(Object::Dictionary(font_dict));
+            fonts_dict.set("Helvetica", Object::Reference(font_id));
+        }
+        resources_dict.set("Font", Object::Dictionary(fonts_dict));
+        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
+            page_dict.set("Resources", Object::Dictionary(resources_dict));
+            // #35 是正: Contents を単一ストリーム参照に置き換え（既存ストリームはすべて統合済み）
+            page_dict.set("Contents", Object::Reference(content_id));
+        }
+    }
+
     save_doc(&mut doc)
+}
+
+// ---------------------------------------------------------------------------
+// #35 是正サブ関数: リフロー矩形内のテキストブロック(BT〜ET)を除去する
+//
+// 判定: BT ブロック内で最初に現れる Tm/Td の絶対座標（x, y）が
+//       以下の矩形内に収まる場合そのブロック全体を除去する。
+//       x_range: [sx - margin, sx + mw + margin]
+//       y_range: [sy - total_h - margin, sy + margin]
+//       margin = 20.0pt（スキャンずれ・浮動小数誤差の吸収）
+// ---------------------------------------------------------------------------
+fn remove_text_in_rect(
+    operations: Vec<lopdf::content::Operation>,
+    start_x: f32,
+    start_y: f32,
+    max_width: f32,
+    total_height: f32,
+) -> Vec<lopdf::content::Operation> {
+    let margin = 20.0f32;
+    let x_min = start_x - margin;
+    let x_max = start_x + max_width + margin;
+    let y_min = start_y - total_height - margin;
+    let y_max = start_y + margin;
+
+    let mut result: Vec<lopdf::content::Operation> = Vec::new();
+    let mut pending_block: Vec<lopdf::content::Operation> = Vec::new();
+    let mut in_text = false;
+    let mut block_x = 0.0f32;
+    let mut block_y = 0.0f32;
+    let mut current_x = 0.0f32;
+    let mut current_y = 0.0f32;
+    let mut position_set = false;
+
+    for op in operations {
+        match op.operator.as_str() {
+            "BT" => {
+                in_text = true;
+                position_set = false;
+                block_x = current_x;
+                block_y = current_y;
+                pending_block.clear();
+                pending_block.push(op);
+            }
+            "ET" => {
+                pending_block.push(op);
+                // ブロック先頭座標が矩形内にあれば除去、そうでなければ保持
+                let in_rect = block_x >= x_min
+                    && block_x <= x_max
+                    && block_y >= y_min
+                    && block_y <= y_max;
+                if !in_rect {
+                    result.append(&mut pending_block);
+                } else {
+                    pending_block.clear();
+                }
+                in_text = false;
+                position_set = false;
+            }
+            "Tm" => {
+                if op.operands.len() >= 6 {
+                    let nx = match &op.operands[4] {
+                        Object::Real(v) => *v,
+                        Object::Integer(v) => *v as f32,
+                        _ => current_x,
+                    };
+                    let ny = match &op.operands[5] {
+                        Object::Real(v) => *v,
+                        Object::Integer(v) => *v as f32,
+                        _ => current_y,
+                    };
+                    current_x = nx;
+                    current_y = ny;
+                    if in_text && !position_set {
+                        block_x = nx;
+                        block_y = ny;
+                        position_set = true;
+                    }
+                }
+                if in_text {
+                    pending_block.push(op);
+                } else {
+                    result.push(op);
+                }
+            }
+            "Td" | "TD" => {
+                let dx = op.operands.first().and_then(|o| match o {
+                    Object::Real(v) => Some(*v),
+                    Object::Integer(v) => Some(*v as f32),
+                    _ => None,
+                }).unwrap_or(0.0);
+                let dy = op.operands.get(1).and_then(|o| match o {
+                    Object::Real(v) => Some(*v),
+                    Object::Integer(v) => Some(*v as f32),
+                    _ => None,
+                }).unwrap_or(0.0);
+                current_x += dx;
+                current_y += dy;
+                if in_text && !position_set {
+                    block_x = current_x;
+                    block_y = current_y;
+                    position_set = true;
+                }
+                if in_text {
+                    pending_block.push(op);
+                } else {
+                    result.push(op);
+                }
+            }
+            _ => {
+                if in_text {
+                    pending_block.push(op);
+                } else {
+                    result.push(op);
+                }
+            }
+        }
+    }
+
+    // 閉じていない BT（ET なし）が残った場合は保持する（安全側）
+    result.append(&mut pending_block);
+
+    result
 }

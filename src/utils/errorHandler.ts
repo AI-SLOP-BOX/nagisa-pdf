@@ -32,7 +32,11 @@ export function formatError(err: unknown, fallbackMessage = '処理中にエラ�
   }
 
   // Page range / index out of bounds
-  if (rawMessage.includes('out of range') || rawMessage.includes('index')) {
+  if (
+    rawMessage.includes('out of range') ||
+    rawMessage.includes('index out of') ||
+    rawMessage.includes('page index')
+  ) {
     return '指定されたページ番号がドキュメントの範囲外です。'
   }
 

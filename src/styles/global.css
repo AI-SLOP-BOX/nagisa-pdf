@@ -1,44 +1,44 @@
 :root {
-  /* Apple / Adobe Pro Surface Hierarchy */
-  --bg-0: #0a0c10;
-  --bg-1: #111419;
-  --bg-2: #181d24;
-  --bg-3: #222730;
-  --bg-hover: rgba(255, 255, 255, 0.06);
-  --bg-active: rgba(88, 166, 255, 0.15);
-  --glass-bg: rgba(17, 20, 25, 0.85);
-  --glass-border: rgba(255, 255, 255, 0.08);
+  /* Nagisa Modern Light Surface Hierarchy */
+  --bg-0: #f8fafc;
+  --bg-1: #ffffff;
+  --bg-2: #f1f5f9;
+  --bg-3: #e2e8f0;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(37, 99, 235, 0.12);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(226, 232, 240, 0.8);
 
   /* Borders & Dividers */
-  --border: rgba(255, 255, 255, 0.09);
-  --border-subtle: rgba(255, 255, 255, 0.04);
-  --border-bright: rgba(255, 255, 255, 0.18);
-  --border-focus: rgba(88, 166, 255, 0.6);
+  --border: #e2e8f0;
+  --border-subtle: #f1f5f9;
+  --border-bright: #cbd5e1;
+  --border-focus: rgba(37, 99, 235, 0.6);
 
   /* Typography */
-  --text: #f0f3f6;
-  --text-dim: #9aa5b1;
-  --text-muted: #57606a;
+  --text: #0f172a;
+  --text-dim: #475569;
+  --text-muted: #64748b;
 
   /* Accent & Status Colors */
-  --accent: #2f81f7;
-  --accent-hover: #388bfd;
-  --accent-dim: #1f6feb;
-  --accent-gradient: linear-gradient(135deg, #2f81f7 0%, #d23669 100%);
-  --green: #2ea043;
-  --red: #f85149;
-  --orange: #e3b341;
-  --purple: #a371f7;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-dim: #3b82f6;
+  --accent-gradient: linear-gradient(135deg, #2563eb 0%, #38bdf8 100%);
+  --green: #16a34a;
+  --red: #dc2626;
+  --orange: #ea580c;
+  --purple: #9333ea;
 
   /* Shadows & Radius */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 14px;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
-  --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.65);
-  --shadow-glow: 0 0 20px rgba(47, 129, 247, 0.25);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.12);
+  --shadow-glow: 0 0 20px rgba(37, 99, 235, 0.2);
 }
 
 * {
@@ -49,8 +49,8 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Noto Sans JP', sans-serif;
-  background: var(--bg-0);
-  color: var(--text);
+  background: #f8fafc;
+  color: #0f172a;
   overflow: hidden;
   height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -74,12 +74,12 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.14);
   border-radius: 3px;
   transition: background 0.2s;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.25);
 }
 
 /* Base Interactive Elements */
@@ -98,12 +98,15 @@ button:active {
 input, textarea, select {
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text);
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 input:focus, textarea:focus, select:focus {
-  border-color: var(--border-focus) !important;
-  box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.2) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15) !important;
 }
 
 /* Glassmorphism Classes */
@@ -121,17 +124,25 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-hover);
 }
 
-/* Keyboard Shortcut Badges */
-kbd, .kbd-badge {
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', monospace;
+/* Tooltip & Shortcut tags */
+.shortcut-tag {
   font-size: 10px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 5px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  font-family: monospace;
+}
+
+kbd {
+  font-family: inherit;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -140,12 +151,12 @@ kbd, .kbd-badge {
 
 /* Floating HUD Capsule */
 .floating-hud {
-  background: rgba(18, 22, 28, 0.82);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(203, 213, 225, 0.8);
   border-radius: 28px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.09), 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 /* Inspector Card Section */
@@ -270,4 +281,283 @@ body {
     width: 68px !important;
   }
 }
+
+/* ==========================================================
+   Nagisa Home Screen Modern Light Theme & Wave Effects
+   ========================================================== */
+.nagisa-home-container {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: #f1f5f9;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Noto Sans JP', sans-serif;
+  color: #1e293b;
+  user-select: none;
+}
+
+/* Home Sidebar */
+.nagisa-sidebar {
+  width: 216px;
+  background: #f4f7fb;
+  border-right: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: 16px 14px 16px 16px;
+  box-sizing: border-box;
+}
+
+.nagisa-sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.nagisa-sidebar-nav-btn:hover {
+  background: #e9eef5;
+  color: #1e293b;
+}
+
+.nagisa-sidebar-nav-btn.active {
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.nagisa-sidebar-nav-btn.active svg {
+  color: #1d4ed8;
+}
+
+/* Home Quick Action Tool Cards */
+.nagisa-tool-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 116px;
+  border-radius: 12px;
+  padding: 14px;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease, filter 0.18s ease;
+  box-sizing: border-box;
+}
+
+.nagisa-tool-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+  filter: brightness(0.98);
+}
+
+.nagisa-tool-card:active {
+  transform: translateY(0px) scale(0.99);
+}
+
+/* Home Wave Header Animation */
+@keyframes nagisaWaveSway {
+  0% {
+    transform: translateY(0) scaleY(1);
+  }
+  50% {
+    transform: translateY(-3px) scaleY(1.02);
+  }
+  100% {
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+.nagisa-wave-animated {
+  animation: nagisaWaveSway 8s ease-in-out infinite;
+}
+
+/* Dropzone hover ripple */
+.nagisa-dropzone {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.nagisa-dropzone.dragging {
+  border-color: #2563eb !important;
+  background-color: #eff6ff !important;
+  transform: scale(1.005);
+}
+
+.nagisa-recent-item {
+  transition: background-color 0.12s ease;
+}
+
+.nagisa-recent-item:hover {
+  background-color: #f8fafc;
+}
+
+.nagisa-hint-item {
+  transition: all 0.15s ease;
+}
+
+.nagisa-hint-item:hover {
+  background-color: #f8fafc;
+  transform: translateX(2px);
+}
+
+/* ============================================================ */
+/* NAGISA DOCUMENT OPENING TRANSITION ("開く時の演出")          */
+/* ============================================================ */
+
+@keyframes nagisaRipple1 {
+  0% {
+    transform: scale(0.65);
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+}
+
+@keyframes nagisaRipple2 {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes nagisaRipple3 {
+  0% {
+    transform: scale(0.55);
+    opacity: 0;
+  }
+  40% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.7);
+    opacity: 0;
+  }
+}
+
+@keyframes nagisaLogoPulse {
+  0% {
+    transform: translateY(0) scale(1);
+    filter: drop-shadow(0 8px 24px rgba(56, 189, 248, 0.45));
+  }
+  50% {
+    transform: translateY(-6px) scale(1.03);
+    filter: drop-shadow(0 14px 36px rgba(56, 189, 248, 0.75));
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    filter: drop-shadow(0 8px 24px rgba(56, 189, 248, 0.45));
+  }
+}
+
+@keyframes nagisaShimmerSweep {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes nagisaCanvasEntrance {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+    filter: blur(4px);
+  }
+  60% {
+    filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0px);
+  }
+}
+
+.nagisa-canvas-entrance {
+  animation: nagisaCanvasEntrance 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes nagisaOpeningEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes nagisaOpeningLeave {
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0px);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.04);
+    filter: blur(8px);
+  }
+}
+
+.nagisa-opening-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(248, 250, 252, 0.95) 0%, rgba(241, 245, 249, 0.98) 100%);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  pointer-events: all;
+  user-select: none;
+}
+
+.nagisa-opening-overlay.entering {
+  animation: nagisaOpeningEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.nagisa-opening-overlay.leaving {
+  animation: nagisaOpeningLeave 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+
 

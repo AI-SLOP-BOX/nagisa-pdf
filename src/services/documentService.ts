@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { PDFJsEngine, DefaultRenderer } from './pdfRenderer'
+import type { SignatureInfo } from '../types'
 
 export interface SessionInfo {
   id: string
@@ -52,9 +54,16 @@ export class DocumentService {
       multiple: false,
     })
     if (!selected || typeof selected !== 'string') return null
-    const bytes = await invoke<number[]>('read_file_bytes', { path: selected })
-    const name = selected.split(/[/\\]/).pop() || 'document.pdf'
-    return { path: selected, name, bytes }
+    return this.loadFilePath(selected)
+  }
+
+  /**
+   * Load a PDF file directly from an absolute file path.
+   */
+  static async loadFilePath(filePath: string): Promise<{ path: string; name: string; bytes: number[] }> {
+    const bytes = await invoke<number[]>('read_file_bytes', { path: filePath })
+    const name = filePath.split(/[/\\]/).pop() || 'document.pdf'
+    return { path: filePath, name, bytes }
   }
 
   /**
@@ -150,36 +159,92 @@ export class DocumentService {
    * Session-based Inspection & Query (Zero IPC byte passing)
    */
   static async getPageCount(docIdOrData: string | number[]): Promise<number> {
-    if (typeof docIdOrData === 'string') {
-      return invoke<number>('session_get_page_count', { docId: docIdOrData })
+    try {
+      if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
+        return await invoke<number>('session_get_page_count', { docId: docIdOrData })
+      }
+      if (Array.isArray(docIdOrData)) {
+        try {
+          return await invoke<number>('get_page_count', { data: docIdOrData })
+        } catch {
+          const doc = await PDFJsEngine.getDocument(docIdOrData)
+          return doc.numPages
+        }
+      }
+      if (typeof docIdOrData === 'string' && docIdOrData.startsWith('browser-session-') && DefaultRenderer.lastPdfBytes) {
+        const doc = await PDFJsEngine.getDocument(DefaultRenderer.lastPdfBytes)
+        return doc.numPages
+      }
+    } catch (e) {
+      // Browser preview mode fallback
     }
-    return invoke<number>('get_page_count', { data: docIdOrData })
+    return 1
   }
 
   static async getPageDimensions(docIdOrData: string | number[], pageIndex: number): Promise<PageDimensions> {
-    if (typeof docIdOrData === 'string') {
-      return invoke<PageDimensions>('session_get_page_dimensions', {
-        docId: docIdOrData,
-        pageIndex,
-      })
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
+      try {
+        return await invoke<PageDimensions>('session_get_page_dimensions', {
+          docId: docIdOrData,
+          pageIndex,
+        })
+      } catch {}
     }
-    return invoke<PageDimensions>('get_page_dimensions', {
-      data: docIdOrData,
-      page_index: pageIndex,
-    })
+    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : DefaultRenderer.lastPdfBytes
+    if (sourceBytes && sourceBytes.length > 0) {
+      try {
+        const doc = await PDFJsEngine.getDocument(sourceBytes)
+        const pageNum = Math.min(Math.max(1, pageIndex + 1), doc.numPages)
+        const page = await doc.getPage(pageNum)
+        const vp = page.getViewport({ scale: 1.0 })
+        return { width: Math.round(vp.width), height: Math.round(vp.height) }
+      } catch {}
+    }
+    return { width: 595, height: 842 }
   }
 
   static async getTextBlocks(docIdOrData: string | number[], pageIndex: number): Promise<TextBlock[]> {
-    if (typeof docIdOrData === 'string') {
-      return invoke<TextBlock[]>('session_get_text_blocks', {
-        docId: docIdOrData,
-        pageIndex,
-      })
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
+      try {
+        return await invoke<TextBlock[]>('session_get_text_blocks', {
+          docId: docIdOrData,
+          pageIndex,
+        })
+      } catch {}
     }
-    return invoke<TextBlock[]>('get_text_blocks', {
-      data: docIdOrData,
-      page_index: pageIndex,
-    })
+    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : DefaultRenderer.lastPdfBytes
+    if (sourceBytes && sourceBytes.length > 0) {
+      try {
+        const doc = await PDFJsEngine.getDocument(sourceBytes)
+        const pageNum = Math.min(Math.max(1, pageIndex + 1), doc.numPages)
+        const page = await doc.getPage(pageNum)
+        const textContent = await page.getTextContent()
+        // getTextContent() yields TextItem | TextMarkedContent; only TextItem has `str`.
+        interface PdfTextItemLike {
+          str?: string
+          transform?: number[]
+          width?: number
+          height?: number
+          fontName?: string
+        }
+        return textContent.items.map((raw, idx) => {
+          const item = raw as PdfTextItemLike
+          return {
+            id: idx + 1,
+            text: item.str || '',
+            x: item.transform ? item.transform[4] : 50,
+            y: item.transform ? item.transform[5] : 100,
+            width: item.width || 100,
+            height: item.height || 20,
+            font_name: item.fontName || 'Helvetica',
+            font_size: item.height || 12,
+            color: '#000000',
+            page_index: pageIndex,
+          }
+        })
+      } catch {}
+    }
+    return []
   }
 
   static async getPdfMetadata(docIdOrData: string | number[]): Promise<Record<string, unknown>> {
@@ -210,11 +275,11 @@ export class DocumentService {
     return invoke<SearchResult[]>('search_text', { data: docIdOrData, query })
   }
 
-  static async verifySignatures(docIdOrData: string | number[]): Promise<{ signatures?: any[]; count?: number }> {
+  static async verifySignatures(docIdOrData: string | number[]): Promise<{ signatures?: SignatureInfo[]; count?: number }> {
     if (typeof docIdOrData === 'string') {
       return invoke('session_verify_signature', { docId: docIdOrData })
     }
-    return invoke('verify_signature', { data: docIdOrData, signature_index: 0 })
+    return invoke('verify_signature', { data: docIdOrData, signatureIndex: 0 })
   }
 
   static async printPdf(docIdOrData: string | number[]): Promise<void> {

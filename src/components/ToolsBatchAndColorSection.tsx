@@ -3,9 +3,10 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { DocumentService } from '../services/documentService'
 import { SectionTitle, AccentBtn } from './UIControls'
+import type { PdfExec } from '../types'
 
 interface ToolsBatchAndColorSectionProps {
-  exec: Function
+  exec: PdfExec
   pdfData: number[] | null
   docId?: string | null
   showToast: (msg: string) => void
@@ -44,7 +45,7 @@ export function ToolsBatchAndColorSection({
         if (batchPaths.length === 0) { showToast('ファイルを選択してください'); return }
         const outputPath = await save({ defaultPath: 'merged.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] })
         if (outputPath) {
-          await invoke('batch_merge_pdfs', { paths: batchPaths, output_path: outputPath })
+          await invoke('batch_merge_pdfs', { paths: batchPaths, outputPath: outputPath })
           showToast(`${batchPaths.length}ファイルを結合しました`)
         }
       }} disabled={batchPaths.length < 2}>
@@ -111,7 +112,7 @@ export function ToolsBatchAndColorSection({
           if (file) {
             const text = await file.text()
             try {
-              await invoke<number[]>('import_xfdf', { data: bytes, xfdf_content: text })
+              await invoke<number[]>('import_xfdf', { data: bytes, xfdfContent: text })
               showToast('XFDFをインポートしました')
             } catch (err) { showToast(`エラー: ${err}`) }
           }
@@ -128,7 +129,7 @@ export function ToolsBatchAndColorSection({
       <AccentBtn onClick={() => exec('convert_to_cmyk', {})}>
         CMYKに変換
       </AccentBtn>
-      <AccentBtn onClick={() => exec('embed_icc_profile', { profile_name: 'sRGB IEC61966-2.1' })}>
+      <AccentBtn onClick={() => exec('embed_icc_profile', { profileName: 'sRGB IEC61966-2.1' })}>
         ICCプロファイル埋め込み
       </AccentBtn>
     </div>

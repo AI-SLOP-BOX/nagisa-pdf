@@ -27,9 +27,12 @@ pub fn process_scanned_images(
             result = remove_shadow_simple(&result);
         }
 
-        let target_width = (result.width() as f64 * dpi as f64 / 150.0) as u32;
-        let target_height = (result.height() as f64 * dpi as f64 / 150.0) as u32;
-        result = result.resize(target_width, target_height, FilterType::Lanczos3);
+        // Respect original image resolution or cap if excessively large for PDF embedding at given DPI
+        // Avoid the bug of multiplying by (dpi / 150) which doubles 4000px images to 8000px
+        let max_dim = 4096u32;
+        if result.width() > max_dim || result.height() > max_dim {
+            result = result.resize(max_dim, max_dim, FilterType::Lanczos3);
+        }
 
         let mut rgb: RgbImage = result.to_rgb8();
         enhance_contrast(&mut rgb);
@@ -56,8 +59,9 @@ pub fn process_scanned_images(
         let img_stream = lopdf::Stream::new(img_dict, jpeg_bytes);
         let img_id = doc.add_object(lopdf::Object::Stream(img_stream));
 
-        let pt_w = (width as f64 * 72.0 / dpi as f64) as f32;
-        let pt_h = (height as f64 * 72.0 / dpi as f64) as f32;
+        let effective_dpi = dpi.max(72);
+        let pt_w = (width as f64 * 72.0 / effective_dpi as f64) as f32;
+        let pt_h = (height as f64 * 72.0 / effective_dpi as f64) as f32;
 
         let mut xobj_dict = lopdf::Dictionary::new();
         xobj_dict.set("Im1", lopdf::Object::Reference(img_id));
@@ -158,7 +162,9 @@ fn sobel_edges(gray: &[u8], w: u32, h: u32) -> Vec<u8> {
                 + 2 * gray[((y + 1) * w + x) as usize] as i16
                 + gray[((y + 1) * w + x + 1) as usize] as i16;
 
-            let magnitude = ((gx * gx + gy * gy) as f64).sqrt() as u8;
+            let gx = gx as i32;
+            let gy = gy as i32;
+            let magnitude = ((gx * gx + gy * gy) as f64).sqrt().min(255.0) as u8;
             edges[idx] = if magnitude > 50 { 255 } else { 0 };
         }
     }
@@ -170,42 +176,129 @@ fn find_document_corners(
     w: u32,
     h: u32,
 ) -> Option<((f64, f64), (f64, f64), (f64, f64), (f64, f64))> {
-    let margin_x = w / 10;
-    let margin_y = h / 10;
+    if w < 20 || h < 20 {
+        return None;
+    }
 
-    let mut top_edge = h;
-    let mut bottom_edge = 0u32;
-    let mut left_edge = w;
-    let mut right_edge = 0u32;
+    let margin_x = (w / 15).max(1);
+    let margin_y = (h / 15).max(1);
 
-    for y in margin_y..h - margin_y {
-        for x in margin_x..w - margin_x {
+    // Collect candidate edge points away from extreme outer borders
+    let mut edge_points = Vec::new();
+    let step = 2.max(w / 400); // subsample for efficiency on high-res images
+    for y in (margin_y..h - margin_y).step_by(step as usize) {
+        for x in (margin_x..w - margin_x).step_by(step as usize) {
             if edges[(y * w + x) as usize] > 0 {
-                if y < top_edge {
-                    top_edge = y;
-                }
-                if y > bottom_edge {
-                    bottom_edge = y;
-                }
-                if x < left_edge {
-                    left_edge = x;
-                }
-                if x > right_edge {
-                    right_edge = x;
-                }
+                edge_points.push((x as f64, y as f64));
             }
         }
     }
 
-    if bottom_edge > top_edge + 10 && right_edge > left_edge + 10 {
-        let tl = (left_edge as f64 + 5.0, top_edge as f64 + 5.0);
-        let tr = (right_edge as f64 - 5.0, top_edge as f64 + 5.0);
-        let br = (right_edge as f64 - 5.0, bottom_edge as f64 - 5.0);
-        let bl = (left_edge as f64 + 5.0, bottom_edge as f64 - 5.0);
+    if edge_points.len() < 40 {
+        return None;
+    }
+
+    // In a document photo, the 4 corners of the quad correspond to:
+    // Top-Left: minimizes (x + y)
+    // Bottom-Right: maximizes (x + y)
+    // Top-Right: maximizes (x - y)
+    // Bottom-Left: minimizes (x - y)
+    // We compute the 5% extremal percentiles to avoid single outlier noise pixels.
+    let mut sum_xy: Vec<(f64, (f64, f64))> = edge_points.iter().map(|&(x, y)| (x + y, (x, y))).collect();
+    sum_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let mut diff_xy: Vec<(f64, (f64, f64))> = edge_points.iter().map(|&(x, y)| (x - y, (x, y))).collect();
+    diff_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let n = edge_points.len();
+    let k = (n / 50).clamp(1, 15); // use 2% robust trimmed extremum
+
+    let tl = sum_xy[k].1;
+    let br = sum_xy[n - 1 - k].1;
+    let bl = diff_xy[k].1;
+    let tr = diff_xy[n - 1 - k].1;
+
+    // Verify that the detected quadrilateral forms a reasonable document area (at least 20% of image width and height)
+    let top_w = ((tr.0 - tl.0).powi(2) + (tr.1 - tl.1).powi(2)).sqrt();
+    let bot_w = ((br.0 - bl.0).powi(2) + (br.1 - bl.1).powi(2)).sqrt();
+    let left_h = ((bl.0 - tl.0).powi(2) + (bl.1 - tl.1).powi(2)).sqrt();
+    let right_h = ((br.0 - tr.0).powi(2) + (br.1 - tr.1).powi(2)).sqrt();
+
+    let min_dim_w = w as f64 * 0.20;
+    let min_dim_h = h as f64 * 0.20;
+
+    if top_w > min_dim_w && bot_w > min_dim_w && left_h > min_dim_h && right_h > min_dim_h {
         Some((tl, tr, br, bl))
     } else {
         None
     }
+}
+
+/// Compute 3x3 projective homography matrix mapping rectangle (0,0)-(W,H) back to quad (tl, tr, br, bl)
+/// so we can perform true backward-mapping perspective warp with subpixel bilinear interpolation.
+fn get_destination_to_source_homography(
+    w: f64,
+    h: f64,
+    tl: (f64, f64),
+    tr: (f64, f64),
+    br: (f64, f64),
+    bl: (f64, f64),
+) -> Option<[f64; 9]> {
+    // We map unit square [0,1]^2 -> quad (tl, tr, br, bl), then compose with scaling from [0,W]x[0,H] to [0,1]^2.
+    // Let source points:
+    // x0=tl.0, y0=tl.1
+    // x1=tr.0, y1=tr.1
+    // x2=br.0, y2=br.1
+    // x3=bl.0, y3=bl.1
+    let x0 = tl.0; let y0 = tl.1;
+    let x1 = tr.0; let y1 = tr.1;
+    let x2 = br.0; let y2 = br.1;
+    let x3 = bl.0; let y3 = bl.1;
+
+    let dx1 = x1 - x2;
+    let dx2 = x3 - x2;
+    let sx = x0 - x1 + x2 - x3;
+
+    let dy1 = y1 - y2;
+    let dy2 = y3 - y2;
+    let sy = y0 - y1 + y2 - y3;
+
+    let (h6, h7, h0, h1, h2, h3, h4, h5) = if sx.abs() < 1e-7 && sy.abs() < 1e-7 {
+        // Affine case
+        let a = x1 - x0;
+        let b = x3 - x0;
+        let c = x0;
+        let d = y1 - y0;
+        let e = y3 - y0;
+        let f = y0;
+        (0.0, 0.0, a, b, c, d, e, f)
+    } else {
+        let det = dx1 * dy2 - dy1 * dx2;
+        if det.abs() < 1e-7 {
+            return None;
+        }
+        let g = (sx * dy2 - sy * dx2) / det;
+        let h = (dx1 * sy - dy1 * sx) / det;
+        let a = x1 - x0 + g * x1;
+        let b = x3 - x0 + h * x3;
+        let c = x0;
+        let d = y1 - y0 + g * y1;
+        let e = y3 - y0 + h * y3;
+        let f = y0;
+        (g, h, a, b, c, d, e, f)
+    };
+
+    // Matrix M maps normalized coords (u, v) in [0, 1]^2 to (X, Y, Z) in source image
+    // To map from pixel coords (x, y) in [0, W]x[0, H], we compose with u = x/W, v = y/H
+    // M' = M * diag(1/W, 1/H, 1)
+    let inv_w = 1.0 / w;
+    let inv_h = 1.0 / h;
+
+    Some([
+        h0 * inv_w, h1 * inv_h, h2,
+        h3 * inv_w, h4 * inv_h, h5,
+        h6 * inv_w, h7 * inv_h, 1.0,
+    ])
 }
 
 fn perspective_transform(
@@ -217,32 +310,80 @@ fn perspective_transform(
 ) -> DynamicImage {
     let src = img.to_rgb8();
     let (sw, sh) = src.dimensions();
-    let dst_w = ((br.0 - bl.0).abs().max((tr.0 - tl.0).abs())) as u32;
-    let dst_h = ((bl.1 - tl.1).abs().max((br.1 - tr.1).abs())) as u32;
+
+    // Destination dimensions based on true euclidean edge lengths of the document quad
+    let top_w = ((tr.0 - tl.0).powi(2) + (tr.1 - tl.1).powi(2)).sqrt();
+    let bot_w = ((br.0 - bl.0).powi(2) + (br.1 - bl.1).powi(2)).sqrt();
+    let left_h = ((bl.0 - tl.0).powi(2) + (bl.1 - tl.1).powi(2)).sqrt();
+    let right_h = ((br.0 - tr.0).powi(2) + (br.1 - tr.1).powi(2)).sqrt();
+
+    let dst_w = top_w.max(bot_w).round() as u32;
+    let dst_h = left_h.max(right_h).round() as u32;
 
     if dst_w == 0 || dst_h == 0 {
         return img.clone();
     }
 
+    let h_mat = match get_destination_to_source_homography(dst_w as f64, dst_h as f64, tl, tr, br, bl) {
+        Some(m) => m,
+        None => return img.clone(),
+    };
+
     let mut dst: RgbImage = ImageBuffer::new(dst_w, dst_h);
 
     for dy in 0..dst_h {
+        let y_f = dy as f64;
         for dx in 0..dst_w {
-            let fx = dx as f64 / dst_w as f64;
-            let fy = dy as f64 / dst_h as f64;
+            let x_f = dx as f64;
 
-            let sx = (tl.0 * (1.0 - fx) * (1.0 - fy)
-                + tr.0 * fx * (1.0 - fy)
-                + br.0 * fx * fy
-                + bl.0 * (1.0 - fx) * fy) as u32;
-            let sy = (tl.1 * (1.0 - fx) * (1.0 - fy)
-                + tr.1 * fx * (1.0 - fy)
-                + br.1 * fx * fy
-                + bl.1 * (1.0 - fx) * fy) as u32;
+            // Projective transform: [sx, sy, sz]^T = H * [dx, dy, 1]^T
+            let sz = h_mat[6] * x_f + h_mat[7] * y_f + h_mat[8];
+            if sz.abs() < 1e-9 {
+                continue;
+            }
+            let inv_z = 1.0 / sz;
+            let sx = (h_mat[0] * x_f + h_mat[1] * y_f + h_mat[2]) * inv_z;
+            let sy = (h_mat[3] * x_f + h_mat[4] * y_f + h_mat[5]) * inv_z;
 
-            if sx < sw && sy < sh {
-                let pixel = src.get_pixel(sx, sy);
-                dst.put_pixel(dx, dy, *pixel);
+            // #51 是正: NaN/Inf ガード。
+            // 射影行列のスケールによっては inv_z が極大になり sx/sy が Inf や NaN になる。
+            // Rust の `f64 as u32` キャストは Inf → u32::MAX、NaN → 0 の飽和挙動になるが
+            // 境界チェック (sx >= 0.0 && sx < ...) が NaN では常に false になるため
+            // 正常動作し得ないピクセルが黒点として残る。明示ガードで完全にスキップする。
+            if !sx.is_finite() || !sy.is_finite() {
+                continue;
+            }
+
+            // Subpixel bilinear interpolation in source image
+            if sx >= 0.0 && sx < (sw as f64 - 1.0) && sy >= 0.0 && sy < (sh as f64 - 1.0) {
+                let x0 = sx.floor() as u32;
+                let y0 = sy.floor() as u32;
+                let x1 = (x0 + 1).min(sw - 1);
+                let y1 = (y0 + 1).min(sh - 1);
+
+                let fx = (sx - x0 as f64) as f32;
+                let fy = (sy - y0 as f64) as f32;
+
+                let p00 = src.get_pixel(x0, y0).0;
+                let p10 = src.get_pixel(x1, y0).0;
+                let p01 = src.get_pixel(x0, y1).0;
+                let p11 = src.get_pixel(x1, y1).0;
+
+                let mut out = [0u8; 3];
+                for c in 0..3 {
+                    let top = p00[c] as f32 * (1.0 - fx) + p10[c] as f32 * fx;
+                    let bot = p01[c] as f32 * (1.0 - fx) + p11[c] as f32 * fx;
+                    let val = top * (1.0 - fy) + bot * fy;
+                    out[c] = val.round().clamp(0.0, 255.0) as u8;
+                }
+                dst.put_pixel(dx, dy, Rgb(out));
+            } else if sx >= 0.0 && sx < sw as f64 && sy >= 0.0 && sy < sh as f64 {
+                // Nearest neighbor fallback at strict boundary
+                let px = sx.round() as u32;
+                let py = sy.round() as u32;
+                if px < sw && py < sh {
+                    dst.put_pixel(dx, dy, *src.get_pixel(px, py));
+                }
             }
         }
     }

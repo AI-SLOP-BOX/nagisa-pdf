@@ -1,4 +1,5 @@
 import { Input, NumInput, ColorInput, SliderInput, AccentBtn } from './UIControls'
+import type { PdfExec } from '../types'
 
 export function PagesPanel({
   watermarkText,
@@ -47,7 +48,7 @@ export function PagesPanel({
   setBatesStart: (v: number) => void
   batesFontSize: number
   setBatesFontSize: (v: number) => void
-  exec: Function
+  exec: PdfExec
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -65,7 +66,7 @@ export function PagesPanel({
         </div>
         <ColorInput value={watermarkColor} onChange={setWatermarkColor} label="文字カラー" />
         <SliderInput value={watermarkOpacity} onChange={setWatermarkOpacity} label="不透明度 (Opacity)" min={0} max={1} step={0.05} />
-        <AccentBtn onClick={() => exec('add_watermark', { text: watermarkText, opacity: watermarkOpacity, rotation: watermarkRotation, font_size: watermarkFontSize, color: watermarkColor, all_pages: true, page_indices: [] })}>
+        <AccentBtn onClick={() => exec('add_watermark', { text: watermarkText, opacity: watermarkOpacity, rotation: watermarkRotation, fontSize: watermarkFontSize, color: watermarkColor, allPages: true, pageIndices: [] })}>
           透かしを全ページに適用
         </AccentBtn>
         <AccentBtn onClick={() => exec('remove_watermarks', {})} style={{ marginTop: 6, background: 'var(--bg-2)', color: 'var(--text-dim)', border: '1px solid var(--border)' }}>
@@ -83,7 +84,7 @@ export function PagesPanel({
         <Input value={headerText} onChange={setHeaderText} placeholder="ヘッダー ({page} / {total})" />
         <Input value={footerText} onChange={setFooterText} placeholder="フッター ({page} / {total})" />
         <NumInput value={hfFontSize} onChange={setHfFontSize} label="文字サイズ (pt)" />
-        <AccentBtn onClick={() => exec('add_header_footer', { header_text: headerText, footer_text: footerText, font_size: hfFontSize, margin: 40 })} style={{ marginTop: 6 }}>
+        <AccentBtn onClick={() => exec('add_header_footer', { headerText: headerText, footerText: footerText, fontSize: hfFontSize, margin: 40 })} style={{ marginTop: 6 }}>
           ヘッダー/フッターを適用
         </AccentBtn>
       </div>
@@ -100,7 +101,7 @@ export function PagesPanel({
           <NumInput value={batesStart} onChange={setBatesStart} label="開始番号" />
         </div>
         <NumInput value={batesFontSize} onChange={setBatesFontSize} label="サイズ (pt)" />
-        <AccentBtn onClick={() => exec('add_bates_number', { prefix: batesPrefix, start_number: batesStart, font_size: batesFontSize, margin: 40 })} style={{ marginTop: 6 }}>
+        <AccentBtn onClick={() => exec('add_bates_number', { prefix: batesPrefix, startNumber: batesStart, fontSize: batesFontSize, margin: 40 })} style={{ marginTop: 6 }}>
           Bates番号を全ページ印字
         </AccentBtn>
       </div>

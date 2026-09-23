@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -35,8 +35,9 @@ impl EditCommand {
 pub struct DocumentSession {
     pub id: String,
     pub doc: lopdf::Document,
-    pub undo_stack: Vec<EditCommand>,
-    pub redo_stack: Vec<EditCommand>,
+    /// VecDeque allows O(1) pop_front for oldest-history eviction (#38 是正)
+    pub undo_stack: VecDeque<EditCommand>,
+    pub redo_stack: VecDeque<EditCommand>,
     pub dirty: bool,
     pub total_history_bytes: usize,
     cached_bytes: Option<Vec<u8>>,
@@ -47,8 +48,8 @@ impl DocumentSession {
         Self {
             id,
             doc,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             dirty: false,
             total_history_bytes: 0,
             cached_bytes: None,
@@ -81,7 +82,7 @@ impl DocumentSession {
             }
         }
         self.total_history_bytes += size;
-        self.undo_stack.push(cmd);
+        self.undo_stack.push_back(cmd);
         self.dirty = true;
         self.cached_bytes = None;
 
@@ -95,11 +96,14 @@ impl DocumentSession {
     // Evict oldest entries from undo_stack if total undo + redo exceeds target budget.
     // Notice: This is a memory budget (soft threshold), not a hard cap.
     // We always preserve at least 1 undo entry so that even large files (>512MB) retain immediate undo capability.
+    // #38 是正: VecDeque::pop_front() は O(1)。旧実装の Vec::remove(0) は O(N) だった。
     fn evict_oldest_history(&mut self) {
         while self.total_history_bytes > TARGET_HISTORY_MEMORY_PER_DOC && self.undo_stack.len() > 1
         {
-            let evicted = self.undo_stack.remove(0);
-            self.total_history_bytes = self.total_history_bytes.saturating_sub(evicted.byte_size());
+            if let Some(evicted) = self.undo_stack.pop_front() {
+                self.total_history_bytes =
+                    self.total_history_bytes.saturating_sub(evicted.byte_size());
+            }
         }
     }
 
@@ -124,7 +128,7 @@ impl DocumentSession {
     }
 
     pub fn undo(&mut self) -> Result<bool, String> {
-        let cmd = match self.undo_stack.last() {
+        let cmd = match self.undo_stack.back() {
             Some(c) => c.clone(),
             None => return Ok(false),
         };
@@ -163,18 +167,18 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from undo_stack to redo_stack
-        let popped = self.undo_stack.pop().unwrap();
+        let popped = self.undo_stack.pop_back().unwrap();
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.total_history_bytes += redo_cmd.byte_size();
-        self.redo_stack.push(redo_cmd);
+        self.redo_stack.push_back(redo_cmd);
         self.cached_bytes = None;
         self.evict_oldest_history();
         Ok(true)
     }
 
     pub fn redo(&mut self) -> Result<bool, String> {
-        let cmd = match self.redo_stack.last() {
+        let cmd = match self.redo_stack.back() {
             Some(c) => c.clone(),
             None => return Ok(false),
         };
@@ -213,7 +217,7 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from redo_stack to undo_stack
-        let popped = self.redo_stack.pop().unwrap();
+        let popped = self.redo_stack.pop_back().unwrap();
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.push_undo_internal(undo_cmd, false);

@@ -87,7 +87,7 @@ export const PDFViewerHUD: React.FC<PDFViewerHUDProps> = ({
         <ChevronRightIcon size={14} />
       </button>
 
-      <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
+      <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
 
       <button
         onClick={() => setZoom(prev => Math.max(0.25, prev - 0.2))}
@@ -103,8 +103,8 @@ export const PDFViewerHUD: React.FC<PDFViewerHUDProps> = ({
           setPan({ x: 0, y: 0 })
         }}
         style={{
-          background: 'rgba(255,255,255,0.06)',
-          border: '1px solid rgba(255,255,255,0.1)',
+          background: 'var(--bg-2)',
+          border: '1px solid var(--border)',
           borderRadius: 12,
           padding: '2px 8px',
           fontSize: 11,
@@ -127,7 +127,7 @@ export const PDFViewerHUD: React.FC<PDFViewerHUDProps> = ({
         <PlusIcon size={12} />
       </button>
 
-      <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
+      <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 4px' }} />
 
       <button
         onClick={() => {
@@ -140,7 +140,7 @@ export const PDFViewerHUD: React.FC<PDFViewerHUDProps> = ({
           padding: '3px 8px',
           borderRadius: 12,
           color: 'var(--text-dim)',
-          background: 'rgba(255,255,255,0.04)',
+          background: 'var(--bg-2)',
         }}
         title="全体を表示"
       >

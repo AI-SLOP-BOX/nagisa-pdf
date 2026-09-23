@@ -2,41 +2,43 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import PDFViewer, { InteractiveMode, TextBlock } from '../components/PDFViewer'
-import {
-  TypeIcon,
-  EditIcon, AnnotateIcon, FormIcon, OrganizeIcon, FileIcon,
-  LockIcon, ToolsIcon, FolderOpenIcon, SaveIcon, HighlightIcon, RedactIcon, ZapIcon, VectorPathIcon, ShieldCheckIcon
-} from '../components/Icons'
-import { CommandPalette, CommandItem } from '../components/CommandPalette'
-import { EditPanel } from '../components/EditPanel'
-import { AnnotatePanel } from '../components/AnnotatePanel'
-import { FormCreatorPanel } from '../components/FormCreatorPanel'
-import { OrganizePanel } from '../components/OrganizePanel'
-import { PagesPanel } from '../components/PagesPanel'
-import { SecurityPanel, SignatureInfo } from '../components/SecurityPanel'
-import { TextEditPanel } from '../components/TextEditPanel'
-import { ToolsPanel } from '../components/ToolsPanel'
-import { EditorHeader } from '../components/EditorHeader'
+import { CommandPalette } from '../components/CommandPalette'
+import { EditorTopBar } from '../components/EditorTopBar'
+import { EditorThumbnailSidebar } from '../components/EditorThumbnailSidebar'
+import { EditorRightInspector } from '../components/EditorRightInspector'
+import { EditorEmptyDropZone } from '../components/EditorEmptyDropZone'
 import { SignatureVerificationModal } from '../components/SignatureVerificationModal'
+import type { SignatureInfo } from '../types'
 import { useHistory } from '../hooks/useHistory'
 import { useToast } from '../hooks/useToast'
 import { formatError } from '../utils/errorHandler'
 import { t } from '../utils/i18n'
 
 import { DocumentService } from '../services/documentService'
+import { AnnotationService, UserAnnotation } from '../services/annotationService'
+import { usePDFEditorAnnotations } from '../hooks/usePDFEditorAnnotations'
 import { buildEditorCommandItems } from '../components/editorCommands'
 
-type Tab = 'edit' | 'annotate' | 'forms' | 'organize' | 'pages' | 'security' | 'text' | 'tools'
+import type { EditorTab } from '../types'
+
+type Tab = EditorTab
 
 import type { View } from '../types'
 
 interface PDFEditorViewProps {
   currentView?: View
   onNavigateView?: (view: View) => void
+  initialFile?: { bytes: number[]; name: string } | null
+  initialTab?: Tab | null
+  onOpenStart?: (name: string, size?: string) => void
 }
 
-export default function PDFEditorView({ currentView, onNavigateView }: PDFEditorViewProps) {
-  const { data: pdfData, setData: setPdfData, pushHistory, undo: fallbackUndo, redo: fallbackRedo, canUndo: fallbackCanUndo, canRedo: fallbackCanRedo } = useHistory(null, 30)
+const DEFAULT_ANNOTATION_COLOR = '#FF0000'
+const DEFAULT_STROKE_WIDTH = 2
+const DEFAULT_REDACT_COLOR = '#000000'
+
+export default function PDFEditorView({ currentView, onNavigateView, initialFile, initialTab, onOpenStart }: PDFEditorViewProps) {
+  const { data: pdfData, setData: setPdfData, pushHistory, resetHistory, undo: fallbackUndo, redo: fallbackRedo, canUndo: fallbackCanUndo, canRedo: fallbackCanRedo } = useHistory(null, 30)
   const { toast, toastType, showToast, showError, showSuccess } = useToast(2800)
 
   const [docId, setDocId] = useState<string | null>(null)
@@ -50,7 +52,41 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
   const [fileName, setFileName] = useState('')
   const [pageCount, setPageCount] = useState(0)
   const [currentPage, setCurrentPage] = useState(0)
-  const [activeTab, setActiveTab] = useState<Tab | null>('edit')
+  const [activeTab, setActiveTab] = useState<Tab | null>(initialTab || 'edit')
+
+  // Light Mode Layout State
+  const [editorMode, setEditorMode] = useState<'inspect' | 'edit'>('inspect')
+  const [isThumbnailsCollapsed, setIsThumbnailsCollapsed] = useState(false)
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [zoom, setZoom] = useState(1.0)
+  const [selectedEditTool, setSelectedEditTool] = useState('select')
+
+  // User Annotations & In-Place Editing Hook
+  const {
+    annotations,
+    setAnnotations,
+    selectedAnnotationId,
+    setSelectedAnnotationId,
+    handleAddTextAnnotation,
+    handleAddHighlightAnnotation,
+    handleAddShapeAnnotation,
+    handleUpdateAnnotation,
+    handleUpdateSelectedAnnotation,
+    handleDeleteSelectedAnnotation,
+    handleDeleteAnnotation,
+    handleAddAnnotation,
+    canUndoAnnotation,
+    canRedoAnnotation,
+    undoAnnotation,
+    redoAnnotation,
+    resetAnnotations,
+  } = usePDFEditorAnnotations({
+    currentPage,
+    setEditorMode,
+    setSelectedEditTool,
+    showSuccess,
+  })
 
   // Refresh history capability status whenever revision or docId changes
   const refreshHistoryStatus = useCallback(async (activeId: string) => {
@@ -80,83 +116,144 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
   // Signature verification inspection modal
   const [verifiedSignatures, setVerifiedSignatures] = useState<SignatureInfo[] | null>(null)
 
-  // Watermark state
-  const [watermarkText, setWatermarkText] = useState('CONFIDENTIAL')
-  const [watermarkOpacity, setWatermarkOpacity] = useState(0.3)
-  const [watermarkRotation, setWatermarkRotation] = useState(-45)
-  const [watermarkFontSize, setWatermarkFontSize] = useState(48)
-  const [watermarkColor, setWatermarkColor] = useState('#808080')
+  // OCR on screenshot/scanned image PDF
+  const [triggerOCR, setTriggerOCR] = useState(0)
+  const handleRunOCR = useCallback(() => {
+    setTriggerOCR(c => c + 1)
+    showToast('画像からテキスト領域をスキャン中...')
+  }, [showToast])
+  const handleOCRComplete = useCallback((count: number) => {
+    if (count > 0) {
+      showSuccess(`${count}箇所のテキストを検出・直接編集可能にしました`)
+      setEditorMode('edit')
+      setSelectedEditTool('select')
+    } else {
+      showToast('テキスト領域が見つかりませんでした')
+    }
+  }, [showSuccess, showToast])
 
-  // Annotation state
-  const [annotationColor, setAnnotationColor] = useState('#FF0000')
-  const [stickyNoteText, setStickyNoteText] = useState('')
-  const [strokeWidth, setStrokeWidth] = useState(2)
-
-  // Header/Footer state
-  const [headerText, setHeaderText] = useState('')
-  const [footerText, setFooterText] = useState('Page {page} of {total}')
-  const [hfFontSize, setHfFontSize] = useState(10)
-
-  // Bates state
-  const [batesPrefix, setBatesPrefix] = useState('DOC')
-  const [batesStart, setBatesStart] = useState(1)
-  const [batesFontSize, setBatesFontSize] = useState(10)
-
-  // Redact state
-  const [redactColor, setRedactColor] = useState('#000000')
-  const [redactSearchText, setRedactSearchText] = useState('')
-  const [redactReplacement, setRedactReplacement] = useState('')
-
-  const handleOpen = useCallback(async () => {
+  const loadPdfFromBytes = useCallback(async (bytes: number[], name: string) => {
     try {
-      const res = await DocumentService.openFileDialog()
-      if (!res) return
-
-      // If previous session exists, close it
       if (docIdRef.current) {
         await DocumentService.closeSession(docIdRef.current).catch(() => {})
       }
-
-      // Initialize DocumentSession in Rust backend with per-doc lock
-      const newDocId = await DocumentService.createSession(res.bytes)
+      let newDocId: string | null = null
+      try {
+        newDocId = await DocumentService.createSession(bytes)
+      } catch (sessionErr) {
+        // Running in web browser preview without Tauri Rust backend IPC
+        console.warn('Tauri Rust backend not connected, continuing in browser preview mode', sessionErr)
+        newDocId = 'browser-session-' + Date.now()
+      }
       setDocId(newDocId)
       setRevision(r => r + 1)
-      setPdfData(res.bytes)
-      setFileName(res.name)
-      pushHistory(res.bytes)
-
-      await refreshHistoryStatus(newDocId)
+      setPdfData(bytes)
+      setFileName(name)
+      // New document ⇒ discard previous document's undo history and overlay annotations
+      resetHistory(bytes)
+      resetAnnotations()
+      if (newDocId && !newDocId.startsWith('browser-session-')) {
+        await refreshHistoryStatus(newDocId)
+      } else {
+        setSessionCanUndo(false)
+        setSessionCanRedo(false)
+      }
       showSuccess(t().pdfLoaded)
     } catch (err) {
       showError(formatError(err, 'PDFの読み込みに失敗しました'))
     }
-  }, [pushHistory, refreshHistoryStatus, setPdfData, showError, showSuccess])
+  }, [pushHistory, resetHistory, resetAnnotations, refreshHistoryStatus, setPdfData, showError, showSuccess])
+
+  // Load initialFile if provided from HomeView or caller
+  useEffect(() => {
+    if (initialFile && initialFile.bytes && initialFile.bytes.length > 0) {
+      loadPdfFromBytes(initialFile.bytes, initialFile.name)
+    }
+  }, [initialFile, loadPdfFromBytes])
+
+  // Apply initialTab if provided
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab)
+    }
+  }, [initialTab])
+
+  // TopBar Handlers
+  const handleOpen = useCallback(async () => {
+    try {
+      const file = await DocumentService.openFileDialog()
+      if (file) {
+        onOpenStart?.(file.name)
+        await loadPdfFromBytes(file.bytes, file.name)
+      }
+    } catch (err) {
+      showError(formatError(err, 'PDFの読み込みに失敗しました'))
+    }
+  }, [loadPdfFromBytes, onOpenStart, showError])
 
   const handleSave = useCallback(async () => {
-    if (!docId && !pdfData) return
-    try {
-      // If docId is active, serialize directly from backend session
-      const bytesToSave = docId
-        ? await DocumentService.getSessionBytes(docId)
-        : (pdfData as number[])
+    if (!pdfData) {
+      showToast(t().needFileOpen)
+      return
+    }
 
-      const path = await DocumentService.saveFileDialog(fileName, bytesToSave)
-      if (!path) return
-      showSuccess(t().savedSuccess)
+    try {
+      // If user added annotations, burn them into PDF bytes using client AnnotationService
+      let bytesToSave = pdfData
+      if (annotations.length > 0) {
+        const burnedUint8 = await AnnotationService.applyAnnotations(bytesToSave, annotations)
+        bytesToSave = Array.from(burnedUint8)
+        setPdfData(bytesToSave)
+        pushHistory(bytesToSave)
+        setRevision(r => r + 1)
+        // Keep the Rust session in sync, otherwise the next exec/undo
+        // operates on pre-burn bytes and annotations are lost (or burned twice).
+        if (docId && !docId.startsWith('browser-session-')) {
+          await DocumentService.updateSessionBytes(docId, '注釈を画像化', bytesToSave)
+            .catch(err => console.warn('Failed to sync burned bytes to session:', err))
+          await refreshHistoryStatus(docId)
+        }
+        // Annotations are now flattened into the bytes — clear the overlay
+        // so a second save does not burn them again (double burn-in bug).
+        resetAnnotations()
+      }
+
+      // Try native save dialog first
+      let saved = false
+      try {
+        const path = await DocumentService.saveFileDialog(fileName || 'document.pdf', bytesToSave)
+        if (path) saved = true
+      } catch {
+        // Fallback to browser direct download
+      }
+
+      if (!saved) {
+        AnnotationService.downloadPdf(new Uint8Array(bytesToSave), fileName || 'edited_document.pdf')
+      }
+      showSuccess('PDFを保存しました（編集内容を反映）')
     } catch (err) {
       showError(formatError(err, 'PDFの保存に失敗しました'))
     }
-  }, [docId, pdfData, fileName, showError, showSuccess])
+  }, [pdfData, annotations, fileName, showToast, showError, showSuccess, setPdfData, pushHistory, resetAnnotations, docId, refreshHistoryStatus])
 
   const handleUndo = useCallback(async () => {
-    if (docId) {
+    // 1. If there is an in-flight annotation history step, undo that first
+    if (canUndoAnnotation) {
+      undoAnnotation()
+      showSuccess('直前の注釈編集を取り消しました')
+      return
+    }
+
+    // 2. Otherwise undo document-level session operation in Rust backend
+    const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+    if (nativeDocId) {
       try {
-        const ok = await DocumentService.undo(docId)
+        const ok = await DocumentService.undo(nativeDocId)
         if (ok) {
-          const currentBytes = await DocumentService.getSessionBytes(docId).catch(() => null)
+          const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
           if (currentBytes) setPdfData(currentBytes)
           setRevision(r => r + 1)
-          await refreshHistoryStatus(docId)
+          await refreshHistoryStatus(nativeDocId)
           showSuccess(t().undo)
         }
       } catch (err) {
@@ -165,17 +262,24 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     } else {
       fallbackUndo()
     }
-  }, [docId, fallbackUndo, refreshHistoryStatus, setPdfData, showError, showSuccess])
+  }, [canUndoAnnotation, undoAnnotation, docId, fallbackUndo, refreshHistoryStatus, setPdfData, showError, showSuccess])
 
   const handleRedo = useCallback(async () => {
-    if (docId) {
+    if (canRedoAnnotation) {
+      redoAnnotation()
+      showSuccess('直前の注釈編集をやり直しました')
+      return
+    }
+
+    const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+    if (nativeDocId) {
       try {
-        const ok = await DocumentService.redo(docId)
+        const ok = await DocumentService.redo(nativeDocId)
         if (ok) {
-          const currentBytes = await DocumentService.getSessionBytes(docId).catch(() => null)
+          const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
           if (currentBytes) setPdfData(currentBytes)
           setRevision(r => r + 1)
-          await refreshHistoryStatus(docId)
+          await refreshHistoryStatus(nativeDocId)
           showSuccess(t().redo)
         }
       } catch (err) {
@@ -184,16 +288,36 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     } else {
       fallbackRedo()
     }
-  }, [docId, fallbackRedo, refreshHistoryStatus, setPdfData, showError, showSuccess])
+  }, [canRedoAnnotation, redoAnnotation, docId, fallbackRedo, refreshHistoryStatus, setPdfData, showError, showSuccess])
 
-  const canUndo = docId ? sessionCanUndo : fallbackCanUndo
-  const canRedo = docId ? sessionCanRedo : fallbackCanRedo
+  // browser-session-* ids have no Rust session behind them — always use the local fallback there
+  const hasNativeSession = !!docId && !docId.startsWith('browser-session-')
+  const canUndo = canUndoAnnotation || (hasNativeSession ? sessionCanUndo : fallbackCanUndo)
+  const canRedo = canRedoAnnotation || (hasNativeSession ? sessionCanRedo : fallbackCanRedo)
+
+  const handlePrint = useCallback(async () => {
+    const target = (docId && !docId.startsWith('browser-session-')) ? docId : pdfData
+    if (!target) return
+    try {
+      await DocumentService.printPdf(target)
+    } catch (err) {
+      showError(formatError(err, '印刷に失敗しました'))
+    }
+  }, [docId, pdfData, showError])
 
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (including single-key tool switches when not typing in inputs)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Ignore single-key shortcuts when focus is in an input, textarea, or contentEditable
+      const target = e.target as HTMLElement | null
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+
       if (e.metaKey || e.ctrlKey) {
         if (e.key === 'k' || e.key === 'K') {
           e.preventDefault()
@@ -202,57 +326,119 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
         }
         if (e.key === 'o') { e.preventDefault(); handleOpen() }
         if (e.key === 's') { e.preventDefault(); handleSave() }
+        if (e.key === 'p') { e.preventDefault(); handlePrint() }
         if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo() }
         if ((e.key === 'z' && e.shiftKey) || e.key === 'y') { e.preventDefault(); handleRedo() }
+        return
+      }
+
+      if (!isInput) {
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          if (selectedAnnotationId) {
+            e.preventDefault()
+            handleDeleteSelectedAnnotation()
+            return
+          }
+        }
+
+        const k = e.key.toLowerCase()
+        if (k === 'v') {
+          setSelectedEditTool('select')
+          setEditorMode('edit')
+        } else if (k === 't') {
+          setSelectedEditTool('text')
+          setEditorMode('edit')
+          handleAddTextAnnotation()
+        } else if (k === 'h') {
+          setSelectedEditTool('highlight')
+          setEditorMode('edit')
+          handleAddHighlightAnnotation()
+        } else if (k === 'a') {
+          setSelectedEditTool('annotate')
+          setEditorMode('edit')
+        } else if (k === 'r') {
+          setSelectedEditTool('shape')
+          setEditorMode('edit')
+          handleAddShapeAnnotation()
+        } else if (k === 'p') {
+          setSelectedEditTool('pages')
+          setActiveTab('organize')
+        }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleOpen, handleSave, handleUndo, handleRedo])
+  }, [
+    handleOpen,
+    handleSave,
+    handlePrint,
+    handleUndo,
+    handleRedo,
+    selectedAnnotationId,
+    handleDeleteSelectedAnnotation,
+    setSelectedEditTool,
+    setEditorMode,
+    handleAddTextAnnotation,
+    handleAddHighlightAnnotation,
+    handleAddShapeAnnotation,
+    setActiveTab,
+  ])
 
   const exec = useCallback(async (cmd: string, args: Record<string, unknown>) => {
-    if (!docId && !pdfData) return
+    if (!docId && !pdfData) {
+      showToast(t().needFileOpen)
+      return
+    }
     try {
-      if (docId) {
+      const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+      if (nativeDocId) {
         // Fast paths for rotation and page deletion using DocumentSession
         if (cmd === 'rotate_page') {
-          const pIdx = (args.page_index as number) ?? currentPage
+          const pIdx = (args.pageIndex as number) ?? currentPage
           const deg = (args.degrees as number) ?? 90
-          await DocumentService.rotatePage(docId, pIdx, deg)
-          const currentBytes = await DocumentService.getSessionBytes(docId).catch(() => null)
-          if (currentBytes) setPdfData(currentBytes)
+          await DocumentService.rotatePage(nativeDocId, pIdx, deg)
+          const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
+          if (currentBytes) {
+            setPdfData(currentBytes)
+            pushHistory(currentBytes)
+          }
           setRevision(r => r + 1)
-          await refreshHistoryStatus(docId)
+          await refreshHistoryStatus(nativeDocId)
           showSuccess(t().completed)
           return
         } else if (cmd === 'delete_page') {
-          const pIdx = (args.page_index as number) ?? currentPage
-          await DocumentService.deletePage(docId, pIdx)
-          const currentBytes = await DocumentService.getSessionBytes(docId).catch(() => null)
-          if (currentBytes) setPdfData(currentBytes)
+          const pIdx = (args.pageIndex as number) ?? currentPage
+          await DocumentService.deletePage(nativeDocId, pIdx)
+          const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
+          if (currentBytes) {
+            setPdfData(currentBytes)
+            pushHistory(currentBytes)
+          }
           setRevision(r => r + 1)
-          await refreshHistoryStatus(docId)
+          await refreshHistoryStatus(nativeDocId)
           showSuccess(t().completed)
           return
         }
       }
 
       // For standard command tools, run against current session bytes and update session in-place
-      const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : (pdfData as number[])
+      const currentBytes = nativeDocId ? await DocumentService.getSessionBytes(nativeDocId) : (pdfData as number[])
       const result = await invoke<number[]>(cmd, { data: currentBytes, ...args })
 
-      if (docId) {
+      if (nativeDocId) {
         // Update session in-place with FullSnapshot so Undo/Redo stack is preserved!
-        await DocumentService.updateSessionBytes(docId, `Command ${cmd}`, result)
+        await DocumentService.updateSessionBytes(nativeDocId, `Command ${cmd}`, result)
         setRevision(r => r + 1)
-        await refreshHistoryStatus(docId)
+        await refreshHistoryStatus(nativeDocId)
+      } else {
+        setRevision(r => r + 1)
       }
       pushHistory(result)
       showSuccess(t().completed)
     } catch (err) {
       showError(formatError(err, 'コマンド実行に失敗しました'))
     }
-  }, [docId, pdfData, currentPage, pushHistory, refreshHistoryStatus, showError, showSuccess])
+  }, [docId, pdfData, currentPage, pushHistory, refreshHistoryStatus, showError, showSuccess, showToast, setPdfData])
 
   // Canvas Rect draw handler
   const handleDrawRectComplete = useCallback(async (rect: { x: number; y: number; width: number; height: number; page: number }) => {
@@ -260,36 +446,36 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     try {
       if (interactiveMode === 'draw-redact') {
         await exec('redact_area', {
-          page_index: rect.page,
+          pageIndex: rect.page,
           x: rect.x,
           y: rect.y,
           width: rect.width,
           height: rect.height,
-          color: redactColor,
+          color: DEFAULT_REDACT_COLOR,
         })
         setInteractiveMode('view')
         showSuccess(t().redactApplied)
       } else if (interactiveMode === 'draw-highlight') {
         await exec('add_highlight', {
-          page_index: rect.page,
+          pageIndex: rect.page,
           x: rect.x,
           y: rect.y,
           width: rect.width,
           height: rect.height,
-          color: annotationColor,
+          color: DEFAULT_ANNOTATION_COLOR,
         })
         setInteractiveMode('view')
         showSuccess(t().highlightAdded)
       } else if (interactiveMode === 'draw-rect') {
         await exec('add_rectangle', {
-          page_index: rect.page,
+          pageIndex: rect.page,
           x: rect.x,
           y: rect.y,
           width: rect.width,
           height: rect.height,
-          stroke_color: annotationColor,
-          fill_color: '#FFFFFF00',
-          stroke_width: strokeWidth,
+          strokeColor: DEFAULT_ANNOTATION_COLOR,
+          fillColor: '#FFFFFF00',
+          strokeWidth: DEFAULT_STROKE_WIDTH,
         })
         setInteractiveMode('view')
         showSuccess(t().rectAdded)
@@ -297,31 +483,34 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     } catch (err) {
       showError(formatError(err, '注釈の追加に失敗しました'))
     }
-  }, [pdfData, interactiveMode, redactColor, annotationColor, strokeWidth, exec, showError, showSuccess])
+  }, [pdfData, interactiveMode, exec, showError, showSuccess])
 
   // Move text block handler from canvas drag with full Session sync & Undo preservation
   const handleMoveTextBlock = useCallback(async (blockId: number, newX: number, newY: number) => {
     if (!docId && !pdfData) return
     try {
-      const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : (pdfData as number[])
+      const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+      const currentBytes = nativeDocId ? await DocumentService.getSessionBytes(nativeDocId) : (pdfData as number[])
       const result = await invoke<number[]>('move_text_block', {
         data: currentBytes,
-        page_index: currentPage,
-        block_id: blockId,
-        new_x: newX,
-        new_y: newY,
+        pageIndex: currentPage,
+        blockId: blockId,
+        newX: newX,
+        newY: newY,
       })
-      if (docId) {
-        await DocumentService.updateSessionBytes(docId, `Move text block #${blockId}`, result)
+      if (nativeDocId) {
+        await DocumentService.updateSessionBytes(nativeDocId, `Move text block #${blockId}`, result)
         setRevision(r => r + 1)
-        await refreshHistoryStatus(docId)
+        await refreshHistoryStatus(nativeDocId)
+      } else {
+        setRevision(r => r + 1)
       }
       pushHistory(result)
       showSuccess(t().textMoved(blockId, newX, newY))
     } catch (err) {
       showError(formatError(err, 'テキスト移動に失敗しました'))
     }
-  }, [docId, pdfData, currentPage, pushHistory, refreshHistoryStatus, showError, showSuccess])
+  }, [docId, pdfData, currentPage, pushHistory, refreshHistoryStatus, showError, showSuccess, setPdfData])
 
   // Switch interactiveMode when changing tabs (toggle to collapse if already active)
   const handleSelectTab = (tab: Tab) => {
@@ -354,16 +543,6 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     pushHistory(data)
   }, [docId, pushHistory, refreshHistoryStatus, showError])
 
-  const handlePrint = useCallback(async () => {
-    const target = docId || pdfData
-    if (!target) return
-    try {
-      await DocumentService.printPdf(target)
-    } catch (err) {
-      showError(formatError(err, '印刷に失敗しました'))
-    }
-  }, [docId, pdfData, showError])
-
   // Command items for ⌘K Quick Launcher
   const commandItems = useMemo(() => {
     return buildEditorCommandItems({
@@ -377,16 +556,20 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
   }, [handleOpen, handleSave, exec, pdfData])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg-0)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f8fafc', width: '100%', overflow: 'hidden' }}>
       {toast && (
         <div style={{
           position: 'fixed', top: 16, right: 16, zIndex: 1000,
-          background: 'var(--bg-2)',
-          border: `1px solid ${toastType === 'error' ? 'var(--red, #f85149)' : 'var(--accent)'}`,
-          color: toastType === 'error' ? 'var(--red, #f85149)' : 'var(--accent)',
-          padding: '10px 20px', borderRadius: 'var(--radius)',
-          boxShadow: 'var(--shadow)', fontSize: 13,
-          maxWidth: 420,
+          background: '#ffffff',
+          border: `1px solid ${toastType === 'error' ? '#ef4444' : '#2563eb'}`,
+          color: toastType === 'error' ? '#ef4444' : '#2563eb',
+          padding: '10px 20px', borderRadius: 10,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.12)', fontSize: 13,
+          fontWeight: 600,
+          maxWidth: 480,
+          wordBreak: 'break-word',
+          whiteSpace: 'pre-wrap',
+          lineHeight: 1.4,
         }}>
           {toast}
         </div>
@@ -400,122 +583,49 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
         />
       )}
 
-      {/* Top Toolbar with integrated tab bar */}
-      <EditorHeader
-        onOpen={handleOpen}
-        onSave={handleSave}
-        onPrint={handlePrint}
-        canSave={!!pdfData}
-        undo={handleUndo}
-        redo={handleRedo}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        interactiveMode={interactiveMode}
-        setInteractiveMode={setInteractiveMode}
+      {/* Top Document Tab & Action Bar */}
+      <EditorTopBar
         fileName={fileName}
         pageCount={pageCount}
         currentPage={currentPage}
-        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-        activeTab={activeTab}
-        onSelectTab={handleSelectTab}
-        currentView={currentView}
-        onNavigateView={onNavigateView}
+        onPageChange={setCurrentPage}
+        zoom={zoom}
+        onZoomChange={setZoom}
+        onOpen={handleOpen}
+        onSave={handleSave}
+        onPrint={handlePrint}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        editorMode={editorMode}
+        setEditorMode={setEditorMode}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        onCloseDocument={() => onNavigateView?.('home')}
+        onNewTab={handleOpen}
+        selectedEditTool={selectedEditTool}
+        setSelectedEditTool={setSelectedEditTool}
+        onRunOCR={handleRunOCR}
       />
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-
-        {/* Tool Panel (Contextual Drawer) */}
-        {activeTab && (
-          <div style={{
-            width: 290, background: 'var(--bg-1)', borderRight: '1px solid var(--border)',
-            padding: 12, overflowY: 'auto', flexShrink: 0,
-            transition: 'width 0.2s ease',
-          }}>
-            {activeTab === 'edit' && (
-              <EditPanel exec={exec} pdfData={pdfData} showToast={showToast} currentPage={currentPage} />
-            )}
-            {activeTab === 'annotate' && (
-              <AnnotatePanel
-                exec={exec}
-                pdfData={pdfData}
-                docId={docId}
-                annotationColor={annotationColor}
-                setAnnotationColor={setAnnotationColor}
-                stickyNoteText={stickyNoteText}
-                setStickyNoteText={setStickyNoteText}
-                strokeWidth={strokeWidth}
-                setStrokeWidth={setStrokeWidth}
-                onActivateDraw={(mode) => setInteractiveMode(mode)}
-                currentPage={currentPage}
-              />
-            )}
-            {activeTab === 'forms' && (
-              <FormCreatorPanel
-                pdfData={pdfData}
-                docId={docId}
-                currentPage={currentPage}
-                exec={exec}
-                showToast={showToast}
-                onPdfUpdate={handlePdfUpdate}
-              />
-            )}
-            {activeTab === 'organize' && (
-              <OrganizePanel exec={exec} />
-            )}
-            {activeTab === 'pages' && (
-              <PagesPanel
-                watermarkText={watermarkText} setWatermarkText={setWatermarkText}
-                watermarkOpacity={watermarkOpacity} setWatermarkOpacity={setWatermarkOpacity}
-                watermarkRotation={watermarkRotation} setWatermarkRotation={setWatermarkRotation}
-                watermarkFontSize={watermarkFontSize} setWatermarkFontSize={setWatermarkFontSize}
-                watermarkColor={watermarkColor} setWatermarkColor={setWatermarkColor}
-                headerText={headerText} setHeaderText={setHeaderText}
-                footerText={footerText} setFooterText={setFooterText}
-                hfFontSize={hfFontSize} setHfFontSize={setHfFontSize}
-                batesPrefix={batesPrefix} setBatesPrefix={setBatesPrefix}
-                batesStart={batesStart} setBatesStart={setBatesStart}
-                batesFontSize={batesFontSize} setBatesFontSize={setBatesFontSize}
-                exec={exec}
-              />
-            )}
-            {activeTab === 'security' && (
-              <SecurityPanel
-                exec={exec}
-                pdfData={pdfData}
-                docId={docId}
-                showToast={showToast}
-                onInspectSignatures={(sigs: SignatureInfo[]) => setVerifiedSignatures(sigs)}
-              />
-            )}
-            {activeTab === 'text' && (
-              <TextEditPanel
-                pdfData={pdfData}
-                docId={docId}
-                exec={exec}
-                showToast={showToast}
-                onPdfUpdate={handlePdfUpdate}
-                selectedBlockFromCanvas={selectedTextBlock}
-                currentPage={currentPage}
-              />
-            )}
-            {activeTab === 'tools' && (
-              <ToolsPanel
-                exec={exec}
-                pdfData={pdfData}
-                docId={docId}
-                redactColor={redactColor} setRedactColor={setRedactColor}
-                redactSearchText={redactSearchText} setRedactSearchText={setRedactSearchText}
-                redactReplacement={redactReplacement} setRedactReplacement={setRedactReplacement}
-                showToast={showToast}
-                onActivateDrawRedact={() => setInteractiveMode('draw-redact')}
-                onPdfUpdate={handlePdfUpdate}
-              />
-            )}
-          </div>
+      {/* Main 3-Column Workspace */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', width: '100%', background: '#eef2f6' }}>
+        {/* Left Thumbnail Sidebar (only when PDF is loaded) */}
+        {pdfData && (
+          <EditorThumbnailSidebar
+            pageCount={pageCount}
+            currentPage={currentPage}
+            onSelectPage={setCurrentPage}
+            collapsed={isThumbnailsCollapsed}
+            onToggleCollapse={() => setIsThumbnailsCollapsed(!isThumbnailsCollapsed)}
+            pdfData={pdfData}
+            docId={docId}
+          />
         )}
 
-        {/* PDF Viewer */}
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* Center Canvas / Desk Area */}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
           {pdfData ? (
             <PDFViewer
               pdfData={pdfData}
@@ -530,28 +640,54 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
               onMoveTextBlock={handleMoveTextBlock}
               onDrawRectComplete={handleDrawRectComplete}
               onPdfUpdate={handlePdfUpdate}
+              hideToolbar={true}
+              hideBottomThumbnails={true}
+              hideFloatingHUD={true}
+              editorMode={editorMode}
+              selectedEditTool={selectedEditTool}
+              annotations={annotations}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={setSelectedAnnotationId}
+              onUpdateAnnotation={handleUpdateAnnotation}
+              onAddAnnotation={handleAddAnnotation}
+              onDeleteAnnotation={handleDeleteAnnotation}
+              triggerOCR={triggerOCR}
+              onOCRComplete={handleOCRComplete}
             />
           ) : (
-            <div style={{
-              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: '#1a1a2e',
-            }}>
-              <div style={{ textAlign: 'center', color: '#666' }}>
-                <div style={{ marginBottom: 24, opacity: 0.25, display: 'flex', justifyContent: 'center' }}>
-                  <FileIcon size={64} color="var(--text-dim)" />
-                </div>
-                <p style={{ fontSize: 16 }}>{t().noFileLoaded}</p>
-                <button onClick={handleOpen} style={{
-                  marginTop: 16, padding: '12px 32px', background: 'var(--accent)',
-                  color: 'var(--bg-0)', border: 'none', borderRadius: 'var(--radius)',
-                  fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                }}>
-                  {t().openFileBtn}
-                </button>
-              </div>
-            </div>
+            <EditorEmptyDropZone
+              onOpen={handleOpen}
+              onNavigateHome={onNavigateView ? () => onNavigateView('home') : undefined}
+              onLoadFileBytes={loadPdfFromBytes}
+              onOpenStart={onOpenStart}
+              onError={msg => showError(msg)}
+            />
           )}
         </div>
+
+        {/* Right Inspector Panel (only when PDF is loaded) */}
+        {pdfData && (
+          <EditorRightInspector
+            fileName={fileName}
+            pageCount={pageCount}
+            fileSize={pdfData && pdfData.length > 0 ? `${(pdfData.length / 1024 / 1024).toFixed(1)} MB` : undefined}
+            editorMode={editorMode}
+            collapsed={isInspectorCollapsed}
+            onToggleCollapse={() => setIsInspectorCollapsed(!isInspectorCollapsed)}
+            onNavigateView={onNavigateView}
+            onActivateAnnotate={() => {
+              setInteractiveMode('draw-highlight')
+              setEditorMode('edit')
+              setSelectedEditTool('highlight')
+            }}
+            selectedAnnotation={annotations.find(a => a.id === selectedAnnotationId)}
+            onUpdateAnnotation={handleUpdateSelectedAnnotation}
+            onAddTextAnnotation={handleAddTextAnnotation}
+            onAddHighlightAnnotation={handleAddHighlightAnnotation}
+            onAddShapeAnnotation={handleAddShapeAnnotation}
+            onDeleteSelectedAnnotation={handleDeleteSelectedAnnotation}
+          />
+        )}
       </div>
 
       {/* ⌘K Command Palette Modal */}
@@ -563,5 +699,3 @@ export default function PDFEditorView({ currentView, onNavigateView }: PDFEditor
     </div>
   )
 }
-
-

@@ -106,7 +106,7 @@ fn main() {
     match command.as_str() {
         "info" => {
             if subargs.is_empty() {
-                eprintln!("Error: Missing input PDF. Usage: docforge-cli info <input.pdf>");
+                eprintln!("Error: Missing input PDF. Usage: nagisa-cli info <input.pdf>");
                 exit(1);
             }
             let path = &subargs[0];
@@ -156,7 +156,7 @@ fn main() {
             }
 
             if inputs.is_empty() || output.is_none() {
-                eprintln!("Error: Missing inputs or output. Usage: docforge-cli merge <file1> <file2>... -o <out.pdf>");
+                eprintln!("Error: Missing inputs or output. Usage: nagisa-cli merge <file1> <file2>... -o <out.pdf>");
                 exit(1);
             }
 

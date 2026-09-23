@@ -1,20 +1,10 @@
 import { useState } from 'react'
+import type { SignatureInfo } from '../types'
 import { DocumentService } from '../services/documentService'
 import { Input, AccentBtn } from './UIControls'
+import type { PdfExec } from '../types'
 
-export interface SignatureInfo {
-  name: string
-  signer: string
-  reason: string
-  status: string
-  timestamp: string
-  aatl_verified?: boolean
-  trust_level?: string
-  certificate_issuer?: string
-  revocation_check?: string
-  integrity_verified?: boolean
-  notice?: string
-}
+export type { SignatureInfo }
 
 export function SecurityPanel({
   exec,
@@ -23,7 +13,7 @@ export function SecurityPanel({
   pdfData,
   docId,
 }: {
-  exec: Function
+  exec: PdfExec
   showToast: (msg: string) => void
   onInspectSignatures?: (sigs: SignatureInfo[]) => void
   pdfData: number[] | null
@@ -108,7 +98,7 @@ export function SecurityPanel({
         <Input value={signerName} onChange={setSignerName} placeholder="署名予定者名 (例: Taro Yamada)" />
         <Input value={signReason} onChange={setSignReason} placeholder="署名理由 (例: 承認済み)" />
         <AccentBtn
-          onClick={() => exec('add_digital_signature', { page_index: 0, x: 400, y: 50, width: 150, height: 60, signer_name: signerName, reason: signReason })}
+          onClick={() => exec('add_digital_signature', { pageIndex: 0, x: 400, y: 50, width: 150, height: 60, signerName: signerName, reason: signReason })}
           disabled={!signerName}
           style={{ marginTop: 6 }}
         >

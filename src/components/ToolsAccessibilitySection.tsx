@@ -98,8 +98,8 @@ export const AccessibilitySection: React.FC<AccessibilitySectionProps> = ({
               try {
                 const fixed = await invoke<number[]>('fix_accessibility_issues', {
                   data: pdfData,
-                  default_title: 'Accessible Document',
-                  default_lang: 'ja-JP',
+                  defaultTitle: 'Accessible Document',
+                  defaultLang: 'ja-JP',
                 })
                 onPdfUpdate?.(fixed)
                 setAccessReport(null)

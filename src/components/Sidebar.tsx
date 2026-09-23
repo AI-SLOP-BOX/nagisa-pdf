@@ -42,7 +42,7 @@ export default function Sidebar({ currentView, onNavigate }: Props) {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: '0 3px 12px rgba(47, 129, 247, 0.35)'
           }}>
-            <img src="/favicon.png" alt="Nagisa PDF" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img src="/logo.webp" alt="Nagisa PDF" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           </div>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: 6 }}>

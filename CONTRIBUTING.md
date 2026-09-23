@@ -1,6 +1,6 @@
-# Contributing to DocForge
+# Contributing to Nagisa PDF
 
-Thank you for your interest in contributing to DocForge!
+Thank you for your interest in contributing to Nagisa PDF!
 
 ## Getting Started
 

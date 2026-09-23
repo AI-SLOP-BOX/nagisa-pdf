@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# DocForge Build Script for Linux/macOS
+# Nagisa PDF Build Script for Linux/macOS
 
 set -e
 
-echo "DocForge Build Script"
-echo "===================="
+echo "Nagisa PDF Build Script"
+echo "======================"
 
 # Check if Node.js is installed
 if ! command -v node &> /dev/null; then

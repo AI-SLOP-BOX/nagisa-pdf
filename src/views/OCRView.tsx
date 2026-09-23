@@ -50,7 +50,7 @@ export default function OCRView({ currentView = 'ocr', onNavigateView }: OCRView
         if (path) {
           await invoke('create_epub', {
             text: ocrResult.text,
-            output_path: path,
+            outputPath: path,
             title: 'OCR Converted Document',
           })
           showSuccess(`EPUBを生成しました (信頼度: ${Math.round(ocrResult.confidence)}%)`)
@@ -71,9 +71,9 @@ export default function OCRView({ currentView = 'ocr', onNavigateView }: OCRView
         })
         if (path) {
           await invoke('create_searchable_pdf', {
-            original_paths: files,
-            ocr_text: ocrResult.text,
-            output_path: path,
+            originalPaths: files,
+            ocrText: ocrResult.text,
+            outputPath: path,
           })
           showSuccess('検索可能PDFを作成しました')
         }
@@ -158,11 +158,11 @@ export default function OCRView({ currentView = 'ocr', onNavigateView }: OCRView
 
         <div style={{ flex: 1 }} />
         <button onClick={handleAddFiles} style={{
-          padding: '6px 14px', background: 'var(--accent)', color: 'var(--bg-0)',
+          padding: '6px 14px', background: 'var(--accent)', color: '#ffffff',
           border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
         }}>ファイルを追加</button>
         <button onClick={handleProcess} disabled={files.length === 0 || isProcessing} style={{
-          padding: '6px 14px', background: 'var(--purple)', color: 'var(--bg-0)',
+          padding: '6px 14px', background: 'var(--purple)', color: '#ffffff',
           border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
           opacity: files.length === 0 || isProcessing ? 0.4 : 1,
         }}>

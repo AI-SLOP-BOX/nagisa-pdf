@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use crate::pdf_engine::find_tool_command;
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct OCRSuspect {
@@ -16,6 +16,17 @@ pub struct OCRWordBox {
     pub top: f32,
     pub width: f32,
     pub height: f32,
+    pub confidence: f64,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct OCRLineBlock {
+    pub text: String,
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+    pub font_size: f32,
     pub confidence: f64,
 }
 
@@ -160,24 +171,30 @@ pub fn run_tesseract(
     language: &str,
 ) -> Result<(String, f64, Vec<OCRSuspect>, Vec<OCRWordBox>), String> {
     // Single tesseract invocation in TSV mode to get text, geometry, and confidence in one pass
-    let output = Command::new("tesseract")
-        .args([
-            image_path,
-            "stdout",
-            "-l",
-            language,
-            "--psm",
-            "3", // Fully automatic page segmentation
-            "--oem",
-            "3", // Default OCR engine (LSTM + legacy)
-            "-c",
-            "preserve_interword_spaces=1",
-            "tsv",
-        ])
-        .output()
-        .map_err(|e| {
-            format!("Failed to run tesseract (install: brew install tesseract tesseract-lang): {e}")
-        })?;
+    // #42 是正: run_command_with_timeout でハング（DoS）防止
+    let output = crate::pdf_engine::common::run_command_with_timeout(
+        {
+            let mut c = find_tool_command("tesseract");
+            c.args([
+                image_path,
+                "stdout",
+                "-l",
+                language,
+                "--psm",
+                "3",
+                "--oem",
+                "3",
+                "-c",
+                "preserve_interword_spaces=1",
+                "tsv",
+            ]);
+            c
+        },
+        crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
+    )
+    .map_err(|e| {
+        format!("Failed to run tesseract (install: brew install tesseract tesseract-lang): {e}")
+    })?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
@@ -202,7 +219,7 @@ static OCR_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), String> {
     let count = OCR_TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique_name = format!(
-        "docforge_ocr_{}_{}_{}",
+        "nagisa_ocr_{}_{}_{}",
         std::process::id(),
         count,
         std::time::SystemTime::now()
@@ -216,16 +233,22 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Strin
 
     let prefix = dir.join("page").to_string_lossy().to_string();
 
-    let cmd = Command::new("pdftoppm")
-        .args([
-            "-png",
-            "-r",
-            "300",
-            pdf_path.to_str().unwrap_or(""),
-            &prefix,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run pdftoppm (install: brew install poppler): {e}"))?;
+    // #42 是正: pdftoppm もタイムアウト付き実行
+    let cmd = crate::pdf_engine::common::run_command_with_timeout(
+        {
+            let mut c = find_tool_command("pdftoppm");
+            c.args([
+                "-png",
+                "-r",
+                "300",
+                pdf_path.to_str().unwrap_or(""),
+                &prefix,
+            ]);
+            c
+        },
+        crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
+    )
+    .map_err(|e| format!("Failed to run pdftoppm (install: brew install poppler): {e}"))?;
 
     if !cmd.status.success() {
         return Err(String::from_utf8_lossy(&cmd.stderr).to_string());
@@ -324,15 +347,19 @@ pub fn create_searchable_pdf(
     let font_id = doc.add_object(Object::Dictionary(font_dict));
 
     // Type0 Unicode font with true TTF font embedding, CIDToGIDMap, /W and ToUnicode CMap
-    // Pre-scan all text across words and lines to build a complete character mapping
+    // Run OCR once per image and cache word geometries, avoiding redundant duplicate CLI process invocations
+    let mut cached_page_words: Vec<Vec<OCRWordBox>> = Vec::with_capacity(original_paths.len());
     let mut all_ocr_text = ocr_text.to_string();
     for path in original_paths {
-        if let Ok((_, _, _, w)) = run_tesseract(path, "jpn+eng") {
-            for word in w {
-                all_ocr_text.push_str(&word.text);
-                all_ocr_text.push(' ');
-            }
+        let words = match run_tesseract(path, "jpn+eng") {
+            Ok((_, _, _, w)) if !w.is_empty() => w,
+            _ => Vec::new(),
+        };
+        for word in &words {
+            all_ocr_text.push_str(&word.text);
+            all_ocr_text.push(' ');
         }
+        cached_page_words.push(words);
     }
     if all_ocr_text.is_empty() {
         all_ocr_text.push(' ');
@@ -343,11 +370,15 @@ pub fn create_searchable_pdf(
     let uni_font_id = unicode_encoder.font_id;
 
     let mut page_refs = Vec::new();
-    let lines: Vec<&str> = ocr_text.lines().collect();
+    // Support per-page delimited text (separated by \x0C FormFeed) or fallback to full text
+    let page_text_chunks: Vec<&str> = if ocr_text.contains('\x0C') {
+        ocr_text.split('\x0C').collect()
+    } else {
+        Vec::new()
+    };
+    let all_lines: Vec<&str> = ocr_text.lines().collect();
 
     if !original_paths.is_empty() {
-        let lines_per_page = (lines.len() / original_paths.len()).max(1);
-
         for (page_idx, path) in original_paths.iter().enumerate() {
             let img = image::open(path).map_err(|e| format!("Failed to open image {path}: {e}"))?;
             let rgb = img.to_rgb8();
@@ -387,18 +418,17 @@ pub fn create_searchable_pdf(
             ));
             operations.push(Operation::new("Do", vec![Object::Name("Im1".into())]));
             operations.push(Operation::new("Q", vec![]));
-            // Try word-level OCR extraction if original image is on disk, otherwise fall back to lines
-            let words = match run_tesseract(path, "jpn+eng") {
-                Ok((_, _, _, w)) if !w.is_empty() => w,
-                _ => Vec::new(),
-            };
+
+            // Reuse cached word-level OCR extraction from pre-scan
+            let empty_words = Vec::new();
+            let words = cached_page_words.get(page_idx).unwrap_or(&empty_words);
 
             // Overlay invisible selectable text (rendering mode 3 Tr)
             let scale_x = pt_w / (width as f32).max(1.0);
             let scale_y = pt_h / (height as f32).max(1.0);
 
             if !words.is_empty() {
-                for word in &words {
+                for word in words.iter() {
                     if word.text.is_empty() {
                         continue;
                     }
@@ -436,19 +466,31 @@ pub fn create_searchable_pdf(
                     operations.push(Operation::new("ET", vec![]));
                 }
             } else {
-                let start_line = page_idx * lines_per_page;
-                let end_line = if page_idx == original_paths.len() - 1 {
-                    lines.len()
+                // If formfeed chunks are present, use the exact page chunk, otherwise safely select lines
+                let page_lines: Vec<&str> = if page_idx < page_text_chunks.len() {
+                    page_text_chunks[page_idx].lines().collect()
+                } else if original_paths.len() == 1 {
+                    all_lines.clone()
                 } else {
-                    (start_line + lines_per_page).min(lines.len())
+                    let lines_per_page = (all_lines.len() / original_paths.len()).max(1);
+                    let start_line = page_idx * lines_per_page;
+                    let end_line = if page_idx == original_paths.len() - 1 {
+                        all_lines.len()
+                    } else {
+                        (start_line + lines_per_page).min(all_lines.len())
+                    };
+                    if start_line < all_lines.len() {
+                        all_lines[start_line..end_line].to_vec()
+                    } else {
+                        Vec::new()
+                    }
                 };
 
                 let mut y = pt_h - 20.0;
-                for line_idx in start_line..end_line {
+                for line in page_lines {
                     if y < 20.0 {
                         break;
                     }
-                    let line = lines[line_idx];
                     let (font_res, tj_arg) = if line.is_ascii() {
                         (
                             "F1",
@@ -521,10 +563,10 @@ pub fn create_searchable_pdf(
         let margin = 50.0f32;
         let lines_per_page = 50;
 
-        let chunks: Vec<&[&str]> = if lines.is_empty() {
+        let chunks: Vec<&[&str]> = if all_lines.is_empty() {
             vec![&[]]
         } else {
-            lines.chunks(lines_per_page).collect()
+            all_lines.chunks(lines_per_page).collect()
         };
 
         for chunk in chunks {
@@ -611,4 +653,172 @@ pub fn create_searchable_pdf(
     std::fs::write(output_path, &buf).map_err(|e| format!("Failed to write file: {e}"))?;
 
     Ok(())
+}
+
+pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLineBlock>, String> {
+    use std::io::Write;
+
+    let tess_lang = match language {
+        "eng" => "eng",
+        "jpn" => "jpn",
+        "jpn+eng" => "jpn+eng",
+        "chi_sim" => "chi_sim",
+        "kor" => "kor",
+        _ => "jpn+eng",
+    };
+
+    let mut child = find_tool_command("tesseract")
+        .args([
+            "stdin",
+            "stdout",
+            "-l",
+            tess_lang,
+            "--psm",
+            "6",
+            "--oem",
+            "3",
+            "-c",
+            "preserve_interword_spaces=1",
+            "tsv",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn tesseract: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(image_bytes)
+            .map_err(|e| format!("Failed to write to tesseract stdin: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for tesseract output: {e}"))?;
+
+    let tsv_content = String::from_utf8_lossy(&output.stdout);
+
+    // Group words into lines using (par_num, line_num)
+    struct LineAccumulator {
+        left: f32,
+        top: f32,
+        width: f32,
+        height: f32,
+        words: Vec<String>,
+        confidences: Vec<f64>,
+        has_level4: bool,
+    }
+
+    let mut lines_map: std::collections::BTreeMap<(i32, i32, i32), LineAccumulator> =
+        std::collections::BTreeMap::new();
+
+    for line in tsv_content.lines().skip(1) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() >= 12 {
+            let level = cols[0].parse::<i32>().unwrap_or(0);
+            let block_num = cols[2].parse::<i32>().unwrap_or(0);
+            let par_num = cols[3].parse::<i32>().unwrap_or(0);
+            let line_num = cols[4].parse::<i32>().unwrap_or(0);
+            let left = cols[6].parse::<f32>().unwrap_or(0.0);
+            let top = cols[7].parse::<f32>().unwrap_or(0.0);
+            let width = cols[8].parse::<f32>().unwrap_or(0.0);
+            let height = cols[9].parse::<f32>().unwrap_or(0.0);
+            let conf = cols[10].parse::<f64>().unwrap_or(-1.0);
+            let word_text = cols[11].trim();
+
+            let key = (block_num, par_num, line_num);
+
+            if level == 4 {
+                let entry = lines_map.entry(key).or_insert_with(|| LineAccumulator {
+                    left,
+                    top,
+                    width,
+                    height,
+                    words: Vec::new(),
+                    confidences: Vec::new(),
+                    has_level4: true,
+                });
+                entry.left = left;
+                entry.top = top;
+                entry.width = width;
+                entry.height = height;
+                entry.has_level4 = true;
+            } else if level == 5 && !word_text.is_empty() {
+                let entry = lines_map.entry(key).or_insert_with(|| LineAccumulator {
+                    left,
+                    top,
+                    width,
+                    height,
+                    words: Vec::new(),
+                    confidences: Vec::new(),
+                    has_level4: false,
+                });
+                if !entry.has_level4 {
+                    // Update bounding box spanning all words in this line
+                    if entry.words.is_empty() {
+                        entry.left = left;
+                        entry.top = top;
+                        entry.width = width;
+                        entry.height = height;
+                    } else {
+                        let right = (entry.left + entry.width).max(left + width);
+                        let bottom = (entry.top + entry.height).max(top + height);
+                        entry.left = entry.left.min(left);
+                        entry.top = entry.top.min(top);
+                        entry.width = right - entry.left;
+                        entry.height = bottom - entry.top;
+                    }
+                }
+                entry.words.push(word_text.to_string());
+                if conf >= 0.0 {
+                    entry.confidences.push(conf);
+                }
+            }
+        }
+    }
+
+    let is_cjk = language.starts_with("jpn") || language.starts_with("chi") || language.starts_with("kor");
+
+    let mut blocks = Vec::new();
+    for (_, acc) in lines_map {
+        if !acc.words.is_empty() {
+            let line_text = if is_cjk {
+                // For CJK languages, join words seamlessly without extra spaces,
+                // but keep space between consecutive ASCII words (e.g. "PDF 編集")
+                let mut joined = String::new();
+                for (idx, w) in acc.words.iter().enumerate() {
+                    if idx > 0 {
+                        let prev_is_ascii = acc.words[idx - 1].chars().all(|c| c.is_ascii_alphanumeric());
+                        let curr_is_ascii = w.chars().all(|c| c.is_ascii_alphanumeric());
+                        if prev_is_ascii && curr_is_ascii {
+                            joined.push(' ');
+                        }
+                    }
+                    joined.push_str(w);
+                }
+                joined
+            } else {
+                acc.words.join(" ")
+            };
+
+            let avg_conf = if !acc.confidences.is_empty() {
+                acc.confidences.iter().sum::<f64>() / acc.confidences.len() as f64
+            } else {
+                80.0
+            };
+            let font_size = (acc.height * 0.85).max(10.0);
+            blocks.push(OCRLineBlock {
+                text: line_text,
+                left: acc.left,
+                top: acc.top,
+                width: acc.width,
+                height: acc.height,
+                font_size,
+                confidence: avg_conf,
+            });
+        }
+    }
+
+    Ok(blocks)
 }

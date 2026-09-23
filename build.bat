@@ -1,8 +1,8 @@
 @echo off
-REM DocForge Build Script for Windows
+REM Nagisa PDF Build Script for Windows
 
-echo DocForge Build Script
-echo ====================
+echo Nagisa PDF Build Script
+echo =======================
 
 REM Check if Node.js is installed
 where node >nul 2>nul

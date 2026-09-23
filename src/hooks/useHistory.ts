@@ -30,7 +30,7 @@ export function useHistory(initialData: number[] | null = null, maxHistory = 30)
     }
   }, [historyIndex, history])
 
-  const resetHistory = useCallback((newData: number[], fileName = '') => {
+  const resetHistory = useCallback((newData: number[]) => {
     setData(newData)
     setHistory([newData])
     setHistoryIndex(0)

@@ -8,6 +8,7 @@ import { AccessibilitySection, AccessibilityReport } from './ToolsAccessibilityS
 import { ToolsPDFXSection } from './ToolsPDFXSection'
 import { ToolsAdvancedEngineeringSection } from './ToolsAdvancedEngineeringSection'
 import { ToolsBatchAndColorSection } from './ToolsBatchAndColorSection'
+import type { PdfExec } from '../types'
 
 export function ToolsPanel({
   exec,
@@ -23,7 +24,7 @@ export function ToolsPanel({
   onActivateDrawRedact,
   onPdfUpdate,
 }: {
-  exec: Function
+  exec: PdfExec
   pdfData: number[] | null
   docId?: string | null
   redactColor: string
@@ -127,7 +128,7 @@ export function ToolsPanel({
           <RedactIcon size={14} /> ドラッグ黒塗り描画
         </AccentBtn>
         <AccentBtn
-          onClick={() => exec('deep_redact', { page_index: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}
+          onClick={() => exec('deep_redact', { pageIndex: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}
           style={{ background: 'var(--red)' }}
         >
           即時完全消去
@@ -138,13 +139,13 @@ export function ToolsPanel({
       <Input value={redactSearchText} onChange={setRedactSearchText} placeholder="検索テキスト" />
       <Input value={redactReplacement} onChange={setRedactReplacement} placeholder="置換テキスト" />
       <ColorInput value={redactColor} onChange={setRedactColor} label="黒塗り色" />
-      <AccentBtn onClick={() => exec('redact_area', { page_index: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}>
+      <AccentBtn onClick={() => exec('redact_area', { pageIndex: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}>
         エリア黒塗り（現在設定値）
       </AccentBtn>
-      <AccentBtn onClick={() => exec('redact_text', { search_text: redactSearchText, replacement: redactReplacement })}>
+      <AccentBtn onClick={() => exec('redact_text', { searchText: redactSearchText, replacement: redactReplacement })}>
         テキスト検索＆黒塗り
       </AccentBtn>
-      <AccentBtn onClick={() => exec('redact_text_deep', { search_text: redactSearchText, color: redactColor })} style={{ background: 'var(--red)' }}>
+      <AccentBtn onClick={() => exec('redact_text_deep', { searchText: redactSearchText, color: redactColor })} style={{ background: 'var(--red)' }}>
         テキスト完全消去（データ削除）
       </AccentBtn>
 
@@ -163,7 +164,7 @@ export function ToolsPanel({
       />
 
       <SectionTitle>高度な最適化</SectionTitle>
-      <AccentBtn onClick={() => exec('downsample_images', { target_dpi: 150, quality: 85 })}>
+      <AccentBtn onClick={() => exec('downsample_images', { targetDpi: 150, quality: 85 })}>
         画像ダウンサンプリング
       </AccentBtn>
       <AccentBtn onClick={() => exec('remove_metadata', {})}>
@@ -329,7 +330,7 @@ export function ToolsPanel({
         const dir = await open({ directory: true })
         if (dir) {
           try {
-            const images = await invoke<string[]>('pdf_to_images', { data: bytes, output_dir: dir as string, format: 'png', dpi: 200 })
+            const images = await invoke<string[]>('pdf_to_images', { data: bytes, outputDir: dir as string, format: 'png', dpi: 200 })
             showToast(`${images.length}ページをPNGに変換しました`)
           } catch (err) { showToast(`エラー: ${err}`) }
         }
@@ -342,7 +343,7 @@ export function ToolsPanel({
         const dir = await open({ directory: true })
         if (dir) {
           try {
-            const images = await invoke<string[]>('pdf_to_images', { data: bytes, output_dir: dir as string, format: 'jpg', dpi: 200 })
+            const images = await invoke<string[]>('pdf_to_images', { data: bytes, outputDir: dir as string, format: 'jpg', dpi: 200 })
             showToast(`${images.length}ページをJPGに変換しました`)
           } catch (err) { showToast(`エラー: ${err}`) }
         }
@@ -355,7 +356,7 @@ export function ToolsPanel({
         const path = await save({ defaultPath: 'output.txt', filters: [{ name: 'Text', extensions: ['txt'] }] })
         if (path) {
           try {
-            await invoke('pdf_to_word', { data: bytes, output_path: path })
+            await invoke('pdf_to_word', { data: bytes, outputPath: path })
             showToast('PDF→テキスト変換完了')
           } catch (err) { showToast(`エラー: ${err}`) }
         }
@@ -368,7 +369,7 @@ export function ToolsPanel({
         const path = await save({ defaultPath: 'output.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] })
         if (path) {
           try {
-            await invoke('pdf_to_excel', { data: bytes, output_path: path })
+            await invoke('pdf_to_excel', { data: bytes, outputPath: path })
             showToast('PDF→CSV変換完了')
           } catch (err) { showToast(`エラー: ${err}`) }
         }
@@ -384,7 +385,7 @@ export function ToolsPanel({
           const outputPath = await save({ defaultPath: 'images.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] })
           if (outputPath) {
             try {
-              await invoke('images_to_pdf', { image_paths: pathArray, output_path: outputPath })
+              await invoke('images_to_pdf', { imagePaths: pathArray, outputPath: outputPath })
               showToast(`${pathArray.length}画像をPDFに変換しました`)
             } catch (err) { showToast(`エラー: ${err}`) }
           }
@@ -402,7 +403,7 @@ export function ToolsPanel({
           const outputPath = await save({ defaultPath: 'output.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] })
           if (outputPath) {
             try {
-              await invoke('html_to_pdf', { html_content: html, output_path: outputPath })
+              await invoke('html_to_pdf', { htmlContent: html, outputPath: outputPath })
               showToast('HTML→PDF変換完了')
             } catch (err) { showToast(`エラー: ${err}`) }
           }
@@ -433,10 +434,10 @@ export function ToolsPanel({
       </AccentBtn>
 
       <SectionTitle>ページ番号</SectionTitle>
-      <AccentBtn onClick={() => exec('add_page_numbers', { position: 'bottom-center', font_size: 12, start_number: 1 })}>
+      <AccentBtn onClick={() => exec('add_page_numbers', { position: 'bottom-center', fontSize: 12, startNumber: 1 })}>
         ページ番号追加（中央下）
       </AccentBtn>
-      <AccentBtn onClick={() => exec('add_page_numbers', { position: 'bottom-right', font_size: 10, start_number: 1 })}>
+      <AccentBtn onClick={() => exec('add_page_numbers', { position: 'bottom-right', fontSize: 10, startNumber: 1 })}>
         ページ番号追加（右下）
       </AccentBtn>
 
@@ -448,7 +449,7 @@ export function ToolsPanel({
           const outputPath = await save({ defaultPath: 'portfolio.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] })
           if (outputPath) {
             try {
-              await invoke('create_pdf_portfolio', { file_paths: pathArray, output_path: outputPath })
+              await invoke('create_pdf_portfolio', { filePaths: pathArray, outputPath: outputPath })
               showToast('ポートフォリオを作成しました')
             } catch (err) { showToast(`エラー: ${err}`) }
           }
@@ -509,7 +510,7 @@ export function ToolsPanel({
         if (paths) {
           const pathArray = Array.isArray(paths) ? paths : [paths]
           try {
-            const result = await invoke<{total_files: number}>('aggregate_form_data', { pdf_paths: pathArray })
+            const result = await invoke<{total_files: number}>('aggregate_form_data', { pdfPaths: pathArray })
             showToast(`${result.total_files}ファイルのフォームデータを集計`)
           } catch (err) { showToast(`エラー: ${err}`) }
         }

@@ -1,8 +1,8 @@
-.PHONY: dev build clean install help
+.PHONY: help dev build test clean check
+.DEFAULT_GOAL := help
 
-# Default target
 help:
-	@echo "DocForge - PDF & Document Tool"
+	@echo "Nagisa PDF - Modern High-Performance PDF Tool"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make dev        - Start development server"

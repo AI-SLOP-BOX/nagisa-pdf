@@ -185,6 +185,31 @@ fn add_rectangle(
 }
 
 #[tauri::command]
+fn add_circle(
+    data: Vec<u8>,
+    page_index: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    stroke_color: String,
+    fill_color: String,
+    stroke_width: f32,
+) -> Result<Vec<u8>, String> {
+    pdf_engine::add_circle(
+        &data,
+        page_index,
+        x,
+        y,
+        width,
+        height,
+        &stroke_color,
+        &fill_color,
+        stroke_width,
+    )
+}
+
+#[tauri::command]
 fn add_line(
     data: Vec<u8>,
     page_index: usize,
@@ -342,6 +367,14 @@ fn ocr_files(paths: Vec<String>, language: String) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
+fn ocr_image_blocks(
+    image_bytes: Vec<u8>,
+    language: String,
+) -> Result<Vec<ocr_engine::OCRLineBlock>, String> {
+    ocr_engine::ocr_image_blocks(&image_bytes, &language)
+}
+
+#[tauri::command]
 fn create_epub(text: String, output_path: String, title: String) -> Result<(), String> {
     ocr_engine::create_epub(&text, &output_path, &title)
 }
@@ -453,6 +486,7 @@ pub fn run() {
             add_underline,
             add_sticky_note,
             add_rectangle,
+            add_circle,
             add_line,
             redact_area,
             redact_text,
@@ -543,6 +577,7 @@ pub fn run() {
             change_font_size,
             process_scanned_images,
             ocr_files,
+            ocr_image_blocks,
             create_epub,
             create_searchable_pdf,
             repair_corrupt_pdf,

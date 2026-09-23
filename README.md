@@ -1,4 +1,4 @@
-# DocForge - Desktop & Mobile PDF Suite
+# Nagisa PDF - Desktop & Mobile PDF Suite
 
 A high-performance, professional-grade integrated PDF editor with 100% local, offline processing. Built with Tauri v2, Rust, and React.
 
@@ -175,7 +175,7 @@ The compiled bundles are generated in:
 ## Project Structure
 
 ```
-docforge/
+nagisa-pdf/
 ├── .github/workflows/       # CI/CD workflows for quality checks and multiplatform builds
 ├── src/                     # React + TypeScript frontend
 │   ├── App.tsx              # Main view router & responsive layout
@@ -207,7 +207,7 @@ docforge/
 
 ## Verification & Testing
 
-DocForge includes automated test suites covering PDF integrity, byte-level redaction, and searchable PDF generation:
+Nagisa PDF includes automated test suites covering PDF integrity, byte-level redaction, and searchable PDF generation:
 
 ```bash
 # Run Rust unit tests
@@ -224,7 +224,7 @@ npm run build
 
 ## License & Attribution
 
-DocForge is open-source software licensed under the [MIT License](LICENSE).
+Nagisa PDF is open-source software licensed under the [MIT License](LICENSE).
 
 ### Third-Party & Derivative Code
 - **Tauri / Tao**: The window management layer includes patches adapted from [Tauri / Tao](https://github.com/tauri-apps/tao), licensed under the **Apache License 2.0**.

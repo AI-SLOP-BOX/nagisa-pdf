@@ -10,6 +10,9 @@ import { PDFViewerHUD } from './PDFViewerHUD'
 import { PDFViewerOverlay } from './PDFViewerOverlay'
 import { PDFViewerSidebar } from './PDFViewerSidebar'
 import { PDFThumbnailStrip } from './PDFThumbnailStrip'
+import { UserAnnotation } from '../services/annotationService'
+import { usePDFCoordinates } from '../hooks/usePDFCoordinates'
+import { usePDFOCR } from '../hooks/usePDFOCR'
 
 export interface TextBlock {
   id: number
@@ -45,6 +48,20 @@ export interface PDFViewerProps {
   onMoveTextBlock?: (blockId: number, newX: number, newY: number) => void
   onDrawRectComplete?: (rect: { x: number; y: number; width: number; height: number; page: number }) => void
   onPdfUpdate?: (data: number[]) => void
+  hideToolbar?: boolean
+  hideBottomThumbnails?: boolean
+  hideFloatingHUD?: boolean
+  // Annotation system props
+  editorMode?: 'inspect' | 'edit'
+  selectedEditTool?: string
+  annotations?: UserAnnotation[]
+  selectedAnnotationId?: string | null
+  onSelectAnnotation?: (id: string | null) => void
+  onUpdateAnnotation?: (id: string, updates: Partial<UserAnnotation>) => void
+  onAddAnnotation?: (ann: UserAnnotation) => void
+  onDeleteAnnotation?: (id: string) => void
+  triggerOCR?: number
+  onOCRComplete?: (count: number) => void
 }
 
 export default function PDFViewer({
@@ -60,6 +77,19 @@ export default function PDFViewer({
   onMoveTextBlock,
   onDrawRectComplete,
   onPdfUpdate,
+  hideToolbar = false,
+  hideBottomThumbnails = false,
+  hideFloatingHUD = false,
+  editorMode = 'inspect',
+  selectedEditTool = 'select',
+  annotations = [],
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onUpdateAnnotation,
+  onAddAnnotation,
+  onDeleteAnnotation,
+  triggerOCR,
+  onOCRComplete,
 }: PDFViewerProps) {
   const [pageCount, setPageCount] = useState(0)
   const [internalCurrentPage, setInternalCurrentPage] = useState(0)
@@ -113,6 +143,8 @@ export default function PDFViewer({
     return () => {
       pageCache.current.forEach(url => URL.revokeObjectURL(url))
       pageCache.current.clear()
+      // Cancel any in-flight renderer work tied to this app instance
+      defaultRenderer.cancelAll()
     }
   }, [])
 
@@ -125,9 +157,26 @@ export default function PDFViewer({
   const containerRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
 
+  const { runOCR } = usePDFOCR({
+    imgRef,
+    currentPage,
+    pageSize,
+    onAddAnnotation,
+  })
+
+  useEffect(() => {
+    if (triggerOCR && triggerOCR > 0) {
+      runOCR().then(blocks => {
+        onOCRComplete?.(blocks.length)
+      })
+    }
+  }, [triggerOCR, runOCR, onOCRComplete])
+
   // Load PDF info using docId (zero IPC bytes) or pdfData fallback
   useEffect(() => {
-    const handle = docId || (pdfData && pdfData.length > 0 ? pdfData : null)
+    const handle = (docId && !docId.startsWith('browser-session-'))
+      ? docId
+      : ((pdfData && pdfData.length > 0) ? pdfData : docId)
     if (!handle) return
 
     const loadInfo = async () => {
@@ -154,7 +203,9 @@ export default function PDFViewer({
 
   // Load Page Dimensions and Text Blocks for current page
   useEffect(() => {
-    const handle = docId || (pdfData && pdfData.length > 0 ? pdfData : null)
+    const handle = (docId && !docId.startsWith('browser-session-'))
+      ? docId
+      : ((pdfData && pdfData.length > 0) ? pdfData : docId)
     if (!handle || currentPage >= pageCount) return
 
     const loadPageData = async () => {
@@ -204,7 +255,7 @@ export default function PDFViewer({
         if (isCustomSep) {
           url = await defaultRenderer.renderSeparationToUrl({
             docId: docId || undefined,
-            pdfData: docId ? undefined : (pdfData || undefined),
+            pdfData: (pdfData && pdfData.length > 0) ? pdfData : undefined,
             pageIndex: currentPage,
             dpi: targetDpi,
             showC: sepPlates.c,
@@ -218,7 +269,7 @@ export default function PDFViewer({
         } else {
           url = await defaultRenderer.renderPageToUrl({
             docId: docId || undefined,
-            pdfData: docId ? undefined : (pdfData || undefined),
+            pdfData: (pdfData && pdfData.length > 0) ? pdfData : undefined,
             pageIndex: currentPage,
             dpi: targetDpi,
             signal: abortController.signal,
@@ -241,8 +292,9 @@ export default function PDFViewer({
         }
         pageCache.current.set(cacheKey, url)
         setPageImage(url)
-      } catch (err: any) {
-        if (currentToken === renderSeq.current && err?.message !== 'Render cancelled') {
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (currentToken === renderSeq.current && message !== 'Render cancelled') {
           console.error('Failed to render page:', err)
           setPageImage(null)
         }
@@ -358,122 +410,50 @@ export default function PDFViewer({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [currentPage, goToPage])
 
-  // --- Interactive Canvas Calculations (PDF Points <-> DOM Pixels) ---
-  const scaleX = imgRenderedSize.width > 0 ? imgRenderedSize.width / pageSize.width : 1
-  const scaleY = imgRenderedSize.height > 0 ? imgRenderedSize.height / pageSize.height : 1
-
-  const pdfToDom = useCallback((pdfX: number, pdfY: number, pdfW: number, pdfH: number) => {
-    const domX = pdfX * scaleX
-    // PDF Y is bottom-up; DOM Y is top-down
-    const domY = (pageSize.height - (pdfY + pdfH)) * scaleY
-    const domW = Math.max(pdfW * scaleX, 10)
-    const domH = Math.max(pdfH * scaleY, 12)
-    return { left: domX, top: domY, width: domW, height: domH }
-  }, [scaleX, scaleY, pageSize.height])
-
-  const domToPdf = useCallback((domX: number, domY: number, domW: number, domH: number) => {
-    const pdfX = scaleX > 0 ? domX / scaleX : 0
-    const pdfW = scaleX > 0 ? domW / scaleX : 0
-    const pdfH = scaleY > 0 ? domH / scaleY : 0
-    const pdfY = scaleY > 0 ? pageSize.height - ((domY + domH) / scaleY) : 0
-    return {
-      x: Math.round(pdfX),
-      y: Math.round(pdfY),
-      width: Math.round(pdfW),
-      height: Math.round(pdfH),
-    }
-  }, [scaleX, scaleY, pageSize.height])
-
-  // Drawing mouse handlers on overlay
-  const handleOverlayMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || e.altKey) return
-
-    const overlayRect = e.currentTarget.getBoundingClientRect()
-    const clickX = (e.clientX - overlayRect.left) / zoom
-    const clickY = (e.clientY - overlayRect.top) / zoom
-
-    if (interactiveMode === 'select-text') {
-      // Deselect if clicking on empty background
-      onSelectTextBlock?.(null)
-    } else if (
-      interactiveMode === 'draw-rect' ||
-      interactiveMode === 'draw-highlight' ||
-      interactiveMode === 'draw-redact' ||
-      interactiveMode === 'place-form'
-    ) {
-      setDrawBox({
-        startX: clickX,
-        startY: clickY,
-        currentX: clickX,
-        currentY: clickY,
-      })
-    }
-  }
-
-  const handleOverlayMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const overlayRect = e.currentTarget.getBoundingClientRect()
-    const currentX = (e.clientX - overlayRect.left) / zoom
-    const currentY = (e.clientY - overlayRect.top) / zoom
-
-    // Handle drag-and-drop moving of a selected text block
-    if (draggingBlockId !== null && tempBlockPos) {
-      const newDomX = currentX - blockDragOffset.x
-      const newDomY = currentY - blockDragOffset.y
-      const block = textBlocks.find(b => b.id === draggingBlockId)
-      if (block) {
-        const domW = block.width * scaleX
-        const domH = block.height * scaleY
-        const pdfCoords = domToPdf(newDomX, newDomY, domW, domH)
-        setTempBlockPos({ id: draggingBlockId, x: pdfCoords.x, y: pdfCoords.y })
-      }
-      return
-    }
-
-    // Handle box drawing
-    if (drawBox) {
-      setDrawBox(prev => prev ? { ...prev, currentX, currentY } : null)
-    }
-  }
-
-  const handleOverlayMouseUp = () => {
-    if (draggingBlockId !== null && tempBlockPos) {
-      onMoveTextBlock?.(tempBlockPos.id, tempBlockPos.x, tempBlockPos.y)
-      setDraggingBlockId(null)
-      setTempBlockPos(null)
-      return
-    }
-
-    if (drawBox) {
-      const minX = Math.min(drawBox.startX, drawBox.currentX)
-      const minY = Math.min(drawBox.startY, drawBox.currentY)
-      const w = Math.abs(drawBox.currentX - drawBox.startX)
-      const h = Math.abs(drawBox.currentY - drawBox.startY)
-
-      if (w > 5 && h > 5) {
-        const pdfRect = domToPdf(minX, minY, w, h)
-        onDrawRectComplete?.({
-          ...pdfRect,
-          page: currentPage,
-        })
-      }
-      setDrawBox(null)
-    }
-  }
+  // --- Interactive Canvas Calculations & Mouse Handlers Hook ---
+  const {
+    scaleX,
+    scaleY,
+    pdfToDom,
+    domToPdf,
+    handleOverlayMouseDown,
+    handleOverlayMouseMove,
+    handleOverlayMouseUp,
+  } = usePDFCoordinates({
+    imgRenderedSize,
+    pageSize,
+    zoom,
+    interactiveMode,
+    textBlocks,
+    draggingBlockId,
+    setDraggingBlockId,
+    tempBlockPos,
+    setTempBlockPos,
+    blockDragOffset,
+    drawBox,
+    setDrawBox,
+    currentPage,
+    onSelectTextBlock,
+    onMoveTextBlock,
+    onDrawRectComplete,
+  })
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1a1a2e' }}>
-      <PDFViewerToolbar
-        activePanel={activePanel}
-        setActivePanel={setActivePanel}
-        currentPage={currentPage}
-        pageCount={pageCount}
-        goToPage={goToPage}
-        zoom={zoom}
-        setZoom={setZoom}
-        onResetZoom={() => { setZoom(1.0); setPan({ x: 0, y: 0 }) }}
-        interactiveMode={interactiveMode}
-        loading={loading}
-      />
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#f8fafc' }}>
+      {!hideToolbar && (
+        <PDFViewerToolbar
+          activePanel={activePanel}
+          setActivePanel={setActivePanel}
+          currentPage={currentPage}
+          pageCount={pageCount}
+          goToPage={goToPage}
+          zoom={zoom}
+          setZoom={setZoom}
+          onResetZoom={() => { setZoom(1.0); setPan({ x: 0, y: 0 }) }}
+          interactiveMode={interactiveMode}
+          loading={loading}
+        />
+      )}
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Side Panel */}
@@ -508,18 +488,24 @@ export default function PDFViewer({
           style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
             overflow: 'hidden', cursor: isDragging ? 'grabbing' : 'default',
-            background: '#141420', position: 'relative',
+            background: '#eef2f6', position: 'relative',
           }}
         >
           {pageImage ? (
-            <div style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transformOrigin: 'center center',
-              transition: isDragging ? 'none' : 'transform 0.05s ease',
-              position: 'relative',
-              display: 'inline-block',
-              boxShadow: '0 12px 48px rgba(0,0,0,0.6)',
-            }}>
+            <div
+              key={`page-${currentPage}-${docId || 'local'}`}
+              className="nagisa-canvas-entrance"
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                transformOrigin: 'center center',
+                transition: isDragging ? 'none' : 'transform 0.05s ease',
+                position: 'relative',
+                display: 'inline-block',
+                boxShadow: '0 10px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04)',
+                borderRadius: 4,
+                background: '#ffffff',
+              }}
+            >
               {/* Rendered PDF Page Image */}
               <img
                 ref={imgRef}
@@ -531,7 +517,7 @@ export default function PDFViewer({
                   maxWidth: '85vw',
                   maxHeight: '80vh',
                   userSelect: 'none',
-                  borderRadius: 2,
+                  borderRadius: 4,
                 }}
                 draggable={false}
               />
@@ -563,6 +549,14 @@ export default function PDFViewer({
                   handleOverlayMouseDown={handleOverlayMouseDown}
                   handleOverlayMouseMove={handleOverlayMouseMove}
                   handleOverlayMouseUp={handleOverlayMouseUp}
+                  editorMode={editorMode}
+                  selectedEditTool={selectedEditTool}
+                  annotations={annotations}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onUpdateAnnotation={onUpdateAnnotation}
+                  onAddAnnotation={onAddAnnotation}
+                  onDeleteAnnotation={onDeleteAnnotation}
                 />
               )}
             </div>
@@ -576,23 +570,27 @@ export default function PDFViewer({
           )}
 
           {/* Apple Floating Glass HUD for Zoom & Navigation */}
-          <PDFViewerHUD
-            currentPage={currentPage}
-            pageCount={pageCount}
-            goToPage={goToPage}
-            zoom={zoom}
-            setZoom={setZoom}
-            setPan={setPan}
-          />
+          {!hideFloatingHUD && (
+            <PDFViewerHUD
+              currentPage={currentPage}
+              pageCount={pageCount}
+              goToPage={goToPage}
+              zoom={zoom}
+              setZoom={setZoom}
+              setPan={setPan}
+            />
+          )}
         </div>
       </div>
 
       {/* Thumbnail strip */}
-      <PDFThumbnailStrip
-        pageCount={pageCount}
-        currentPage={currentPage}
-        goToPage={goToPage}
-      />
+      {!hideBottomThumbnails && (
+        <PDFThumbnailStrip
+          pageCount={pageCount}
+          currentPage={currentPage}
+          goToPage={goToPage}
+        />
+      )}
     </div>
   )
 }

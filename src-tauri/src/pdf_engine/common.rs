@@ -2,6 +2,114 @@ use lopdf::{Dictionary, Document, Object, Stream};
 
 pub type OID = (u32, u16);
 
+/// Find command binary checking standard paths if not directly in PATH (e.g. GUI app on macOS)
+pub fn find_tool_command(name: &str) -> std::process::Command {
+    let candidates = vec![
+        format!("/opt/homebrew/bin/{name}"),
+        format!("/usr/local/bin/{name}"),
+        format!("/usr/bin/{name}"),
+    ];
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() {
+            return std::process::Command::new(candidate);
+        }
+    }
+    std::process::Command::new(name)
+}
+
+/// #42 是正: タイムアウト付き外部コマンド実行ヘルパー。
+///
+/// `cmd.output()` はブロッキングかつタイムアウトがないため、
+/// 細工されたPDFでプロセスが無限待機するDoS脆弱性がある。
+/// 本関数では子プロセスを spawn し `timeout_secs` 以内に完了しなければ
+/// 強制 kill して Err を返す。
+pub fn run_command_with_timeout(
+    mut cmd: std::process::Command,
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    let child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn process: {e}"))?;
+
+    let child_id = child.id();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let (tx, rx) = std::sync::mpsc::channel::<Result<std::process::Output, std::io::Error>>();
+
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(format!("Process I/O error: {e}")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // タイムアウト: プラットフォーム別の強制終了
+            #[cfg(unix)]
+            {
+                // safety: kill(2) はスレッドセーフな POSIX syscall
+                unsafe { libc::kill(child_id as i32, libc::SIGKILL); }
+            }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &child_id.to_string()])
+                    .output();
+            }
+            Err(format!(
+                "External command timed out after {timeout_secs}s (PID {child_id}). \
+                 The input may be malformed or excessively large."
+            ))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Process thread disconnected unexpectedly".to_string())
+        }
+    }
+}
+
+/// 外部コマンドのデフォルトタイムアウト（秒）。
+/// 悪意のあるPDFによる外部プロセスのハング（DoS）を防ぐ。
+pub const EXTERNAL_CMD_TIMEOUT_SECS: u64 = 120;
+
+
+
+/// Encode text string according to ISO 32000-1 §7.9.2.2.
+/// If all characters are ASCII (<= 0x7F), returns raw bytes.
+/// If non-ASCII characters (e.g. Japanese/CJK/accents) are present, encodes in UTF-16BE with BOM [0xFE, 0xFF].
+pub fn encode_pdf_text_string(text: &str) -> Vec<u8> {
+    if text.is_ascii() {
+        text.as_bytes().to_vec()
+    } else {
+        let mut bytes = Vec::with_capacity(2 + text.encode_utf16().count() * 2);
+        bytes.push(0xFE);
+        bytes.push(0xFF);
+        for code_unit in text.encode_utf16() {
+            bytes.extend_from_slice(&code_unit.to_be_bytes());
+        }
+        bytes
+    }
+}
+
+/// Decode text string according to ISO 32000-1 §7.9.2.2.
+/// Handles:
+/// - UTF-16BE with BOM [0xFE, 0xFF]
+/// - Valid UTF-8 strings
+/// - PDFDocEncoding / Latin-1 fallback
+pub fn decode_pdf_text_string(bytes: &[u8]) -> String {
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let u16_codes: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16_codes)
+    } else if let Ok(s) = std::str::from_utf8(bytes) {
+        s.to_string()
+    } else {
+        String::from_utf8_lossy(bytes).to_string()
+    }
+}
+
 /// Append a new content stream to a page without overwriting existing contents.
 /// Handles:
 /// - Page with no /Contents (sets as Reference)
@@ -55,6 +163,29 @@ pub(crate) fn append_page_content(
     }
 
     Ok(())
+}
+
+/// Collect all content stream IDs for a page, properly handling:
+/// - Single indirect reference: `/Contents 12 0 R`
+/// - Array of indirect references: `/Contents [12 0 R, 13 0 R, ...]`
+pub(crate) fn resolve_page_content_stream_ids(doc: &Document, page_id: OID) -> Vec<OID> {
+    let mut content_ids = Vec::new();
+    if let Some(obj) = doc.objects.get(&page_id) {
+        if let Ok(dict) = obj.as_dict() {
+            match dict.get(b"Contents") {
+                Ok(Object::Reference(cid)) => content_ids.push(*cid),
+                Ok(Object::Array(arr)) => {
+                    for item in arr {
+                        if let Ok(cid) = item.as_reference() {
+                            content_ids.push(cid);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    content_ids
 }
 
 /// Recursively resolve and return a copy of the page's resources dictionary,
@@ -294,28 +425,32 @@ pub fn add_text(
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
     let page_id = page_ids[page_index];
 
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_height = size * 1.25;
+
     let is_ascii = text.is_ascii();
-    let (font_res_name, font_id, tj_string_obj) = if is_ascii {
+    let (font_res_name, font_id, encoded_lines) = if is_ascii {
         // Standard Type1 Helvetica for ASCII
         let mut font_dict = Dictionary::new();
         font_dict.set("Type", Object::Name("Font".into()));
         font_dict.set("Subtype", Object::Name("Type1".into()));
         font_dict.set("BaseFont", Object::Name("Helvetica".into()));
         let fid = doc.add_object(Object::Dictionary(font_dict));
-        (
-            format!("DocForgeTextHelv_{}_{}", fid.0, fid.1),
-            fid,
-            Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal),
-        )
+        let line_objs: Vec<Object> = lines
+            .iter()
+            .map(|l| Object::String(l.as_bytes().to_vec(), lopdf::StringFormat::Literal))
+            .collect();
+        (format!("NagisaTextHelv_{}_{}", fid.0, fid.1), fid, line_objs)
     } else {
         // True embedded Type0/CIDFontType2 with real TTF cmap, dynamic widths, and ToUnicode
-        let (fid, encoded_cids) =
-            super::font_unicode::embed_and_encode_unicode_text(&mut doc, text)?;
-        (
-            format!("DocForgeUniFont_{}_{}", fid.0, fid.1),
-            fid,
-            Object::String(encoded_cids, lopdf::StringFormat::Hexadecimal),
-        )
+        let encoder = super::font_unicode::create_unicode_font_encoder(&mut doc, text)?;
+        let font_id = encoder.font_id;
+        let mut line_objs = Vec::new();
+        for line in &lines {
+            let line_cids = encoder.encode_text(line);
+            line_objs.push(Object::String(line_cids, lopdf::StringFormat::Hexadecimal));
+        }
+        (format!("NagisaUniFont_{}_{}", font_id.0, font_id.1), font_id, line_objs)
     };
 
     let mut resources_dict = resolve_page_resources(&doc, page_id);
@@ -336,7 +471,7 @@ pub fn add_text(
     }
 
     // Wrap operations with q / Q to protect graphics state
-    let operations = vec![
+    let mut operations = vec![
         lopdf::content::Operation::new("q", vec![]),
         lopdf::content::Operation::new("BT", vec![]),
         lopdf::content::Operation::new(
@@ -350,11 +485,26 @@ pub fn add_text(
             "rg",
             vec![Object::Real(r), Object::Real(g), Object::Real(b)],
         ),
-        lopdf::content::Operation::new("Td", vec![Object::Real(x as f32), Object::Real(y as f32)]),
-        lopdf::content::Operation::new("Tj", vec![tj_string_obj]),
-        lopdf::content::Operation::new("ET", vec![]),
-        lopdf::content::Operation::new("Q", vec![]),
     ];
+
+    for (i, line_obj) in encoded_lines.into_iter().enumerate() {
+        let line_y = (y as f32) - (i as f32 * line_height as f32);
+        operations.push(lopdf::content::Operation::new(
+            "Tm",
+            vec![
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(x as f32),
+                Object::Real(line_y),
+            ],
+        ));
+        operations.push(lopdf::content::Operation::new("Tj", vec![line_obj]));
+    }
+
+    operations.push(lopdf::content::Operation::new("ET", vec![]));
+    operations.push(lopdf::content::Operation::new("Q", vec![]));
 
     let content = lopdf::content::Content { operations };
     let content_bytes = content
@@ -458,7 +608,7 @@ pub fn add_image_to_page(
     let page_id = page_ids[page_index];
 
     // Unique XObject resource name based on img_id
-    let img_res_name = format!("DocForgeImg_{}_{}", img_id.0, img_id.1);
+    let img_res_name = format!("NagisaImg_{}_{}", img_id.0, img_id.1);
 
     // Update page resources safely
     let mut resources = resolve_page_resources(&doc, page_id);

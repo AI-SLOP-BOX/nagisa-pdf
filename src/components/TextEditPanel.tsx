@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { DocumentService } from '../services/documentService'
 import { SectionTitle, Input, NumInput, ColorInput, AccentBtn } from './UIControls'
 import type { TextBlock } from './PDFViewer'
+import type { PdfExec } from '../types'
 
 export function TextEditPanel({
   pdfData,
@@ -15,7 +16,7 @@ export function TextEditPanel({
 }: {
   pdfData: number[] | null
   docId?: string | null
-  exec: Function
+  exec: PdfExec
   showToast: (msg: string) => void
   onPdfUpdate: (data: number[]) => void
   selectedBlockFromCanvas?: TextBlock | null
@@ -119,7 +120,7 @@ export function TextEditPanel({
                 const bytes = await getCurrentBytes()
                 if (!bytes) return
                 try {
-                  const result = await invoke<number[]>('edit_text_block', { data: bytes, page_index: pageIndex, block_id: selectedBlock, new_text: editTextVal })
+                  const result = await invoke<number[]>('edit_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock, newText: editTextVal })
                   await onPdfUpdate(result)
                   await reloadBlocks(result)
                   showToast('テキストを更新しました')
@@ -131,7 +132,7 @@ export function TextEditPanel({
                 const bytes = await getCurrentBytes()
                 if (!bytes) return
                 try {
-                  const result = await invoke<number[]>('delete_text_block', { data: bytes, page_index: pageIndex, block_id: selectedBlock })
+                  const result = await invoke<number[]>('delete_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock })
                   await onPdfUpdate(result)
                   await reloadBlocks(result)
                   setSelectedBlock(null)
@@ -151,7 +152,7 @@ export function TextEditPanel({
               const bytes = await getCurrentBytes()
               if (!bytes) return
               try {
-                const result = await invoke<number[]>('move_text_block', { data: bytes, page_index: pageIndex, block_id: selectedBlock, new_x: moveX, new_y: moveY })
+                const result = await invoke<number[]>('move_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock, newX: moveX, newY: moveY })
                 await onPdfUpdate(result)
                 await reloadBlocks(result)
                 showToast('テキストを移動しました')
@@ -173,7 +174,7 @@ export function TextEditPanel({
           <ColorInput value={colorOld} onChange={setColorOld} label="置換元カラー" />
           <ColorInput value={colorNew} onChange={setColorNew} label="置換後カラー" />
         </div>
-        <AccentBtn onClick={() => exec('change_text_color', { page_index: pageIndex, old_color: colorOld, new_color: colorNew })} style={{ background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+        <AccentBtn onClick={() => exec('change_text_color', { pageIndex: pageIndex, oldColor: colorOld, newColor: colorNew })} style={{ background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
           色を一括変換
         </AccentBtn>
 
@@ -181,7 +182,7 @@ export function TextEditPanel({
           <NumInput value={sizeOld} onChange={setSizeOld} label="元のサイズ" />
           <NumInput value={sizeNew} onChange={setSizeNew} label="新しいサイズ" />
         </div>
-        <AccentBtn onClick={() => exec('change_font_size', { page_index: pageIndex, old_size: sizeOld, new_size: sizeNew })} style={{ background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+        <AccentBtn onClick={() => exec('change_font_size', { pageIndex: pageIndex, oldSize: sizeOld, newSize: sizeNew })} style={{ background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
           サイズを一括変換
         </AccentBtn>
       </div>
@@ -206,7 +207,7 @@ export function TextEditPanel({
           <Input value={fontOld} onChange={setFontOld} placeholder="元フォント名 (例: Helvetica)" />
           <Input value={fontNew} onChange={setFontNew} placeholder="新フォント名 (例: Times-Roman)" />
         </div>
-        <AccentBtn onClick={() => exec('replace_font', { old_font: fontOld, new_font: fontNew })} style={{ marginTop: 4 }}>
+        <AccentBtn onClick={() => exec('replace_font', { oldFont: fontOld, newFont: fontNew })} style={{ marginTop: 4 }}>
           フォントを置換
         </AccentBtn>
       </div>

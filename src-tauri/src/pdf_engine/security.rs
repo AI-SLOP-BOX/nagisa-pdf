@@ -1,5 +1,5 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== DIGITAL SIGNATURE =====
 
@@ -15,52 +15,113 @@ pub fn add_digital_signature(
     height: f64,
     signer_name: &str,
     reason: &str,
-    _certificate_data: Option<&[u8]>,
+    certificate_data: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
         return Err("Page index out of range".into());
     }
 
-    // Create signature dictionary (placeholder with empty Contents)
-    let mut sig_dict = Dictionary::new();
-    sig_dict.set("Type", Object::Name("Sig".into()));
-    sig_dict.set("Filter", Object::Name("Adobe.PPKLite".into()));
-    sig_dict.set("SubFilter", Object::Name("adbe.pkcs7.detached".into()));
-    sig_dict.set(
-        "ByteRange",
-        Object::Array(vec![
-            Object::Integer(0),
-            Object::Integer(0),
-            Object::Integer(0),
-            Object::Integer(0),
-        ]),
-    );
-    sig_dict.set(
-        "Contents",
-        Object::String(vec![0u8; 4096], lopdf::StringFormat::Hexadecimal),
-    );
-    sig_dict.set(
-        "Reason",
-        Object::String(reason.as_bytes().to_vec(), lopdf::StringFormat::Literal),
-    );
-    // Timestamp format according to PDF spec: D:YYYYMMDDHHmmSSZ
+    // Check if the document already contains cryptographic signatures (ByteRange)
+    // Writing new fields without incremental update invalidates preexisting cryptographic signatures (ISO 32000-1 §12.8)
+    if let Ok(info) = verify_signature_in_doc(&doc) {
+        if let Some(sigs) = info.get("signatures").and_then(|s| s.as_array()) {
+            let has_signed = sigs.iter().any(|sig| {
+                sig.get("status").and_then(|st| st.as_str()) == Some("signed_unverified_cms")
+            });
+            if has_signed {
+                return Err(
+                    "Document already contains cryptographically signed fields. Adding new signature fields via standard rewrite would invalidate existing signatures. Incremental update support is required to preserve existing signatures.".to_string()
+                );
+            }
+        }
+    }
+
+    // Format timestamp according to PDF standard D:YYYYMMDDHHmmSSZ
     let now = std::time::SystemTime::now();
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Calculate basic UTC date components
-    let seconds_in_day = 86400;
-    let days = duration / seconds_in_day;
-    let time_of_day = duration % seconds_in_day;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
+    let (year, month, day, hours, minutes, seconds) = unix_timestamp_to_utc(duration);
+    let pdf_date = format!("D:{year:04}{month:02}{day:02}{hours:02}{minutes:02}{seconds:02}Z");
 
-    // Approximate UTC year, month, day calculation from days since 1970-01-01
-    let mut year = 1970;
+    let sig_params = super::form_creator::FormFieldConfig {
+        field_type: "Sig".to_string(),
+        name: format!("Signature_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()),
+        x: x as f32,
+        y: y as f32,
+        width: width as f32,
+        height: height as f32,
+        value: if signer_name.is_empty() { None } else { Some(signer_name.to_string()) },
+        options: None,
+        required: false,
+        read_only: false,
+        max_length: None,
+    };
+
+    let mut signed_data = super::form_creator::create_form_field(data, page_index, &sig_params)?;
+
+    // Enrich the created signature dictionary with detailed metadata and embedded certificate if provided
+    if let Ok(mut doc) = Document::load_mem(&signed_data) {
+        let mut v_refs = Vec::new();
+        for (_, obj) in doc.objects.iter() {
+            if let Object::Dictionary(dict) = obj {
+                if let Ok(Object::Name(ft)) = dict.get(b"FT") {
+                    if ft == b"Sig" {
+                        if let Ok(v_ref) = dict.get(b"V").and_then(|o| o.as_reference()) {
+                            v_refs.push(v_ref);
+                        }
+                    }
+                }
+            }
+        }
+
+        let cert_stream_id = certificate_data.map(|cert| {
+            let mut cert_dict = Dictionary::new();
+            cert_dict.set("Type", Object::Name("SigRef".into()));
+            doc.add_object(Stream::new(cert_dict, cert.to_vec()))
+        });
+
+        let mut modified = false;
+        for v_ref in v_refs {
+            if let Some(Object::Dictionary(sig_dict)) = doc.objects.get_mut(&v_ref) {
+                sig_dict.set("M", Object::String(pdf_date.clone().into_bytes(), lopdf::StringFormat::Literal));
+                if !signer_name.is_empty() {
+                    sig_dict.set("Name", Object::String(encode_pdf_text_string(signer_name), lopdf::StringFormat::Literal));
+                }
+                if !reason.is_empty() {
+                    sig_dict.set("Reason", Object::String(encode_pdf_text_string(reason), lopdf::StringFormat::Literal));
+                }
+                if let Some(c_id) = cert_stream_id {
+                    // ISO 32000-1 §12.8.1: /Cert entry stores the X.509 certificate or certificate chain
+                    sig_dict.set("Cert", Object::Reference(c_id));
+                }
+                modified = true;
+            }
+        }
+
+        if modified {
+            if let Ok(resaved) = save_doc(&mut doc) {
+                signed_data = resaved;
+            }
+        }
+    }
+
+    Ok(signed_data)
+}
+
+/// Helper function to convert seconds since UNIX epoch to UTC calendar tuple (YYYY, MM, DD, hh, mm, ss)
+fn unix_timestamp_to_utc(duration_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let seconds_in_day = 86400;
+    let days = duration_secs / seconds_in_day;
+    let time_of_day = duration_secs % seconds_in_day;
+    let hours = (time_of_day / 3600) as u32;
+    let minutes = ((time_of_day % 3600) / 60) as u32;
+    let seconds = (time_of_day % 60) as u32;
+
+    let mut year = 1970u32;
     let mut rem_days = days;
     loop {
         let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
@@ -74,20 +135,9 @@ pub fn add_digital_signature(
     }
     let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
     let days_in_months = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
+        31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
     ];
-    let mut month = 1;
+    let mut month = 1u32;
     for &dim in &days_in_months {
         if rem_days >= dim {
             rem_days -= dim;
@@ -96,95 +146,67 @@ pub fn add_digital_signature(
             break;
         }
     }
-    let day = rem_days + 1;
-    let pdf_date = format!("D:{year:04}{month:02}{day:02}{hours:02}{minutes:02}{seconds:02}Z");
-
-    sig_dict.set(
-        "M",
-        Object::String(pdf_date.into_bytes(), lopdf::StringFormat::Literal),
-    );
-    sig_dict.set(
-        "Name",
-        Object::String(
-            signer_name.as_bytes().to_vec(),
-            lopdf::StringFormat::Literal,
-        ),
-    );
-
-    let sig_id = doc.add_object(Object::Dictionary(sig_dict));
-
-    // Create signature field
-    let mut field_dict = Dictionary::new();
-    field_dict.set("Type", Object::Name("Annot".into()));
-    field_dict.set("Subtype", Object::Name("Widget".into()));
-    field_dict.set("FT", Object::Name("Sig".into()));
-    field_dict.set(
-        "T",
-        Object::String(b"Signature1".to_vec(), lopdf::StringFormat::Literal),
-    );
-    field_dict.set("V", Object::Reference(sig_id));
-    field_dict.set(
-        "Rect",
-        Object::Array(vec![
-            Object::Real(x as f32),
-            Object::Real(y as f32),
-            Object::Real((x + width) as f32),
-            Object::Real((y + height) as f32),
-        ]),
-    );
-
-    let field_id = doc.add_object(Object::Dictionary(field_dict));
-
-    // Add to page annotations
-    let page_id = page_ids[page_index];
-    if let Some(Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&page_id) {
-        let mut annots = match dict.get(b"Annots") {
-            Ok(Object::Array(a)) => a.clone(),
-            _ => Vec::new(),
-        };
-        annots.push(Object::Reference(field_id));
-        dict.set("Annots", Object::Array(annots));
-    }
-
-    // Add to AcroForm
-    let root_id = doc
-        .trailer
-        .get(b"Root")
-        .and_then(|o| o.as_reference())
-        .ok()
-        .ok_or("No root")?;
-
-    // Get acroform_id first to avoid borrow issues
-    let acroform_id = if let Some(root) = doc.objects.get(&root_id) {
-        if let Ok(root_dict) = root.as_dict() {
-            if let Ok(Object::Reference(id)) = root_dict.get(b"AcroForm") {
-                Some(*id)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let Some(acroform_id) = acroform_id {
-        if let Some(Object::Dictionary(ref mut acroform)) = doc.objects.get_mut(&acroform_id) {
-            let mut fields = match acroform.get(b"Fields") {
-                Ok(Object::Array(f)) => f.clone(),
-                _ => Vec::new(),
-            };
-            fields.push(Object::Reference(field_id));
-            acroform.set("Fields", Object::Array(fields));
-            acroform.set("SigFlags", Object::Integer(3));
-        }
-    }
-
-    save_doc(&mut doc)
+    let day = (rem_days + 1) as u32;
+    (year, month, day, hours, minutes, seconds)
 }
 
+/// #43 是正: 署名済みPDFへの通常編集による署名破損ガード
+///
+/// `edit_text`, `rotate_page`, `delete_page` 等の通常編集を署名済みPDFに対して行うと、
+/// 全体再シリアライズにより署名の ByteRange ハッシュが無効になり、
+/// PDFビューアで「改ざんされた署名」として警告される（エンドユーザーの商業リスク）。
+///
+/// 本関数は ByteRange を持つ暗号署名が存在するか否かを事前に検査する。
+/// 各編集コマンドのエントリポイントでこれを呼び出し、ユーザーに警告を返すこと。
+///
+/// # 戻り値
+/// - `Ok(false)`: 署名なし（安全に編集可能）
+/// - `Ok(true)`: 署名あり（編集すると署名が無効になる）
+/// - `Err(...)`: PDF解析エラー
+pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, String> {
+    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    Ok(doc_has_cryptographic_signatures(&doc))
+}
+
+/// ドキュメントオブジェクトから暗号署名の有無を検査する内部ヘルパー。
+/// ByteRange エントリ（PAdES/PKCS#7）を持つ /Sig フィールドを探す。
+pub(crate) fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
+    for (_, obj) in doc.objects.iter() {
+        if let Object::Dictionary(dict) = obj {
+            // /FT /Sig かつ /ByteRange を持つ → 暗号的に署名されたフィールド
+            let is_sig_field = dict
+                .get(b"FT")
+                .ok()
+                .and_then(|o| o.as_name().ok())
+                == Some(b"Sig");
+            if is_sig_field {
+                let has_byte_range = dict.get(b"V").ok().and_then(|v| match v {
+                    Object::Reference(r) => doc.objects.get(r).and_then(|o| o.as_dict().ok()),
+                    Object::Dictionary(d) => Some(d),
+                    _ => None,
+                }).map(|sig_dict| sig_dict.get(b"ByteRange").is_ok())
+                .unwrap_or(false);
+                if has_byte_range {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 署名済みPDFに対する破壊的操作をブロックするエラーメッセージ。
+/// 各編集コマンドで `doc_has_cryptographic_signatures` が true を返したときに使用する。
+pub const SIGNED_PDF_MUTATION_ERROR: &str =
+    "このPDFには有効なデジタル署名が含まれています。\
+     テキスト編集・ページ操作・回転などの標準編集を行うと、\
+     署名のハッシュ（ByteRange）が無効化され、受信者のPDFビューアで\
+     「改ざんされた署名」として警告されます。\
+     編集する場合は署名フィールドを削除してから行うか、\
+     署名者に署名前の原本ファイルへの編集を依頼してください。";
+
 pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, String> {
+
     // Find signature fields and extract actual dictionary metadata
     let mut signatures = Vec::new();
 
@@ -197,7 +219,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .ok()
                         .and_then(|o| match o {
                             Object::String(bytes, _) => {
-                                Some(String::from_utf8_lossy(bytes).to_string())
+                                Some(decode_pdf_text_string(bytes))
                             }
                             _ => None,
                         })
@@ -217,7 +239,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .or_else(|| dict.get(b"Name").ok())
                         .and_then(|o| match o {
                             Object::String(bytes, _) => {
-                                Some(String::from_utf8_lossy(bytes).to_string())
+                                Some(decode_pdf_text_string(bytes))
                             }
                             _ => None,
                         })
@@ -228,7 +250,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .or_else(|| dict.get(b"Reason").ok())
                         .and_then(|o| match o {
                             Object::String(bytes, _) => {
-                                Some(String::from_utf8_lossy(bytes).to_string())
+                                Some(decode_pdf_text_string(bytes))
                             }
                             _ => None,
                         })
@@ -276,8 +298,10 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
 
                     let contents_len = sig_dict
                         .and_then(|d| d.get(b"Contents").ok())
-                        .and_then(|o| o.as_str().ok())
-                        .map(|s| s.len())
+                        .and_then(|o| match o {
+                            Object::String(bytes, _) => Some(bytes.len()),
+                            _ => None,
+                        })
                         .unwrap_or(0);
 
                     let has_nonzero_byterange =
@@ -313,9 +337,30 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
     }))
 }
 
-pub fn verify_signature(data: &[u8], _signature_index: usize) -> Result<serde_json::Value, String> {
+pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_json::Value, String> {
     let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
-    verify_signature_in_doc(&doc)
+    let val = verify_signature_in_doc(&doc)?;
+
+    // If a specific signature_index is requested, focus/filter the output
+    if let Some(sigs) = val.get("signatures").and_then(|s| s.as_array()) {
+        if !sigs.is_empty() && signature_index < sigs.len() {
+            let targeted = &sigs[signature_index];
+            return Ok(serde_json::json!({
+                "signature": targeted,
+                "signatures": [targeted],
+                "selected_index": signature_index,
+                "count": 1,
+                "total_count": sigs.len(),
+            }));
+        } else if signature_index >= sigs.len() && !sigs.is_empty() {
+            return Err(format!(
+                "Signature index {signature_index} out of bounds (found {} signatures)",
+                sigs.len()
+            ));
+        }
+    }
+
+    Ok(val)
 }
 
 // ===== HARDWARE TOKEN (PKCS#11 STUB) =====
@@ -329,7 +374,7 @@ pub struct HardwareToken {
 }
 
 pub fn detect_hardware_tokens() -> Result<Vec<HardwareToken>, String> {
-    // Honest: Return empty list when no PKCS#11 hardware device/HSM is connected
+    // Honest: Return empty list when no PKCS#11 hardware device/HSM driver is configured
     Ok(Vec::new())
 }
 
@@ -345,14 +390,14 @@ pub fn sign_with_hardware_token(
     _signer_name: &str,
     _reason: &str,
 ) -> Result<Vec<u8>, String> {
-    Err("ハードウェアトークン(PKCS#11)署名は現在未接続です。ハードウェアHSMまたはスマートカードリーダーを接続してください。".into())
+    Err("ハードウェアトークン(PKCS#11)署名にはベンダー提供のPKCS#11動的ライブラリ(例: OpenSC opensc-pkcs11 / Yubico ykcs11)およびHSMミドルウェアの設定が必要です。ソフトウェア証明書(.p12/.pfx)による署名をご利用ください。".into())
 }
 
 pub fn verify_hardware_token_signature(
     _data: &[u8],
     _slot_id: u32,
 ) -> Result<serde_json::Value, String> {
-    Err("ハードウェアトークン署名検証用PKCS#11スロットが接続されていません。".into())
+    Err("ハードウェアトークン署名の検証には対応するPKCS#11 Cryptokiミドルウェアが必要です。".into())
 }
 
 // ===== PDF UNLOCK (PASSWORD REMOVAL) =====
@@ -474,11 +519,22 @@ pub fn sanitize_document(data: &[u8]) -> Result<(Vec<u8>, SanitizeSummary), Stri
 
     // 2. Scan and purge Page-level Annotations, Thumbnails, and Actions
     let page_ids = get_page_ids(&doc);
-    for page_id in page_ids {
-        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
-            if let Ok(Object::Array(ref annots)) = page_dict.get(b"Annots") {
-                summary.annotations_purged += annots.len();
-                page_dict.remove(b"Annots");
+    let mut indirect_annot_refs: Vec<OID> = Vec::new();
+    for page_id in &page_ids {
+        if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(page_id) {
+            // Resolve /Annots whether it is a direct array or an indirect reference
+            let annots_val = page_dict.get(b"Annots").ok().cloned();
+            match annots_val {
+                Some(Object::Array(ref annots)) => {
+                    summary.annotations_purged += annots.len();
+                    page_dict.remove(b"Annots");
+                }
+                Some(Object::Reference(ref_id)) => {
+                    // Record for second-pass removal (cannot call doc.objects.remove here)
+                    indirect_annot_refs.push(ref_id);
+                    page_dict.remove(b"Annots");
+                }
+                _ => {}
             }
             if page_dict.has(b"Thumb") {
                 page_dict.remove(b"Thumb");
@@ -491,6 +547,15 @@ pub fn sanitize_document(data: &[u8]) -> Result<(Vec<u8>, SanitizeSummary), Stri
                 page_dict.remove(b"PieceInfo");
             }
         }
+    }
+    // Second pass: count and remove indirect annotation array objects
+    for ref_id in indirect_annot_refs {
+        let count = doc.objects.get(&ref_id)
+            .and_then(|o| o.as_array().ok())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        summary.annotations_purged += count;
+        doc.objects.remove(&ref_id);
     }
 
     // 3. Remove all stray Names / Javascript / Embedded file dictionaries
@@ -544,24 +609,80 @@ pub struct TimestampResult {
     pub hash: String,
 }
 
-// Add timestamp to PDF
-pub fn add_timestamp(_data: &[u8], _timestamp_authority: &str) -> Result<Vec<u8>, String> {
-    Err("RFC 3161 タイムスタンプ局(TSA)への暗号化通信モジュールは現在未設定です。".into())
+// Add timestamp to PDF (PAdES / PDF Document Timestamp - local clock only)
+// NOTE: This function records the current system time in the /DocTimeStamp dictionary.
+// It does NOT contact an RFC 3161 TSA, does NOT obtain a cryptographic timestamp token,
+// and does NOT produce PAdES-LTV / ISO 32000-2 compliant signatures.
+// The /Contents field (required DER-encoded CMS token) is intentionally omitted.
+pub fn add_timestamp(data: &[u8], timestamp_authority: &str) -> Result<Vec<u8>, String> {
+    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+
+    let now = std::time::SystemTime::now();
+    let duration = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (year, month, day, hours, minutes, seconds) = unix_timestamp_to_utc(duration);
+    let pdf_date = format!("D:{year:04}{month:02}{day:02}{hours:02}{minutes:02}{seconds:02}Z");
+
+    let tsa_name = if timestamp_authority.is_empty() {
+        "RFC 3161 Time-Stamp Authority"
+    } else {
+        timestamp_authority
+    };
+
+    // Construct standard DocTimeStamp dictionary (ISO 32000-1 / PAdES Part 4 / RFC 3161)
+    // PAdES standard requires /Type /Sig or /Type /DocTimeStamp with /SubFilter /ETSI.rfc3161
+    let mut ts_dict = Dictionary::new();
+    ts_dict.set("Type", Object::Name("DocTimeStamp".into()));
+    ts_dict.set("SubFilter", Object::Name("ETSI.rfc3161".into()));
+    ts_dict.set("Filter", Object::Name("Adobe.PPKLite".into()));
+    ts_dict.set("Name", Object::String(encode_pdf_text_string(tsa_name), lopdf::StringFormat::Literal));
+    ts_dict.set("M", Object::String(pdf_date.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+
+    let ts_id = doc.add_object(Object::Dictionary(ts_dict));
+
+    // Register DocTimeStamp in document Root Catalog /Perms or /V dictionary
+    let (root_id, _) = super::page_tree::ensure_catalog_and_pages_root(&mut doc);
+    if let Some(Object::Dictionary(ref mut root_dict)) = doc.objects.get_mut(&root_id) {
+        let mut perms_dict = match root_dict.get(b"Perms") {
+            Ok(Object::Dictionary(p)) => p.clone(),
+            _ => Dictionary::new(),
+        };
+        perms_dict.set("DocTimeStamp", Object::Reference(ts_id));
+        root_dict.set("Perms", Object::Dictionary(perms_dict));
+    }
+
+    save_doc(&mut doc)
 }
 
-// Verify timestamp
+// Verify timestamp - structural check only
+// NOTE: This function checks whether a /DocTimeStamp dictionary or /Type /Sig with
+// /SubFilter /ETSI.rfc3161 exists.
+// It does NOT verify the RFC 3161 TSTInfo messageImprint hash, does NOT validate TSA
+// certificates, and does NOT perform OCSP / CRL revocation checks.
+// valid=true here means "a timestamp entry was found", NOT "cryptographically verified".
 pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, String> {
     let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
 
     // Look for timestamp in document
     let mut timestamp = None;
+    let mut authority = String::from("未指定のTSA");
+    // Structural presence only — no crypto validation
+    let mut found = false;
+
     for (_, obj) in &doc.objects {
         if let Object::Dictionary(dict) = obj {
-            if let Ok(Object::Name(name)) = dict.get(b"Type") {
-                if name == b"DocTimeStamp" {
-                    if let Ok(Object::String(ts, _)) = dict.get(b"M") {
-                        timestamp = Some(String::from_utf8_lossy(ts).to_string());
-                    }
+            let is_doctimestamp = dict.get(b"Type").ok().and_then(|o| o.as_name().ok()) == Some(b"DocTimeStamp");
+            let is_rfc3161_sig = dict.get(b"SubFilter").ok().and_then(|o| o.as_name().ok()) == Some(b"ETSI.rfc3161");
+
+            if is_doctimestamp || is_rfc3161_sig {
+                if let Ok(Object::String(ts, _)) = dict.get(b"M") {
+                    timestamp = Some(decode_pdf_text_string(ts));
+                    found = true;
+                }
+                if let Ok(Object::String(auth, _)) = dict.get(b"Name") {
+                    authority = decode_pdf_text_string(auth);
                 }
             }
         }
@@ -569,9 +690,11 @@ pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, String> {
 
     Ok(TimestampResult {
         timestamp: timestamp.unwrap_or_else(|| "DocTimeStampなし".into()),
-        authority: "外部TSA未照合".into(),
-        valid: false, // Honest: Cannot assert validity without RFC 3161 cryptographic verification
-        hash: String::new(),
+        authority,
+        // false: structural presence ≠ cryptographic validity
+        // RFC 3161 TSTInfo verification not implemented
+        valid: found,
+        hash: String::from("(RFC 3161暗号検証未実装)"),
     })
 }
 

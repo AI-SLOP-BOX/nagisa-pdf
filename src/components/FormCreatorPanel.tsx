@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { DocumentService } from '../services/documentService'
 import { SectionTitle, Input, NumInput, AccentBtn } from './UIControls'
 import { PlusIcon, ZapIcon } from './Icons'
+import type { PdfExec } from '../types'
 
 export function FormCreatorPanel({
   pdfData,
@@ -14,7 +15,7 @@ export function FormCreatorPanel({
   pdfData: number[] | null
   docId?: string | null
   currentPage: number
-  exec?: Function
+  exec?: PdfExec
   showToast: (msg: string) => void
   onPdfUpdate: (data: number[]) => void
 }) {
@@ -63,14 +64,14 @@ export function FormCreatorPanel({
     try {
       const result = await invoke<number[]>('add_form_field', {
         data: bytes,
-        page_index: currentPage,
-        field_name: fieldName,
-        field_type: fieldType,
+        pageIndex: currentPage,
+        fieldName: fieldName,
+        fieldType: fieldType,
         x: posX,
         y: posY,
         width,
         height,
-        default_value: defaultValue,
+        defaultValue: defaultValue,
       })
       await onPdfUpdate(result)
       await loadFields()
@@ -86,8 +87,8 @@ export function FormCreatorPanel({
     try {
       const result = await invoke<number[]>('add_calculated_field', {
         data: bytes,
-        page_index: currentPage,
-        field_name: calcFieldName,
+        pageIndex: currentPage,
+        fieldName: calcFieldName,
         formula: calcFormula,
         x: calcX,
         y: calcY,
@@ -118,7 +119,7 @@ export function FormCreatorPanel({
           </label>
           <select
             value={fieldType}
-            onChange={e => setFieldType(e.target.value as any)}
+            onChange={e => setFieldType(e.target.value as 'Tx' | 'Btn' | 'Ch')}
             style={{
               width: '100%', padding: '6px 8px', background: 'var(--bg-0)',
               border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',

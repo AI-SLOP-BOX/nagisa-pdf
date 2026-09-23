@@ -28,9 +28,14 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+quick-xml = "0.42.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["relax-sign-encoding", "relax-void-encoding", "disable-encoding-assertions"] }
+
+[target.'cfg(unix)'.dependencies]
+# #42: タイムアウト SIGKILL 用 (run_command_with_timeout)
+libc = "0.2"
 
 # PDF manipulation
 lopdf = "0.35"
@@ -45,6 +50,7 @@ ab_glyph = "0.2"
 
 # EPUB creation
 epub-builder = "0.7"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [features]
 default = ["custom-protocol"]

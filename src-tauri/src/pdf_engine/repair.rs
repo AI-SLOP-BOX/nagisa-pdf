@@ -30,22 +30,38 @@ pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
 
             if let Some((obj_num, gen_num)) = parse_obj_header(prefix) {
                 let content_start = obj_keyword_pos + 3;
-                if let Some(end_pos) = find_subsequence(&data[content_start..], b"endobj") {
-                    let obj_body = &data[content_start..content_start + end_pos];
+                // ISO 32000-1 §7.3.8: Stream objects have << ... /Length N >> stream ... endstream endobj
+                // If the object contains a stream, searching for raw b"endobj" could match binary stream bytes.
+                // We locate the genuine endobj keyword that terminates the object or follows endstream.
+                let mut search_offset = 0;
+                let mut found_obj = None;
+                while let Some(rel_end) = find_subsequence(&data[content_start + search_offset..], b"endobj") {
+                    let candidate_end = search_offset + rel_end;
+                    let obj_body = &data[content_start..content_start + candidate_end];
                     if let Ok(parsed_obj) = parse_salvaged_object(obj_body) {
-                        if let Object::Dictionary(ref dict) = parsed_obj {
-                            if let Ok(Object::Name(ref type_name)) = dict.get(b"Type") {
-                                if type_name == b"Page" {
-                                    found_page_ids.push((obj_num, gen_num));
-                                } else if type_name == b"Catalog" {
-                                    if let Ok(Object::Reference(pages_ref)) = dict.get(b"Pages") {
-                                        found_catalog_pages_ref = Some(*pages_ref);
-                                    }
+                        found_obj = Some((parsed_obj, candidate_end));
+                        break;
+                    }
+                    // If parsing failed (e.g. false endobj inside stream), advance search past this false candidate
+                    search_offset = candidate_end + 6;
+                    if content_start + search_offset >= len {
+                        break;
+                    }
+                }
+
+                if let Some((parsed_obj, end_pos)) = found_obj {
+                    if let Object::Dictionary(ref dict) = parsed_obj {
+                        if let Ok(Object::Name(ref type_name)) = dict.get(b"Type") {
+                            if type_name == b"Page" {
+                                found_page_ids.push((obj_num, gen_num));
+                            } else if type_name == b"Catalog" {
+                                if let Ok(Object::Reference(pages_ref)) = dict.get(b"Pages") {
+                                    found_catalog_pages_ref = Some(*pages_ref);
                                 }
                             }
                         }
-                        salvaged_doc.objects.insert((obj_num, gen_num), parsed_obj);
                     }
+                    salvaged_doc.objects.insert((obj_num, gen_num), parsed_obj);
                     cursor = content_start + end_pos + 6;
                     continue;
                 }

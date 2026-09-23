@@ -3,6 +3,14 @@ use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== TEXT EDITING & REFLOW =====
 
+/// PDFページ内のテキストをインプレースで検索・置換します。
+/// 
+/// 【PDFグラフィックス状態とフォント・カラー仕様】
+/// - `search_text` と一致するテキスト要素（Tj/TJ）を `replacement` に置換します。
+/// - `color` が指定されている場合（空文字以外）、置換対象のテキストオペレータ直前に `rg` (fill color) オペレータを挿入して文字色を適用します。
+/// - フォント名とフォントサイズ（`_font_name`, `_font_size`）:
+///   インプレース置換では、周囲のテキストストリーム（フォントリソース参照やカーニング、テキストマトリクス Tm/Td）との整合性を維持するため、
+///   既存ストリームのフォント設定（Tf）を安全に継承します。任意のフォント置換を行いたい場合は `replace_font` または `reflow_paragraph` を使用してください。
 pub fn edit_text(
     data: &[u8],
     page_index: usize,
@@ -18,9 +26,39 @@ pub fn edit_text(
         return Err("Page index out of range".into());
     }
 
-    let (_r, _g, _b) = parse_hex_color(color, (0.0, 0.0, 0.0));
+    let apply_color = !color.trim().is_empty();
+    let (r, g, b) = if apply_color {
+        parse_hex_color(color, (0.0, 0.0, 0.0))
+    } else {
+        (0.0, 0.0, 0.0)
+    };
 
     let page_id = page_ids[page_index];
+
+    // Inspect page font resources to detect CID/Type0 fonts
+    let resources = resolve_page_resources(&doc, page_id);
+    let mut type0_fonts = std::collections::HashSet::new();
+    if let Ok(font_dict) = resources.get(b"Font") {
+        let f_sub = match font_dict {
+            Object::Dictionary(d) => Some(d.clone()),
+            Object::Reference(r) => doc.objects.get(r).and_then(|o| o.as_dict().ok()).cloned(),
+            _ => None,
+        };
+        if let Some(f_dict) = f_sub {
+            for (fname, fobj) in f_dict.iter() {
+                let actual_fdict = match fobj {
+                    Object::Dictionary(d) => Some(d),
+                    Object::Reference(r) => doc.objects.get(r).and_then(|o| o.as_dict().ok()),
+                    _ => None,
+                };
+                if let Some(fd) = actual_fdict {
+                    if fd.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Type0") {
+                        type0_fonts.insert(fname.clone());
+                    }
+                }
+            }
+        }
+    }
 
     // Collect all content stream IDs
     let mut content_ids: Vec<OID> = Vec::new();
@@ -62,14 +100,38 @@ pub fn edit_text(
 
         let mut new_operations = Vec::new();
         let mut modified = false;
+        let mut current_font: Option<Vec<u8>> = None;
 
         for op in content.operations {
             match op.operator.as_str() {
+                "Tf" => {
+                    if let Some(Object::Name(fname)) = op.operands.first() {
+                        current_font = Some(fname.clone());
+                    }
+                    new_operations.push(op);
+                }
                 "Tj" => {
+                    let is_current_font_type0 = current_font
+                        .as_ref()
+                        .map(|f| type0_fonts.contains(f))
+                        .unwrap_or(false);
+
                     if let Some(Object::String(bytes, _)) = op.operands.first() {
+                        // Protect CID/Type0 fonts: replacing raw bytes with UTF-8 will corrupt CID streams
+                        if is_current_font_type0 {
+                            new_operations.push(op);
+                            continue;
+                        }
+
                         let text = String::from_utf8_lossy(bytes);
                         if text.contains(search_text) {
                             let new_text = text.replace(search_text, replacement);
+                            if apply_color {
+                                new_operations.push(lopdf::content::Operation::new(
+                                    "rg",
+                                    vec![Object::Real(r), Object::Real(g), Object::Real(b)],
+                                ));
+                            }
                             new_operations.push(lopdf::content::Operation::new(
                                 "Tj",
                                 vec![Object::String(
@@ -84,9 +146,20 @@ pub fn edit_text(
                     new_operations.push(op);
                 }
                 "TJ" => {
+                    let is_current_font_type0 = current_font
+                        .as_ref()
+                        .map(|f| type0_fonts.contains(f))
+                        .unwrap_or(false);
+
+                    if is_current_font_type0 {
+                        new_operations.push(op);
+                        continue;
+                    }
+
                     if let Some(Object::Array(arr)) = op.operands.first() {
                         let mut new_arr = Vec::new();
                         let mut combined = String::new();
+                        let mut has_match = false;
 
                         for item in arr {
                             match item {
@@ -102,6 +175,7 @@ pub fn edit_text(
                                                 new_text.into_bytes(),
                                                 lopdf::StringFormat::Literal,
                                             ));
+                                            has_match = true;
                                             modified = true;
                                         } else {
                                             new_arr.push(Object::String(
@@ -124,6 +198,7 @@ pub fn edit_text(
                                     new_text.into_bytes(),
                                     lopdf::StringFormat::Literal,
                                 ));
+                                has_match = true;
                                 modified = true;
                             } else {
                                 new_arr.push(Object::String(
@@ -131,6 +206,13 @@ pub fn edit_text(
                                     lopdf::StringFormat::Literal,
                                 ));
                             }
+                        }
+
+                        if has_match && apply_color {
+                            new_operations.push(lopdf::content::Operation::new(
+                                "rg",
+                                vec![Object::Real(r), Object::Real(g), Object::Real(b)],
+                            ));
                         }
 
                         new_operations.push(lopdf::content::Operation::new(
@@ -152,7 +234,12 @@ pub fn edit_text(
             };
             if let Ok(encoded) = updated_content.encode() {
                 if let Some(Object::Stream(ref mut st)) = doc.objects.get_mut(&cid) {
-                    st.set_content(encoded);
+                    // #49 是正: `set_content` は Length のみ更新し /Filter を残すため、
+                    // FlateDecode で圧縮されていたストリームに平文を書き込んでも
+                    // PDFビューアが Deflate 展開を試みてストリーム破損になる。
+                    // `set_plain_content` は /Filter・/DecodeParms を自動除去するため
+                    // どのフィルタ構成でも安全に非圧縮コンテンツを書き込める。
+                    st.set_plain_content(encoded);
                 }
             }
         }
@@ -177,73 +264,75 @@ pub fn get_text_positions(
     let page_id = page_ids[page_index];
     let mut positions = Vec::new();
 
-    if let Some(Object::Dictionary(ref dict)) = doc.objects.get(&page_id) {
-        if let Ok(Object::Reference(contents_id)) = dict.get(b"Contents") {
-            if let Some(Object::Stream(stream)) = doc.objects.get(contents_id) {
-                if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
-                    let mut current_x = 0.0;
-                    let mut current_y = 0.0;
-                    let mut current_font_size = 12.0;
+    let content_ids = resolve_page_content_stream_ids(&doc, page_id);
+    for contents_id in content_ids {
+        if let Some(Object::Stream(stream)) = doc.objects.get(&contents_id) {
+            let stream_bytes = stream
+                .decompressed_content()
+                .unwrap_or_else(|_| stream.content.clone());
+            if let Ok(content) = lopdf::content::Content::decode(&stream_bytes) {
+                let mut current_x = 0.0;
+                let mut current_y = 0.0;
+                let mut current_font_size = 12.0;
 
-                    for op in &content.operations {
-                        match op.operator.as_str() {
-                            "Tf" => {
-                                if op.operands.len() >= 2 {
-                                    if let Object::Real(size) = op.operands[1] {
-                                        current_font_size = size;
-                                    }
+                for op in &content.operations {
+                    match op.operator.as_str() {
+                        "Tf" => {
+                            if op.operands.len() >= 2 {
+                                if let Object::Real(size) = op.operands[1] {
+                                    current_font_size = size;
                                 }
                             }
-                            "Td" | "TD" => {
-                                if op.operands.len() >= 2 {
-                                    if let Object::Real(dx) = op.operands[0] {
-                                        if let Object::Real(dy) = op.operands[1] {
-                                            current_x += dx as f64;
-                                            current_y += dy as f64;
-                                        }
-                                    }
-                                }
-                            }
-                            "Tm" => {
-                                if op.operands.len() >= 6 {
-                                    if let Object::Real(x) = op.operands[4] {
-                                        if let Object::Real(y) = op.operands[5] {
-                                            current_x = x as f64;
-                                            current_y = y as f64;
-                                        }
-                                    }
-                                }
-                            }
-                            "Tj" | "TJ" => {
-                                let text = match &op.operands[0] {
-                                    Object::String(bytes, _) => {
-                                        String::from_utf8_lossy(bytes).to_string()
-                                    }
-                                    Object::Array(arr) => {
-                                        let mut s = String::new();
-                                        for item in arr {
-                                            if let Object::String(bytes, _) = item {
-                                                s.push_str(&String::from_utf8_lossy(bytes));
-                                            }
-                                        }
-                                        s
-                                    }
-                                    _ => continue,
-                                };
-
-                                if !text.is_empty() {
-                                    positions.push(serde_json::json!({
-                                        "text": text,
-                                        "x": current_x,
-                                        "y": current_y,
-                                        "font_size": current_font_size,
-                                        "width": text.len() as f64 * current_font_size as f64 * 0.6,
-                                        "height": current_font_size as f64,
-                                    }));
-                                }
-                            }
-                            _ => {}
                         }
+                        "Td" | "TD" => {
+                            if op.operands.len() >= 2 {
+                                if let Object::Real(dx) = op.operands[0] {
+                                    if let Object::Real(dy) = op.operands[1] {
+                                        current_x += dx as f64;
+                                        current_y += dy as f64;
+                                    }
+                                }
+                            }
+                        }
+                        "Tm" => {
+                            if op.operands.len() >= 6 {
+                                if let Object::Real(x) = op.operands[4] {
+                                    if let Object::Real(y) = op.operands[5] {
+                                        current_x = x as f64;
+                                        current_y = y as f64;
+                                    }
+                                }
+                            }
+                        }
+                        "Tj" | "TJ" => {
+                            let text = match &op.operands[0] {
+                                Object::String(bytes, _) => {
+                                    String::from_utf8_lossy(bytes).to_string()
+                                }
+                                Object::Array(arr) => {
+                                    let mut s = String::new();
+                                    for item in arr {
+                                        if let Object::String(bytes, _) = item {
+                                            s.push_str(&String::from_utf8_lossy(bytes));
+                                        }
+                                    }
+                                    s
+                                }
+                                _ => continue,
+                            };
+
+                            if !text.is_empty() {
+                                positions.push(serde_json::json!({
+                                    "text": text,
+                                    "x": current_x,
+                                    "y": current_y,
+                                    "font_size": current_font_size,
+                                    "width": text.len() as f64 * current_font_size as f64 * 0.6,
+                                    "height": current_font_size as f64,
+                                }));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

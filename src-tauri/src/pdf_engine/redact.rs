@@ -277,6 +277,7 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                 }
                 "Tj" => {
                     if let Some(Object::String(bytes, _)) = op.operands.first() {
+                        let is_cid = current_font_info.map(|fi| fi.is_type0).unwrap_or(false);
                         let text = if let Some(fi) = current_font_info {
                             fi.decode(bytes)
                         } else {
@@ -284,32 +285,41 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                         };
                         let raw_lossy = String::from_utf8_lossy(bytes);
                         if text.contains(search_text) || raw_lossy.contains(search_text) {
-                            let replaced = if text.contains(search_text) {
-                                text.replace(search_text, replacement)
+                            if is_cid {
+                                // CID/Type0 フォント: UTF-8 をそのままバイト列として書き戻すと
+                                // 2バイト CID ストリームが破壊される。このオペランドはスキップ。
+                                // (テキスト検索はできるがインライン置換は非対応)
                             } else {
-                                raw_lossy.replace(search_text, replacement)
-                            };
-                            op.operands[0] =
-                                Object::String(replaced.into_bytes(), lopdf::StringFormat::Literal);
-                            modified = true;
+                                let replaced = if text.contains(search_text) {
+                                    text.replace(search_text, replacement)
+                                } else {
+                                    raw_lossy.replace(search_text, replacement)
+                                };
+                                op.operands[0] =
+                                    Object::String(replaced.into_bytes(), lopdf::StringFormat::Literal);
+                                modified = true;
+                            }
                         }
                     }
                     new_operations.push(op);
                 }
                 "TJ" => {
                     if let Some(Object::Array(ref mut arr)) = op.operands.first_mut() {
+                        let is_cid = current_font_info.map(|fi| fi.is_type0).unwrap_or(false);
                         let mut has_match = false;
-                        for item in arr.iter() {
-                            if let Object::String(bytes, _) = item {
-                                let text = if let Some(fi) = current_font_info {
-                                    fi.decode(bytes)
-                                } else {
-                                    String::from_utf8_lossy(bytes).to_string()
-                                };
-                                let raw_lossy = String::from_utf8_lossy(bytes);
-                                if text.contains(search_text) || raw_lossy.contains(search_text) {
-                                    has_match = true;
-                                    break;
+                        if !is_cid {
+                            for item in arr.iter() {
+                                if let Object::String(bytes, _) = item {
+                                    let text = if let Some(fi) = current_font_info {
+                                        fi.decode(bytes)
+                                    } else {
+                                        String::from_utf8_lossy(bytes).to_string()
+                                    };
+                                    let raw_lossy = String::from_utf8_lossy(bytes);
+                                    if text.contains(search_text) || raw_lossy.contains(search_text) {
+                                        has_match = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -1012,7 +1022,7 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                         operations: new_ops,
                     };
                     if let Ok(encoded) = updated.encode() {
-                        stream.set_content(encoded);
+                        stream.set_plain_content(encoded); // #49 是正: FlateDecode Filter残存防止
                     }
                 }
             }

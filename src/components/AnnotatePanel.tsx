@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { DocumentService } from '../services/documentService'
 import { Input, NumInput, ColorInput, AccentBtn } from './UIControls'
 import { HighlightIcon, RectIcon } from './Icons'
+import type { PdfExec } from '../types'
 
 export function AnnotatePanel({
   exec,
@@ -17,7 +18,7 @@ export function AnnotatePanel({
   onActivateDraw,
   currentPage = 0,
 }: {
-  exec: Function
+  exec: PdfExec
   pdfData: number[] | null
   docId?: string | null
   annotationColor: string
@@ -73,11 +74,11 @@ export function AnnotatePanel({
           <AccentBtn onClick={() => onActivateDraw?.('draw-highlight')} style={{ flex: 1, background: 'var(--yellow)', color: '#000' }}>
             <HighlightIcon size={14} /> ドラッグ描画
           </AccentBtn>
-          <AccentBtn onClick={() => exec('add_highlight', { page_index: currentPage, x: 50, y: 700, width: 200, height: 20, color: annotationColor })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+          <AccentBtn onClick={() => exec('add_highlight', { pageIndex: currentPage, x: 50, y: 700, width: 200, height: 20, color: annotationColor })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
             即時挿入
           </AccentBtn>
         </div>
-        <AccentBtn onClick={() => exec('add_underline', { page_index: currentPage, x: 50, y: 700, width: 200, color: annotationColor })} style={{ marginTop: 6, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+        <AccentBtn onClick={() => exec('add_underline', { pageIndex: currentPage, x: 50, y: 700, width: 200, color: annotationColor })} style={{ marginTop: 6, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
           アンダーラインを追加
         </AccentBtn>
       </div>
@@ -90,7 +91,7 @@ export function AnnotatePanel({
         </div>
         <div className="inspector-card-desc">ページ上の任意位置にコメント付箋を固定</div>
         <Input value={stickyNoteText} onChange={setStickyNoteText} placeholder="コメント・メモを入力..." />
-        <AccentBtn onClick={() => exec('add_sticky_note', { page_index: currentPage, x: 500, y: 750, text: stickyNoteText, color: annotationColor })}>
+        <AccentBtn onClick={() => exec('add_sticky_note', { pageIndex: currentPage, x: 500, y: 750, text: stickyNoteText, color: annotationColor })}>
           付箋を配置 (p{currentPage + 1})
         </AccentBtn>
       </div>
@@ -106,15 +107,15 @@ export function AnnotatePanel({
           <AccentBtn onClick={() => onActivateDraw?.('draw-rect')} style={{ flex: 1, background: 'var(--purple)' }}>
             <RectIcon size={14} /> 四角描画
           </AccentBtn>
-          <AccentBtn onClick={() => exec('add_rectangle', { page_index: currentPage, x: 50, y: 700, width: 200, height: 100, stroke_color: annotationColor, fill_color: '#FFFFFF00', stroke_width: strokeWidth })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+          <AccentBtn onClick={() => exec('add_rectangle', { pageIndex: currentPage, x: 50, y: 700, width: 200, height: 100, strokeColor: annotationColor, fillColor: '#FFFFFF00', strokeWidth: strokeWidth })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
             四角即時追加
           </AccentBtn>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-          <AccentBtn onClick={() => exec('add_stamp', { page_index: currentPage, text: 'APPROVED', x: 200, y: 400, rotation: -30, color: '#00AA00', font_size: 72 })} style={{ background: 'rgba(46, 160, 67, 0.15)', color: '#2ea043', border: '1px solid rgba(46, 160, 67, 0.4)' }}>
+          <AccentBtn onClick={() => exec('add_stamp', { pageIndex: currentPage, text: 'APPROVED', x: 200, y: 400, rotation: -30, color: '#00AA00', fontSize: 72 })} style={{ background: 'rgba(46, 160, 67, 0.15)', color: '#2ea043', border: '1px solid rgba(46, 160, 67, 0.4)' }}>
             APPROVED
           </AccentBtn>
-          <AccentBtn onClick={() => exec('add_stamp', { page_index: currentPage, text: 'DRAFT', x: 200, y: 400, rotation: -30, color: '#FF0000', font_size: 72 })} style={{ background: 'rgba(248, 81, 73, 0.15)', color: '#f85149', border: '1px solid rgba(248, 81, 73, 0.4)' }}>
+          <AccentBtn onClick={() => exec('add_stamp', { pageIndex: currentPage, text: 'DRAFT', x: 200, y: 400, rotation: -30, color: '#FF0000', fontSize: 72 })} style={{ background: 'rgba(248, 81, 73, 0.15)', color: '#f85149', border: '1px solid rgba(248, 81, 73, 0.4)' }}>
             DRAFT
           </AccentBtn>
         </div>

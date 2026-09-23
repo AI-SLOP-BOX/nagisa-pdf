@@ -44,7 +44,7 @@ export function SearchPanel({
           placeholder="検索..."
           style={{ flex: 1, padding: '6px 8px', background: 'var(--bg-0)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text)', fontSize: 12 }}
         />
-        <button onClick={onSearch} style={{ padding: '6px 12px', background: 'var(--accent)', color: 'var(--bg-0)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600 }}>
+        <button onClick={onSearch} style={{ padding: '6px 12px', background: 'var(--accent)', color: '#ffffff', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600 }}>
           検索
         </button>
       </div>
@@ -126,7 +126,7 @@ export function FormsPanel({
     try {
       await invoke('set_form_field', {
         data: pdfData,
-        field_name: fieldName,
+        fieldName: fieldName,
         value: values[fieldName] || '',
       })
     } catch (err) {
@@ -163,7 +163,7 @@ export function FormsPanel({
                 <button
                   onClick={() => handleSave(field.name)}
                   style={{
-                    padding: '5px 8px', background: 'var(--accent)', color: 'var(--bg-0)',
+                    padding: '5px 8px', background: 'var(--accent)', color: '#ffffff',
                     border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 11,
                   }}
                 >保存</button>
@@ -204,7 +204,7 @@ export function ThumbnailsPanel({
         try {
           const png = await invoke<number[]>('render_page_to_png', {
             data: pdfData,
-            page_index: i,
+            pageIndex: i,
             dpi: 54,
           })
           if (!isMounted) break
@@ -230,7 +230,7 @@ export function ThumbnailsPanel({
     try {
       const updated = await invoke<number[]>('rotate_page', {
         data: pdfData,
-        page_index: pageIdx,
+        pageIndex: pageIdx,
         degrees: 90,
       })
       onPdfUpdate(updated)
@@ -249,7 +249,7 @@ export function ThumbnailsPanel({
     try {
       const updated = await invoke<number[]>('delete_page', {
         data: pdfData,
-        page_index: pageIdx,
+        pageIndex: pageIdx,
       })
       onPdfUpdate(updated)
       if (currentPage >= pageIdx && currentPage > 0) {
@@ -292,8 +292,8 @@ export function ThumbnailsPanel({
     try {
       const updated = await invoke<number[]>('reorder_pages', {
         data: pdfData,
-        from_index: sourceIdx,
-        to_index: targetIdx,
+        fromIndex: sourceIdx,
+        toIndex: targetIdx,
       })
       onPdfUpdate(updated)
       onGoToPage(targetIdx)

@@ -1,4 +1,4 @@
-import { SignatureInfo } from './SecurityPanel'
+import { SignatureInfo } from '../types'
 import { ShieldCheckIcon, CloseIcon, CheckIcon } from './Icons'
 import { t } from '../utils/i18n'
 
@@ -99,7 +99,7 @@ export function SignatureVerificationModal({ signatures, onClose }: SignatureVer
           onClick={onClose}
           style={{
             marginTop: 16, width: '100%', padding: '8px 16px',
-            background: 'var(--accent)', color: 'var(--bg-0)',
+            background: 'var(--accent)', color: '#ffffff',
             border: 'none', borderRadius: 4, fontWeight: 600, cursor: 'pointer',
           }}
         >

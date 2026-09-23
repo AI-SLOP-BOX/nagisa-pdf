@@ -169,12 +169,26 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
     }
 
     // 1. First pass: scan page content streams to compute actual rendered placement dimensions for images
-    // Map Image XObject name -> placed display width / height in points
-    let mut image_placement_dims: std::collections::HashMap<Vec<u8>, (f32, f32)> =
+    // Map Image XObject OID -> placed display width / height in points
+    // Also build: XObject resource name -> OID mapping (from page /Resources /XObject)
+    let mut image_placement_dims: std::collections::HashMap<OID, (f32, f32)> =
+        std::collections::HashMap::new();
+    // Map: resource_name (bytes) -> OID, for resolving Do operator name to XObject object
+    let mut xobj_name_to_oid: std::collections::HashMap<Vec<u8>, OID> =
         std::collections::HashMap::new();
 
     let page_ids = get_page_ids(&doc);
     for &page_id in &page_ids {
+        // Build name->OID map from page's /Resources /XObject dictionary
+        let resources = resolve_page_resources(&doc, page_id);
+        if let Ok(Object::Dictionary(xobj_dict)) = resources.get(b"XObject") {
+            for (name, val) in xobj_dict.iter() {
+                if let Ok(oid) = val.as_reference() {
+                    xobj_name_to_oid.insert(name.clone(), oid);
+                }
+            }
+        }
+
         if let Some(Object::Dictionary(page_dict)) = doc.objects.get(&page_id) {
             let content_ids: Vec<OID> = match page_dict.get(b"Contents") {
                 Ok(Object::Reference(id)) => vec![*id],
@@ -204,8 +218,10 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                                         (current_matrix.0.hypot(current_matrix.1)).abs().max(1.0);
                                     let placed_h =
                                         (current_matrix.2.hypot(current_matrix.3)).abs().max(1.0);
-                                    image_placement_dims
-                                        .insert(name.to_vec(), (placed_w, placed_h));
+                                    // Map by OID for accurate per-image lookup
+                                    if let Some(&oid) = xobj_name_to_oid.get(name) {
+                                        image_placement_dims.insert(oid, (placed_w, placed_h));
+                                    }
                                 }
                             }
                         }
@@ -238,6 +254,33 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                         .unwrap_or(0.0);
 
                     // True ICC Profile check: ColorSpace must be ICCBased, or an Array [/ICCBased, stream_ref]
+                    let is_cmyk_image = match stream.dict.get(b"ColorSpace") {
+                        Ok(Object::Name(cs_name)) => cs_name == b"DeviceCMYK",
+                        Ok(Object::Array(arr)) => arr.first().and_then(|o| o.as_name().ok()).map(|n| n == b"DeviceCMYK").unwrap_or(false),
+                        _ => false,
+                    };
+                    if is_cmyk_image {
+                        uses_cmyk = true;
+                        // Inspect CMYK raster pixels for Total Area Coverage (TAC)
+                        if let Ok(decomp) = stream.decompressed_content() {
+                            let mut pixel_max_tac = 0.0f32;
+                            // CMYK pixel bytes: 4 bytes per pixel (C, M, Y, K)
+                            for chunk in decomp.chunks_exact(4) {
+                                let c = chunk[0] as f32 / 255.0;
+                                let m = chunk[1] as f32 / 255.0;
+                                let y = chunk[2] as f32 / 255.0;
+                                let k = chunk[3] as f32 / 255.0;
+                                let tac = c + m + y + k;
+                                if tac > pixel_max_tac {
+                                    pixel_max_tac = tac;
+                                }
+                            }
+                            if pixel_max_tac > max_ink_coverage {
+                                max_ink_coverage = pixel_max_tac;
+                            }
+                        }
+                    }
+
                     let has_icc_profile = match stream.dict.get(b"ColorSpace") {
                         Ok(Object::Name(cs_name)) => cs_name == b"ICCBased",
                         Ok(Object::Array(arr)) => arr
@@ -262,13 +305,13 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                         images_without_profile.push(format!("Image_{}_{}", id.0, id.1));
                     }
 
+
                     // Calculate effective DPI: (pixel_width / placed_inches)
-                    // Placed size defaults to page dimension or 1:1 if not found in Do operator
+                    // Look up placement dims by OID for accurate per-image DPI
                     if width > 0.0 && height > 0.0 {
                         let (placed_w_pt, placed_h_pt) = image_placement_dims
-                            .iter()
-                            .find(|_| true) // Best match or fallback
-                            .map(|(_, dims)| *dims)
+                            .get(id)
+                            .copied()
                             .unwrap_or((width, height));
 
                         let placed_w_inches = placed_w_pt / 72.0;
@@ -435,13 +478,13 @@ pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
     let pid = std::process::id();
 
     let temp_dir = std::env::temp_dir();
-    let temp_input = temp_dir.join(format!("docforge_outline_in_{pid}_{id}.pdf"));
-    let temp_ps = temp_dir.join(format!("docforge_outline_mid_{pid}_{id}.ps"));
-    let temp_out = temp_dir.join(format!("docforge_outline_out_{pid}_{id}.pdf"));
+    let temp_input = temp_dir.join(format!("nagisa_outline_in_{pid}_{id}.pdf"));
+    let temp_ps = temp_dir.join(format!("nagisa_outline_mid_{pid}_{id}.ps"));
+    let temp_out = temp_dir.join(format!("nagisa_outline_out_{pid}_{id}.pdf"));
 
     std::fs::write(&temp_input, data).map_err(|e| format!("Failed to write temp PDF: {e}"))?;
 
-    let cairo_status = std::process::Command::new("pdftocairo")
+    let cairo_status = find_tool_command("pdftocairo")
         .args([
             "-ps",
             "-level3",
@@ -454,7 +497,7 @@ pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
 
     match cairo_status {
         Ok(out) if out.status.success() && temp_ps.exists() => {
-            let convert_back = std::process::Command::new("pdftocairo")
+            let convert_back = find_tool_command("pdftocairo")
                 .args([
                     "-pdf",
                     temp_ps.to_str().unwrap_or(""),
@@ -479,17 +522,8 @@ pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
-
-    for (_, obj) in doc.objects.iter_mut() {
-        if let Object::Dictionary(dict) = obj {
-            if let Ok(Object::Name(font_type)) = dict.get(b"Type") {
-                if font_type == b"Font" {
-                    dict.set("Subtype", Object::Name("Type3".into()));
-                }
-            }
-        }
-    }
-
-    save_doc(&mut doc)
+    // Fallback: pdftocairo failed. There is no safe pure-Rust font outlining available.
+    // Setting /Subtype to Type3 without providing /CharProcs would corrupt the PDF
+    // and make all text invisible. Return an error instead.
+    Err("フォントアウトライン変換: pdftocaiروが見つからないか失敗しました。poppler-utils をインストールしてください (brew install poppler)。".into())
 }

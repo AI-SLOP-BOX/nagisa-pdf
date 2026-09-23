@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Input, NumInput, AccentBtn } from './UIControls'
+import type { PdfExec } from '../types'
 
-export function OrganizePanel({ exec }: { exec: Function }) {
+export function OrganizePanel({ exec }: { exec: PdfExec }) {
   const [pageIndex, setPageIndex] = useState(0)
   const [rotation, setRotation] = useState(90)
   const [fromIdx, setFromIdx] = useState(0)
@@ -20,7 +21,7 @@ export function OrganizePanel({ exec }: { exec: Function }) {
         </div>
         <NumInput value={pageIndex} onChange={setPageIndex} label="対象ページ番号 (0始まり)" />
         <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-          <AccentBtn onClick={() => exec('rotate_page', { page_index: pageIndex, degrees: rotation })} style={{ flex: 2 }}>
+          <AccentBtn onClick={() => exec('rotate_page', { pageIndex: pageIndex, degrees: rotation })} style={{ flex: 2 }}>
             {rotation}° 回転
           </AccentBtn>
           <AccentBtn onClick={() => setRotation(prev => (prev + 90) % 360)} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
@@ -28,10 +29,10 @@ export function OrganizePanel({ exec }: { exec: Function }) {
           </AccentBtn>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-          <AccentBtn onClick={() => exec('duplicate_page', { page_index: pageIndex })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+          <AccentBtn onClick={() => exec('duplicate_page', { pageIndex: pageIndex })} style={{ flex: 1, background: 'var(--bg-2)', color: 'var(--text)', border: '1px solid var(--border)' }}>
             ページ複製
           </AccentBtn>
-          <AccentBtn onClick={() => exec('delete_page', { page_index: pageIndex })} style={{ flex: 1, background: 'rgba(248, 81, 73, 0.15)', color: '#f85149', border: '1px solid rgba(248, 81, 73, 0.3)' }}>
+          <AccentBtn onClick={() => exec('delete_page', { pageIndex: pageIndex })} style={{ flex: 1, background: 'rgba(248, 81, 73, 0.15)', color: '#f85149', border: '1px solid rgba(248, 81, 73, 0.3)' }}>
             ページ削除
           </AccentBtn>
         </div>
@@ -47,7 +48,7 @@ export function OrganizePanel({ exec }: { exec: Function }) {
           <NumInput value={fromIdx} onChange={setFromIdx} label="移動元 (from)" />
           <NumInput value={toIdx} onChange={setToIdx} label="移動先 (to)" />
         </div>
-        <AccentBtn onClick={() => exec('reorder_pages', { from_index: fromIdx, to_index: toIdx })} style={{ marginTop: 6 }}>
+        <AccentBtn onClick={() => exec('reorder_pages', { fromIndex: fromIdx, toIndex: toIdx })} style={{ marginTop: 6 }}>
           順序を変更
         </AccentBtn>
       </div>
@@ -87,7 +88,7 @@ export function OrganizePanel({ exec }: { exec: Function }) {
   )
 }
 
-function CropCard({ exec }: { exec: Function }) {
+function CropCard({ exec }: { exec: PdfExec }) {
   const [page, setPage] = useState(0)
   const [cropX, setCropX] = useState(20)
   const [cropY, setCropY] = useState(20)
@@ -109,7 +110,7 @@ function CropCard({ exec }: { exec: Function }) {
         <NumInput value={cropH} onChange={setCropH} label="高さ (pt)" />
       </div>
       <AccentBtn
-        onClick={() => exec('crop_page', { page_index: page, x: cropX, y: cropY, width: cropW, height: cropH })}
+        onClick={() => exec('crop_page', { pageIndex: page, x: cropX, y: cropY, width: cropW, height: cropH })}
         style={{ marginTop: 8, background: 'var(--green, #238636)', color: '#fff' }}
       >
         クロップを適用

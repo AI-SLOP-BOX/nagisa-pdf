@@ -483,7 +483,7 @@ pub fn convert_to_pdfx_standard(
         info_dict.set(
             "Creator",
             Object::String(
-                b"DocForge Professional PDF Engine".to_vec(),
+                b"Nagisa PDF Professional Engine".to_vec(),
                 lopdf::StringFormat::Literal,
             ),
         );
@@ -561,7 +561,7 @@ pub fn convert_to_pdfx_standard(
               <pdfx:GTS_PDFXVersion>{}</pdfx:GTS_PDFXVersion>\n\
             </rdf:Description>\n\
             <rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\">\n\
-              <pdf:Producer>DocForge PDF/X Engine</pdf:Producer>\n\
+              <pdf:Producer>Nagisa PDF/X Engine</pdf:Producer>\n\
               <pdf:Trapped>False</pdf:Trapped>\n\
             </rdf:Description>\n\
           </rdf:RDF>\n\
@@ -588,10 +588,14 @@ pub fn convert_to_pdfx(data: &[u8], output_intent: &str) -> Result<Vec<u8>, Stri
     convert_to_pdfx_standard(data, "PDF/X-1a:2001", output_intent)
 }
 
-/// Generates a valid ICC profile according to ICC.1:2001-04 specification
-/// Includes a conforming 128-byte header, a tag table with required tags (desc, cprt, wtpt, kTRC),
-/// and 4-byte aligned tag data that external ICC parsers (e.g. LittleCMS, CoreGraphics, Poppler) can parse.
 pub fn generate_valid_cmyk_icc(condition_name: &str) -> Vec<u8> {
+    generate_valid_icc(condition_name, false)
+}
+
+/// Generates a valid ICC profile according to ICC.1:2001-04 specification
+/// Includes a conforming 128-byte header, a tag table with required tags (desc, cprt, wtpt, kTRC / rTRC),
+/// and 4-byte aligned tag data that external ICC parsers (e.g. LittleCMS, CoreGraphics, Poppler) can parse.
+pub fn generate_valid_icc(condition_name: &str, is_rgb: bool) -> Vec<u8> {
     let mut tags: Vec<[u8; 4]> = Vec::new();
     let mut data_blobs: Vec<Vec<u8>> = Vec::new();
 
@@ -616,7 +620,7 @@ pub fn generate_valid_cmyk_icc(condition_name: &str) -> Vec<u8> {
     let mut cprt_data = Vec::new();
     cprt_data.extend_from_slice(b"text");
     cprt_data.extend_from_slice(&0u32.to_be_bytes());
-    cprt_data.extend_from_slice(b"DocForge ICC Profile - MIT License\0");
+    cprt_data.extend_from_slice(b"Nagisa PDF ICC Profile - MIT License\0");
     tags.push(*b"cprt");
     data_blobs.push(cprt_data);
 
@@ -630,13 +634,23 @@ pub fn generate_valid_cmyk_icc(condition_name: &str) -> Vec<u8> {
     tags.push(*b"wtpt");
     data_blobs.push(wtpt_data);
 
-    // 4. Tag 'kTRC': CurveType (Linear curve)
-    let mut ktrc_data = Vec::new();
-    ktrc_data.extend_from_slice(b"curv");
-    ktrc_data.extend_from_slice(&0u32.to_be_bytes());
-    ktrc_data.extend_from_slice(&0u32.to_be_bytes()); // count = 0 (linear response)
-    tags.push(*b"kTRC");
-    data_blobs.push(ktrc_data);
+    // 4. Tone reproduction curve
+    let mut trc_data = Vec::new();
+    trc_data.extend_from_slice(b"curv");
+    trc_data.extend_from_slice(&0u32.to_be_bytes());
+    trc_data.extend_from_slice(&0u32.to_be_bytes()); // count = 0 (linear response)
+
+    if is_rgb {
+        tags.push(*b"rTRC");
+        data_blobs.push(trc_data.clone());
+        tags.push(*b"gTRC");
+        data_blobs.push(trc_data.clone());
+        tags.push(*b"bTRC");
+        data_blobs.push(trc_data);
+    } else {
+        tags.push(*b"kTRC");
+        data_blobs.push(trc_data);
+    }
 
     let tag_count = tags.len() as u32;
     let tag_table_len = 4 + tag_count * 12;
@@ -663,7 +677,11 @@ pub fn generate_valid_cmyk_icc(condition_name: &str) -> Vec<u8> {
     header[4..8].copy_from_slice(b"ADBE");
     header[8..12].copy_from_slice(&0x02100000u32.to_be_bytes()); // v2.1.0
     header[12..16].copy_from_slice(b"prtr"); // Device class 'prtr'
-    header[16..20].copy_from_slice(b"CMYK"); // Data color space 'CMYK'
+    if is_rgb {
+        header[16..20].copy_from_slice(b"RGB "); // Data color space 'RGB '
+    } else {
+        header[16..20].copy_from_slice(b"CMYK"); // Data color space 'CMYK'
+    }
     header[20..24].copy_from_slice(b"XYZ "); // Connection space 'XYZ '
                                              // Creation date/time 2026/01/01
     header[24..26].copy_from_slice(&2026u16.to_be_bytes());

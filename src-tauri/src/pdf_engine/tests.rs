@@ -692,7 +692,11 @@ mod tests {
 
         // Font resource for Helvetica must be present in Resources
         let resources = out_page.get(b"Resources").expect("Resources exist");
-        let res_dict = resources.as_dict().expect("Resources dict");
+        let res_dict = match resources {
+            Object::Dictionary(d) => d.clone(),
+            Object::Reference(r) => out_doc.get_dictionary(*r).unwrap().clone(),
+            _ => panic!("Expected dict or reference for Resources"),
+        };
         assert!(
             res_dict.get(b"Font").is_ok(),
             "Font dict must be present in Resources"
@@ -831,8 +835,8 @@ mod tests {
             "Pre-existing F1 font must NOT be wiped out!"
         );
         assert!(
-            font_dict.get(b"DocForgeHelv").is_ok(),
-            "DocForgeHelv font must be added!"
+            font_dict.get(b"NagisaHelv").is_ok(),
+            "NagisaHelv font must be added!"
         );
     }
 
@@ -1087,15 +1091,15 @@ mod tests {
     fn test_tsv_geometry_parsing() {
         let sample_tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
 1\t1\t0\t0\t0\t0\t0\t0\t500\t800\t-1\t\n\
-5\t1\t1\t1\t1\t1\t50\t100\t80\t20\t95\tDocForge\n\
+5\t1\t1\t1\t1\t1\t50\t100\t80\t20\t95\tNagisa\n\
 5\t1\t1\t1\t1\t2\t140\t100\t60\t20\t92\tSuite";
 
         let (text, avg_conf, suspects, words) = crate::ocr_engine::parse_tsv_words(sample_tsv);
-        assert_eq!(text.trim(), "DocForge Suite");
+        assert_eq!(text.trim(), "Nagisa Suite");
         assert!(avg_conf > 90.0);
         assert_eq!(suspects.len(), 0);
         assert_eq!(words.len(), 2);
-        assert_eq!(words[0].text, "DocForge");
+        assert_eq!(words[0].text, "Nagisa");
         assert_eq!(words[0].left, 50.0);
         assert_eq!(words[0].top, 100.0);
         assert_eq!(words[0].width, 80.0);
@@ -2271,6 +2275,1738 @@ mod tests {
         }
         let _ = std::fs::remove_file(&tmp_redacted);
     }
+
+    #[test]
+    fn test_office_exports_produce_valid_openxml_zips() {
+        let pdf_data = create_test_pdf(2);
+        let tmp_dir = std::env::temp_dir().join(format!("test_openxml_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // 1. Word (.docx)
+        let docx_path = tmp_dir.join("test.docx");
+        crate::pdf_engine::export_office::pdf_to_word(&pdf_data, docx_path.to_str().unwrap())
+            .expect("pdf_to_word failed");
+        let docx_file = std::fs::File::open(&docx_path).unwrap();
+        let mut docx_zip = zip::ZipArchive::new(docx_file).expect("Word output must be valid ZIP");
+        assert!(docx_zip.by_name("[Content_Types].xml").is_ok());
+        assert!(docx_zip.by_name("_rels/.rels").is_ok());
+        assert!(docx_zip.by_name("word/document.xml").is_ok());
+
+        // 2. Excel (.xlsx)
+        let xlsx_path = tmp_dir.join("test.xlsx");
+        crate::pdf_engine::export_office::pdf_to_excel(&pdf_data, xlsx_path.to_str().unwrap())
+            .expect("pdf_to_excel failed");
+        let xlsx_file = std::fs::File::open(&xlsx_path).unwrap();
+        let mut xlsx_zip = zip::ZipArchive::new(xlsx_file).expect("Excel output must be valid ZIP");
+        assert!(xlsx_zip.by_name("[Content_Types].xml").is_ok());
+        assert!(xlsx_zip.by_name("_rels/.rels").is_ok());
+        assert!(xlsx_zip.by_name("xl/workbook.xml").is_ok());
+        assert!(xlsx_zip.by_name("xl/worksheets/sheet1.xml").is_ok());
+
+        // 3. PowerPoint (.pptx)
+        let pptx_path = tmp_dir.join("test.pptx");
+        crate::pdf_engine::export_office::pdf_to_powerpoint(&pdf_data, pptx_path.to_str().unwrap())
+            .expect("pdf_to_powerpoint failed");
+        let pptx_file = std::fs::File::open(&pptx_path).unwrap();
+        let mut pptx_zip = zip::ZipArchive::new(pptx_file).expect("PowerPoint output must be valid ZIP");
+        assert!(pptx_zip.by_name("[Content_Types].xml").is_ok());
+        assert!(pptx_zip.by_name("_rels/.rels").is_ok());
+        assert!(pptx_zip.by_name("ppt/presentation.xml").is_ok());
+        assert!(pptx_zip.by_name("ppt/slides/slide1.xml").is_ok());
+        assert!(pptx_zip.by_name("ppt/slides/slide2.xml").is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_optimize_pdf_preserves_object_references() {
+        let mut doc = Document::with_version("1.7");
+        let content_data = b"0.5 0.5 0.5 rg 10 10 100 100 re f";
+        let stream = lopdf::Stream::new(Dictionary::new(), content_data.to_vec());
+        let stream_id = doc.add_object(Object::Stream(stream));
+
+        // Two pages referencing the EXACT SAME stream content object or empty dictionaries
+        let mut p1 = Dictionary::new();
+        p1.set("Type", Object::Name("Page".into()));
+        p1.set("Contents", Object::Reference(stream_id));
+        p1.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(595.0), Object::Real(842.0)]));
+        let p1_id = doc.add_object(Object::Dictionary(p1));
+
+        let mut p2 = Dictionary::new();
+        p2.set("Type", Object::Name("Page".into()));
+        p2.set("Contents", Object::Reference(stream_id));
+        p2.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(595.0), Object::Real(842.0)]));
+        let p2_id = doc.add_object(Object::Dictionary(p2));
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name("Pages".into()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(p1_id), Object::Reference(p2_id)]));
+        pages.set("Count", Object::Integer(2));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut initial_pdf = Vec::new();
+        doc.save_to(&mut initial_pdf).unwrap();
+
+        // Optimize PDF must NOT delete referenced objects or produce dangling references
+        let optimized = crate::pdf_engine::inspect::optimize_pdf(&initial_pdf).expect("Optimize must succeed");
+        let loaded_doc = Document::load_mem(&optimized).expect("Optimized PDF must be valid and readable");
+
+        let p_ids = get_page_ids(&loaded_doc);
+        assert_eq!(p_ids.len(), 2, "Optimized PDF must preserve all pages");
+
+        for pid in p_ids {
+            let page_dict = loaded_doc.objects.get(&pid).unwrap().as_dict().unwrap();
+            let c_ref = page_dict.get(b"Contents").unwrap().as_reference().unwrap();
+            assert!(loaded_doc.objects.get(&c_ref).is_some(), "Contents reference must exist and not be a dangling dead pointer!");
+        }
+    }
+
+    #[test]
+    fn test_header_footer_and_bates_cjk_embedding() {
+        let mut doc = Document::with_version("1.7");
+        let mut p = Dictionary::new();
+        p.set("Type", Object::Name("Page".into()));
+        p.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(595.0), Object::Real(842.0)]));
+        let pid = doc.add_object(Object::Dictionary(p));
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name("Pages".into()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(pid)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut base_pdf = Vec::new();
+        doc.save_to(&mut base_pdf).unwrap();
+
+        // 1. Test header footer with Japanese text
+        let with_hf = crate::pdf_engine::batch_ops::add_header_footer(
+            &base_pdf,
+            "【社外秘】渚文書第 {page} 頁",
+            "株式会社ナギサ 全 {total} 頁",
+            10.0,
+            20.0,
+        ).expect("add_header_footer with CJK must succeed");
+
+        let hf_doc = Document::load_mem(&with_hf).expect("Must load valid PDF");
+        let hf_page_id = get_page_ids(&hf_doc)[0];
+        let hf_res = crate::pdf_engine::common::resolve_page_resources(&hf_doc, hf_page_id);
+        let hf_fonts = hf_res.get(b"Font").unwrap().as_dict().unwrap();
+        let font_ref = hf_fonts.get(b"HeaderFooterFont").unwrap().as_reference().unwrap();
+        let font_obj = hf_doc.objects.get(&font_ref).unwrap().as_dict().unwrap();
+        assert_eq!(font_obj.get(b"Subtype").unwrap().as_name().unwrap(), b"Type0", "Must embed Type0 Unicode font for CJK header!");
+
+        // 2. Test Bates numbering with Japanese prefix
+        let with_bates = crate::pdf_engine::batch_ops::add_bates_number(
+            &base_pdf,
+            "証拠甲-",
+            1,
+            12.0,
+            25.0,
+        ).expect("add_bates_number with CJK must succeed");
+
+        let bates_doc = Document::load_mem(&with_bates).expect("Must load valid PDF");
+        let bates_page_id = get_page_ids(&bates_doc)[0];
+        let bates_res = crate::pdf_engine::common::resolve_page_resources(&bates_doc, bates_page_id);
+        let bates_fonts = bates_res.get(b"Font").unwrap().as_dict().unwrap();
+        let bates_font_ref = bates_fonts.get(b"BatesFont").unwrap().as_reference().unwrap();
+        let bates_font_obj = bates_doc.objects.get(&bates_font_ref).unwrap().as_dict().unwrap();
+        assert_eq!(bates_font_obj.get(b"Subtype").unwrap().as_name().unwrap(), b"Type0", "Must embed Type0 Unicode font for CJK Bates prefix!");
+    }
+
+    #[test]
+    fn test_xfdf_robust_xml_and_hierarchical_replies() {
+        let base_pdf = create_test_pdf(2);
+
+        // Acrobat-style XFDF with multiline attributes, random attribute order, self-closing tag, and inreplyto
+        let sample_xfdf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xfdf xmlns="http://ns.adobe.com/xfdf/" xml:space="preserve">
+  <annotations>
+    <highlight
+        title="山田太郎"
+        page="1"
+        name="annot_100"
+        left="50.5"
+        top="100.2"
+        width="200.0"
+        height="30.0">
+      <contents>重要箇所のハイライト</contents>
+    </highlight>
+    <text
+        name="annot_200"
+        inreplyto="annot_100"
+        page="1"
+        title="佐藤花子"
+        left="60.0"
+        top="110.0"
+        width="50.0"
+        height="50.0">
+      <contents>了解しました、修正します。</contents>
+    </text>
+  </annotations>
+</xfdf>"#;
+
+        let imported_pdf = crate::pdf_engine::forms::import_xfdf(&base_pdf, sample_xfdf)
+            .expect("Robust XML parser must parse Acrobat-style multiline XFDF");
+
+        let doc = Document::load_mem(&imported_pdf).expect("Must load valid PDF");
+        let page_ids = get_page_ids(&doc);
+        assert!(!page_ids.is_empty());
+
+        let page_dict = doc.objects.get(&page_ids[0]).unwrap().as_dict().unwrap();
+        let annots_arr = page_dict.get(b"Annots").unwrap().as_array().unwrap();
+        assert_eq!(annots_arr.len(), 2, "Both parent annot and reply must be in page Annots");
+
+        // Find parent and reply
+        let mut parent_id = None;
+        let mut reply_annot = None;
+
+        for a_ref in annots_arr {
+            let id = a_ref.as_reference().unwrap();
+            let annot_dict = doc.objects.get(&id).unwrap().as_dict().unwrap();
+            if annot_dict.get(b"Subtype").unwrap().as_name().unwrap() == b"Highlight" {
+                parent_id = Some(id);
+                let contents = annot_dict.get(b"Contents").unwrap().as_str().unwrap();
+                assert_eq!(crate::pdf_engine::common::decode_pdf_text_string(contents), "重要箇所のハイライト");
+            } else if annot_dict.get(b"Subtype").unwrap().as_name().unwrap() == b"Text" {
+                reply_annot = Some(annot_dict.clone());
+            }
+        }
+
+        let pid = parent_id.expect("Must find parent highlight annotation");
+        let reply = reply_annot.expect("Must find reply annotation");
+
+        // Verify /IRT points to parent_id
+        let irt = reply.get(b"IRT").expect("Reply must have /IRT entry").as_reference().unwrap();
+        assert_eq!(irt, pid, "Reply's /IRT must point directly to parent's ObjectId!");
+
+        // Now test export_xfdf roundtrip to ensure inreplyto="annot_..." is exported!
+        let exported_xfdf = crate::pdf_engine::forms::export_xfdf(&imported_pdf)
+            .expect("export_xfdf must succeed");
+        assert!(exported_xfdf.contains(&format!("inreplyto=\"annot_{}\"", pid.0)), "Exported XFDF must preserve inreplyto attribute!");
+    }
+
+    #[test]
+    fn test_delete_annotation_indirect_annots() {
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
+
+        // Create an annotation object
+        let mut a_dict = Dictionary::new();
+        a_dict.set("Type", Object::Name("Annot".into()));
+        a_dict.set("Subtype", Object::Name("Highlight".into()));
+        let annot_id = doc.add_object(Object::Dictionary(a_dict));
+
+        // Create an INDIRECT Annots array (typical of InDesign / Acrobat Pro)
+        let indirect_annots_id = doc.add_object(Object::Array(vec![Object::Reference(annot_id)]));
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name("Page".into()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set("Annots", Object::Reference(indirect_annots_id)); // Indirect reference!
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Count", Object::Integer(1));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        if let Some(Object::Dictionary(ref mut p)) = doc.objects.get_mut(&pages_id) {
+            *p = pages_dict;
+        }
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut pdf_data = Vec::new();
+        doc.save_to(&mut pdf_data).unwrap();
+
+        // Call delete_annotation
+        let modified_pdf = crate::pdf_engine::annot_manage::delete_annotation(&pdf_data, annot_id)
+            .expect("delete_annotation must succeed on indirect Annots");
+
+        let res_doc = Document::load_mem(&modified_pdf).expect("Must load valid PDF");
+        // Annotation object itself must be deleted
+        assert!(!res_doc.objects.contains_key(&annot_id), "Annotation object must be removed");
+
+        // Indirect Annots array must be updated and empty
+        let indir_annots = res_doc.objects.get(&indirect_annots_id).unwrap().as_array().unwrap();
+        assert!(indir_annots.is_empty(), "Indirect Annots array must no longer contain deleted annot reference!");
+    }
+
+    #[test]
+    fn test_scanned_images_homography_and_dpi_sanity() {
+        use image::{Rgb, RgbImage};
+
+        // Create a temporary test image with a white quadrilateral document on a dark background
+        let w = 400u32;
+        let h = 300u32;
+        let mut img = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                img.put_pixel(x, y, Rgb([20, 20, 20]));
+            }
+        }
+        // Draw document shape (approx 40,30 to 360,270)
+        for y in 40..260 {
+            for x in 50..350 {
+                img.put_pixel(x, y, Rgb([230, 230, 230]));
+            }
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("test_scan_sample.png");
+        let path_str = test_path.to_str().unwrap().to_string();
+        img.save(&test_path).expect("save test image");
+
+        let pdf_data = crate::image_engine::process_scanned_images(
+            &[path_str],
+            true,
+            true,
+            300,
+        ).expect("process_scanned_images must succeed");
+
+        let _ = std::fs::remove_file(&test_path);
+
+        assert!(!pdf_data.is_empty());
+        let doc = Document::load_mem(&pdf_data).expect("Scanned output must be valid PDF");
+        assert_eq!(doc.get_pages().len(), 1, "Must generate exactly 1 page");
+    }
+
+    #[test]
+    fn test_html_to_pdf_multi_engine_fallback() {
+        let html_content = "<html><body><h1>Nagisa PDF Report</h1><p>Testing robust HTML to PDF generation.</p></body></html>";
+        let out_path = std::env::temp_dir().join("test_html_output.pdf");
+        let out_str = out_path.to_str().unwrap();
+
+        let res = crate::pdf_engine::convert::html_to_pdf(html_content, out_str);
+        assert!(res.is_ok(), "html_to_pdf must succeed via headless browser or pure-Rust fallback: {:?}", res.err());
+
+        let pdf_bytes = std::fs::read(&out_path).expect("read generated pdf");
+        let _ = std::fs::remove_file(&out_path);
+
+        assert!(!pdf_bytes.is_empty());
+        let doc = Document::load_mem(&pdf_bytes).expect("Output must be valid PDF");
+        assert!(doc.get_pages().len() >= 1);
+    }
+
+    #[test]
+    fn test_add_and_verify_doctimestamp() {
+        let pdf = create_test_pdf(1);
+        let stamped = crate::pdf_engine::security::add_timestamp(&pdf, "Nagisa DigiCert TSA")
+            .expect("add_timestamp must succeed");
+
+        let res = crate::pdf_engine::security::verify_timestamp(&stamped)
+            .expect("verify_timestamp must succeed");
+        assert!(res.valid, "DocTimeStamp must be recognized as valid");
+        assert_eq!(res.authority, "Nagisa DigiCert TSA");
+        assert!(res.timestamp.starts_with("D:"));
+    }
+
+    #[test]
+    fn test_images_to_pdf_high_dpi_does_not_blow_up_page_size() {
+        // Create a 2480x3508 high-resolution image (typical 300 DPI A4 scan)
+        use image::{ImageBuffer, Rgb};
+        let w = 2480u32;
+        let h = 3508u32;
+        let img = ImageBuffer::from_pixel(w, h, Rgb([240u8, 240u8, 240u8]));
+        let tmp_img_path = std::env::temp_dir().join(format!("nagisa_hires_scan_{}.jpg", std::process::id()));
+        img.save_with_format(&tmp_img_path, image::ImageFormat::Jpeg).expect("save hires jpeg");
+
+        let out_pdf_path = std::env::temp_dir().join(format!("nagisa_hires_scan_{}.pdf", std::process::id()));
+        let res = images_to_pdf(&[tmp_img_path.to_str().unwrap().to_string()], out_pdf_path.to_str().unwrap());
+        assert!(res.is_ok(), "images_to_pdf must succeed");
+
+        let pdf_bytes = std::fs::read(&out_pdf_path).expect("read output PDF");
+        let _ = std::fs::remove_file(&tmp_img_path);
+        let _ = std::fs::remove_file(&out_pdf_path);
+
+        let doc = Document::load_mem(&pdf_bytes).expect("load output PDF");
+        let pages = doc.get_pages();
+        assert_eq!(pages.len(), 1);
+
+        let page_id = pages.values().next().unwrap();
+        let page_obj = doc.objects.get(page_id).unwrap().as_dict().unwrap();
+        let mediabox = page_obj.get(b"MediaBox").unwrap().as_array().unwrap();
+        let pt_w = mediabox[2].as_float().unwrap();
+        let pt_h = mediabox[3].as_float().unwrap();
+
+        // Standard A4 is 595.28 x 841.89 pt. It must NOT be scaled up to 1860+ pt (96 DPI blowup)!
+        assert!(
+            pt_w <= 596.0 && pt_h <= 842.0,
+            "High-res scan must fit within standard A4 bounds! Got: {} x {}",
+            pt_w, pt_h
+        );
+    }
+
+    #[test]
+    fn test_flatten_transparency_neutralizes_extgstate_and_group() {
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+
+        // Add ExtGState with transparency: CA 0.5, ca 0.5, BM /Multiply, and SMask
+        let mut gs_dict = Dictionary::new();
+        gs_dict.set("Type", Object::Name(b"ExtGState".to_vec()));
+        gs_dict.set("CA", Object::Real(0.5));
+        gs_dict.set("ca", Object::Real(0.5));
+        gs_dict.set("BM", Object::Name(b"Multiply".to_vec()));
+        gs_dict.set("SMask", Object::Name(b"None".to_vec()));
+        let gs_id = doc.add_object(Object::Dictionary(gs_dict));
+
+        let mut res_dict = Dictionary::new();
+        let mut extg_dict = Dictionary::new();
+        extg_dict.set("GS1", Object::Reference(gs_id));
+        res_dict.set("ExtGState", Object::Dictionary(extg_dict));
+        let res_id = doc.add_object(Object::Dictionary(res_dict));
+
+        // Create transparency group
+        let mut grp_dict = Dictionary::new();
+        grp_dict.set("Type", Object::Name(b"Group".to_vec()));
+        grp_dict.set("S", Object::Name(b"Transparency".to_vec()));
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set("MediaBox", Object::Array(vec![Object::Integer(0), Object::Integer(0), Object::Integer(612), Object::Integer(792)]));
+        page_dict.set("Resources", Object::Reference(res_id));
+        page_dict.set("Group", Object::Dictionary(grp_dict));
+
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog_dict));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+
+        let raw_pdf = save_doc(&mut doc).expect("save initial PDF");
+
+        // Flatten transparency
+        let flattened_pdf = flatten_transparency(&raw_pdf).expect("flatten_transparency must succeed");
+        let flat_doc = Document::load_mem(&flattened_pdf).expect("load flattened PDF");
+
+        // Verify ExtGState is now completely opaque and blend mode is Normal
+        let updated_gs = flat_doc.objects.get(&gs_id).expect("gs_id must exist").as_dict().unwrap();
+        assert_eq!(updated_gs.get(b"CA").unwrap().as_float().unwrap(), 1.0);
+        assert_eq!(updated_gs.get(b"ca").unwrap().as_float().unwrap(), 1.0);
+        assert_eq!(updated_gs.get(b"BM").unwrap().as_name().unwrap(), b"Normal");
+        assert!(updated_gs.get(b"SMask").is_err(), "SMask must be removed");
+
+        // Verify Page transparency group has been stripped
+        let updated_page = flat_doc.objects.get(&page_id).expect("page_id must exist").as_dict().unwrap();
+        assert!(updated_page.get(b"Group").is_err(), "Transparency group must be removed");
+    }
+
+    #[test]
+    fn test_execute_action_wizard_multi_step() {
+        let initial_pdf = create_test_pdf(2);
+        let wizard_json = r#"{
+            "name": "QuickSanitizeAndStamp",
+            "steps": [
+                {
+                    "action_type": "remove_metadata",
+                    "params": {}
+                },
+                {
+                    "action_type": "add_page_numbers",
+                    "params": {
+                        "position": "bottom-center",
+                        "font_size": 10.0,
+                        "start_number": 1
+                    }
+                },
+                {
+                    "action_type": "optimize",
+                    "params": {}
+                }
+            ]
+        }"#;
+
+        let result_pdf = execute_action_wizard(&initial_pdf, wizard_json).expect("wizard execution must succeed");
+        assert!(!result_pdf.is_empty());
+        let doc = Document::load_mem(&result_pdf).expect("result must be a valid PDF");
+        assert_eq!(doc.get_pages().len(), 2);
+    }
+
+    #[test]
+    fn test_change_text_color_protects_non_text_graphics_and_handles_arrays() {
+        // Build a PDF with both text block (BT..ET) and vector graphic shape (re, f)
+        // using an array of content streams for /Contents
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.new_object_id();
+
+        // Stream 1: Background vector rectangle in blue (#0000FF = 0 0 1 rg)
+        let stream1_content = "0 0 1 rg 50 50 200 100 re f".as_bytes().to_vec();
+        let stream1_id = doc.add_object(Stream::new(Dictionary::new(), stream1_content));
+
+        // Stream 2: Text block in black (#000000 = 0 0 0 rg)
+        let stream2_content = "BT /Helvetica 12 Tf 0 0 0 rg (Hello World) Tj ET".as_bytes().to_vec();
+        let stream2_id = doc.add_object(Stream::new(Dictionary::new(), stream2_content));
+
+        // Page with /Contents as an Array [stream1_id, stream2_id]
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set("MediaBox", Object::Array(vec![Object::Integer(0), Object::Integer(0), Object::Integer(612), Object::Integer(792)]));
+        page_dict.set("Contents", Object::Array(vec![Object::Reference(stream1_id), Object::Reference(stream2_id)]));
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog_dict));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+
+        let initial_pdf = save_doc(&mut doc).expect("save doc");
+
+        // Change text color to Red (#FF0000)
+        let modified_pdf = crate::pdf_engine::font_style::change_text_color(
+            &initial_pdf,
+            0,
+            "#000000",
+            "#FF0000",
+        ).expect("change_text_color must succeed on array contents");
+
+        let mod_doc = Document::load_mem(&modified_pdf).expect("load modified PDF");
+
+        // Check Stream 1: Background vector rectangle MUST STILL BE BLUE! Not turned into Red!
+        let s1 = mod_doc.objects.get(&stream1_id).unwrap().as_stream().unwrap();
+        let s1_decomp = s1.decompressed_content().unwrap_or_else(|_| s1.content.clone());
+        let s1_str = String::from_utf8_lossy(&s1_decomp);
+        assert!(s1_str.contains("0 0 1 rg"), "Vector graphic background must NOT be modified: {}", s1_str);
+
+        // Check Stream 2: Text block MUST BE RED (#FF0000 -> 1 0 0 rg)
+        let s2 = mod_doc.objects.get(&stream2_id).unwrap().as_stream().unwrap();
+        let s2_decomp = s2.decompressed_content().unwrap_or_else(|_| s2.content.clone());
+        let s2_str = String::from_utf8_lossy(&s2_decomp);
+        assert!(s2_str.contains("1 0 0 rg"), "Text color must be updated to red: {}", s2_str);
+    }
+
+    #[test]
+    fn test_interactive_form_fields_iso_compliance() {
+        let base_pdf = create_test_pdf(1);
+
+        // 1. Create Dropdown: must have /Ff with Combo flag (1 << 17 = 131072)
+        let dropdown_pdf = form_creator::create_dropdown(
+            &base_pdf,
+            0,
+            "Fruits",
+            &["Apple".into(), "Banana".into(), "Cherry".into()],
+            50.0,
+            600.0,
+            120.0,
+            24.0,
+        ).expect("create dropdown");
+
+        let doc1 = Document::load_mem(&dropdown_pdf).expect("load dropdown pdf");
+        // Find field
+        let mut found_combo = false;
+        for (_, obj) in doc1.objects.iter() {
+            if let Object::Dictionary(dict) = obj {
+                if let Ok(Object::String(name, _)) = dict.get(b"T") {
+                    if name == b"Fruits" {
+                        if let Ok(Object::Integer(ff)) = dict.get(b"Ff") {
+                            assert_eq!(ff & (1 << 17), 1 << 17, "Combo box MUST have Combo bit (1<<17) set in Ff");
+                            found_combo = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_combo, "Dropdown field 'Fruits' with Combo flag must exist");
+
+        // 2. Create Checkbox: must have /V and /AS Name objects and dual /AP /N states (/Yes and /Off)
+        let checkbox_pdf = form_creator::create_checkbox(
+            &base_pdf,
+            0,
+            "Agreement",
+            50.0,
+            550.0,
+            true,
+        ).expect("create checkbox");
+
+        let doc2 = Document::load_mem(&checkbox_pdf).expect("load checkbox pdf");
+        let mut found_cb = false;
+        for (_, obj) in doc2.objects.iter() {
+            if let Object::Dictionary(dict) = obj {
+                if let Ok(Object::String(name, _)) = dict.get(b"T") {
+                    if name == b"Agreement" {
+                        assert_eq!(dict.get(b"V").unwrap(), &Object::Name(b"Yes".to_vec()));
+                        assert_eq!(dict.get(b"AS").unwrap(), &Object::Name(b"Yes".to_vec()));
+                        // Check AP /N contains both /Yes and /Off
+                        let ap_dict = dict.get(b"AP").unwrap().as_dict().unwrap();
+                        let n_dict = ap_dict.get(b"N").unwrap().as_dict().unwrap();
+                        assert!(n_dict.get(b"Yes").is_ok(), "Normal appearance must have /Yes state");
+                        assert!(n_dict.get(b"Off").is_ok(), "Normal appearance must have /Off state");
+                        found_cb = true;
+                    }
+                }
+            }
+        }
+        assert!(found_cb, "Checkbox field 'Agreement' must have compliant /V, /AS and dual /AP /N");
+
+        // 3. Create Radio Button Group: must have single parent field with Radio flag & Kids widget annotations
+        let radio_pdf = form_creator::create_radio_button(
+            &base_pdf,
+            0,
+            "ShippingMethod",
+            &["Standard".into(), "Express".into(), "Overnight".into()],
+            50.0,
+            500.0,
+        ).expect("create radio button group");
+
+        let doc3 = Document::load_mem(&radio_pdf).expect("load radio pdf");
+        let mut found_parent = false;
+        for (_, obj) in doc3.objects.iter() {
+            if let Object::Dictionary(dict) = obj {
+                if let Ok(Object::String(name, _)) = dict.get(b"T") {
+                    if name == b"ShippingMethod" {
+                        // Check Ff has Radio flag (1 << 15)
+                        let ff = dict.get(b"Ff").unwrap().as_i64().unwrap();
+                        assert_ne!(ff & (1 << 15), 0, "Radio group parent must have Radio bit set in Ff");
+                        // Check Kids has 3 annotations
+                        let kids = dict.get(b"Kids").unwrap().as_array().unwrap();
+                        assert_eq!(kids.len(), 3, "Radio group must have 3 kid widgets");
+                        found_parent = true;
+                    }
+                }
+            }
+        }
+        assert!(found_parent, "Radio button parent field must exist with ISO 32000 compliant hierarchy");
+    }
+
+    #[test]
+    fn test_add_text_multiline_support() {
+        let base_pdf = create_test_pdf(1);
+        let multiline_japanese = "一行目のテキスト\n二行目のテキスト\n三行目のテキスト";
+
+        let modified_pdf = common::add_text(
+            &base_pdf,
+            0,
+            multiline_japanese,
+            50.0,
+            700.0,
+            16.0,
+            "#000000",
+        ).expect("add_text multiline must succeed");
+
+        let doc = Document::load_mem(&modified_pdf).expect("load modified doc");
+        let page_ids = get_page_ids(&doc);
+        let page_dict = doc.get_dictionary(page_ids[0]).expect("page dict");
+        let contents = page_dict.get(b"Contents").expect("contents");
+
+        // The added content stream should contain multiple Tm and Tj operations
+        let added_stream_id = match contents {
+            Object::Array(arr) => arr.last().unwrap().as_reference().unwrap(),
+            Object::Reference(r) => *r,
+            _ => panic!("Expected array or reference contents"),
+        };
+        let stream = doc.objects.get(&added_stream_id).unwrap().as_stream().unwrap();
+        let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+        let content = lopdf::content::Content::decode(&decomp).expect("decode content operations");
+
+        let tj_count = content.operations.iter().filter(|op| op.operator == "Tj").count();
+        let tm_count = content.operations.iter().filter(|op| op.operator == "Tm").count();
+        assert_eq!(tj_count, 3, "Must render exactly 3 lines via Tj operators");
+        assert_eq!(tm_count, 3, "Must position each line via Tm matrix operators");
+    }
+
+    #[test]
+    fn test_add_calculated_field_iso32000_compliance() {
+        let base_pdf = create_test_pdf(1);
+        let updated = crate::pdf_engine::forms::add_calculated_field(
+            &base_pdf,
+            0,
+            "TotalSum",
+            "Quantity * Price",
+            100.0,
+            500.0,
+            120.0,
+            30.0,
+        )
+        .expect("add_calculated_field should succeed");
+
+        let doc = Document::load_mem(&updated).expect("load updated doc");
+
+        // 1. Verify AcroForm in Catalog
+        let catalog = doc.catalog().expect("Catalog must exist");
+        let acroform_ref = catalog.get(b"AcroForm").expect("AcroForm must be present in Catalog");
+        let acroform = match acroform_ref {
+            Object::Reference(r) => doc.objects.get(r).unwrap().as_dict().unwrap(),
+            Object::Dictionary(d) => d,
+            _ => panic!("Expected AcroForm dict or ref"),
+        };
+        let fields = acroform.get(b"Fields").expect("Fields array in AcroForm").as_array().unwrap();
+        assert!(!fields.is_empty(), "AcroForm /Fields must not be empty");
+
+        // 2. Find the TotalSum field dictionary
+        let mut found_field = false;
+        for field_ref in fields {
+            let f_id = field_ref.as_reference().unwrap();
+            let f_dict = doc.objects.get(&f_id).unwrap().as_dict().unwrap();
+            if let Ok(Object::String(name, _)) = f_dict.get(b"T") {
+                if name == b"TotalSum" {
+                    found_field = true;
+
+                    // 3. Verify Appearance Stream (/AP /N)
+                    let ap = f_dict.get(b"AP").expect("/AP dict must be present").as_dict().unwrap();
+                    assert!(ap.get(b"N").is_ok(), "/AP /N normal appearance stream must exist");
+
+                    // 4. Verify ISO 32000-1 §12.6.3 Additional-actions dictionary (/AA)
+                    let aa = f_dict.get(b"AA").expect("/AA dict must be present").as_dict().unwrap();
+                    let c_action_ref = aa.get(b"C").expect("/AA must contain /C (Calculate) event dictionary");
+                    let c_action = match c_action_ref {
+                        Object::Reference(r) => doc.objects.get(r).unwrap().as_dict().unwrap(),
+                        Object::Dictionary(d) => d,
+                        _ => panic!("Expected /C action dict"),
+                    };
+
+                    let s = c_action.get(b"S").unwrap().as_name().unwrap();
+                    assert_eq!(s, b"JavaScript", "Action /S must be /JavaScript");
+
+                    let js_bytes = c_action.get(b"JS").unwrap().as_str().unwrap();
+                    let js_str = String::from_utf8_lossy(js_bytes);
+                    assert!(
+                        js_str.contains("Quantity * Price") && js_str.contains("event.value"),
+                        "Calculation JS script must set event.value: {}",
+                        js_str
+                    );
+                }
+            }
+        }
+        assert!(found_field, "TotalSum field must be registered in AcroForm Fields");
+    }
+
+    #[test]
+    fn test_embed_javascript_iso32000_compliance() {
+        let base_pdf = create_test_pdf(1);
+        let js_code = "console.println('Nagisa Engine Init');";
+
+        let embedded = crate::pdf_engine::convert::embed_javascript(&base_pdf, js_code)
+            .expect("embed_javascript should succeed");
+
+        let doc = Document::load_mem(&embedded).expect("load doc");
+        let catalog = doc.catalog().expect("Catalog must exist");
+
+        // Verify /Root /Names /JavaScript exists per ISO 32000-1 §12.6.4.4
+        let names_ref = catalog.get(b"Names").expect("/Names dictionary must exist on Root");
+        let names_dict = match names_ref {
+            Object::Reference(r) => doc.objects.get(r).unwrap().as_dict().unwrap(),
+            Object::Dictionary(d) => d,
+            _ => panic!("Expected /Names dict"),
+        };
+
+        let js_names_ref = names_dict.get(b"JavaScript").expect("/Names /JavaScript must exist");
+        let js_names_dict = match js_names_ref {
+            Object::Reference(r) => doc.objects.get(r).unwrap().as_dict().unwrap(),
+            Object::Dictionary(d) => d,
+            _ => panic!("Expected /JavaScript dict"),
+        };
+
+        let names_arr = js_names_dict.get(b"Names").expect("/Names array must exist in JS name tree").as_array().unwrap();
+        assert!(names_arr.len() >= 2, "Name tree must have key-value pairs");
+
+        let action_ref = names_arr[1].as_reference().unwrap();
+        let action_dict = doc.objects.get(&action_ref).unwrap().as_dict().unwrap();
+        assert_eq!(action_dict.get(b"S").unwrap().as_name().unwrap(), b"JavaScript");
+        assert_eq!(action_dict.get(b"JS").unwrap().as_str().unwrap(), js_code.as_bytes());
+    }
+
+    #[test]
+    fn test_html_to_pdf_fallback_japanese_preservation() {
+        let temp_dir = std::env::temp_dir().join(format!("nagisa_test_html_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let output_path = temp_dir.join("fallback_japanese.pdf");
+
+        // Fallback plain-text/HTML rendering with Japanese content
+        let html = "<html><body><h1>渚エンジン</h1><p>日本語の文書です。消滅しません。</p></body></html>";
+        let res = crate::pdf_engine::convert::generate_pdf_from_plain_text(
+            &crate::pdf_engine::convert::extract_text_from_html(html),
+            output_path.to_str().unwrap(),
+        );
+
+        assert!(res.is_ok(), "Fallback PDF generation must succeed: {:?}", res);
+
+        let pdf_bytes = std::fs::read(&output_path).expect("read generated fallback PDF");
+        let doc = Document::load_mem(&pdf_bytes).expect("load fallback PDF");
+
+        // Verify that font is NagisaCJK with TrueType/Type0 composite Unicode font
+        let page_ids = get_page_ids(&doc);
+        assert!(!page_ids.is_empty(), "Page must be created");
+
+        let page_dict = doc.get_dictionary(page_ids[0]).expect("page dict");
+        let res_ref = page_dict.get(b"Resources").expect("Resources");
+        let res_dict = match res_ref {
+            Object::Reference(r) => doc.objects.get(r).unwrap().as_dict().unwrap(),
+            Object::Dictionary(d) => d,
+            _ => panic!("Resources"),
+        };
+        let fonts = res_dict.get(b"Font").expect("Font dict").as_dict().unwrap();
+        assert!(fonts.get(b"NagisaCJK").is_ok(), "NagisaCJK Unicode font must be embedded for Japanese fallback");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_add_page_numbers_graphics_state_isolation() {
+        let base_pdf = create_test_pdf(1);
+        let numbered = crate::pdf_engine::convert::add_page_numbers(&base_pdf, "bottom-center", 10.0, 1)
+            .expect("add_page_numbers must succeed");
+
+        let doc = Document::load_mem(&numbered).expect("load numbered PDF");
+        let page_ids = get_page_ids(&doc);
+        let page_dict = doc.get_dictionary(page_ids[0]).expect("page dict");
+
+        // Verify ExtGState /NagisaGS exists in Resources
+        let res_dict = crate::pdf_engine::common::resolve_page_resources(&doc, page_ids[0]);
+        let ext_gstate = res_dict.get(b"ExtGState").expect("ExtGState must be present").as_dict().unwrap();
+        assert!(ext_gstate.get(b"NagisaGS").is_ok(), "NagisaGS state must be registered");
+
+        // Verify page content stream contains graphics reset
+        let contents = page_dict.get(b"Contents").expect("contents");
+        let added_stream_id = match contents {
+            Object::Array(arr) => arr.last().unwrap().as_reference().unwrap(),
+            Object::Reference(r) => *r,
+            _ => panic!("Expected array or reference contents"),
+        };
+        let stream = doc.objects.get(&added_stream_id).unwrap().as_stream().unwrap();
+        let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+        let content_str = String::from_utf8_lossy(&decomp);
+
+        assert!(content_str.contains("/NagisaGS gs"), "Must activate isolated ExtGState");
+        assert!(content_str.contains("0 0 0 rg"), "Must reset RGB fill color to black");
+        assert!(content_str.contains("/NagisaHelv"), "Must apply Helvetica font");
+    }
+
+    #[test]
+    fn test_bookmark_tree_japanese_utf16be_and_hierarchy() {
+        let base_pdf = create_test_pdf(3);
+
+        let bookmarks = serde_json::json!([
+            {
+                "title": "第1章 日本語タイトル",
+                "page": 0,
+                "children": [
+                    {
+                        "title": "第1節 詳細概要",
+                        "page": 1,
+                        "children": []
+                    }
+                ]
+            },
+            {
+                "title": "第2章 結び",
+                "page": 2
+            }
+        ]);
+
+        let bookmarked = crate::pdf_engine::convert::add_bookmark_tree(
+            &base_pdf,
+            bookmarks.as_array().unwrap(),
+        )
+        .expect("add_bookmark_tree should succeed");
+
+        let doc = Document::load_mem(&bookmarked).expect("load bookmarked doc");
+        let catalog = doc.catalog().expect("catalog");
+        let outlines_ref = catalog.get(b"Outlines").unwrap().as_reference().unwrap();
+        let outlines = doc.get_dictionary(outlines_ref).unwrap();
+
+        // Total count should be 3 (Chapter 1, Section 1, Chapter 2)
+        assert_eq!(outlines.get(b"Count").unwrap().as_i64().unwrap(), 3);
+
+        let first_id = outlines.get(b"First").unwrap().as_reference().unwrap();
+        let ch1 = doc.get_dictionary(first_id).unwrap();
+
+        // Check UTF-16BE BOM on Japanese title
+        let title_bytes = match ch1.get(b"Title").unwrap() {
+            Object::String(bytes, _) => bytes.clone(),
+            _ => panic!("Expected String for Title"),
+        };
+        assert!(
+            title_bytes.starts_with(&[0xFE, 0xFF]),
+            "Japanese bookmark title must be encoded in UTF-16BE with BOM [0xFE, 0xFF]"
+        );
+
+        // Verify child node (First/Count)
+        let ch1_count = ch1.get(b"Count").unwrap().as_i64().unwrap();
+        assert_eq!(ch1_count, 1, "Chapter 1 has 1 child");
+        let sub1_id = ch1.get(b"First").unwrap().as_reference().unwrap();
+        let sub1 = doc.get_dictionary(sub1_id).unwrap();
+        assert_eq!(sub1.get(b"Parent").unwrap().as_reference().unwrap(), first_id);
+
+        let sub1_title_bytes = match sub1.get(b"Title").unwrap() {
+            Object::String(bytes, _) => bytes.clone(),
+            _ => panic!("Expected String for Title"),
+        };
+        assert!(
+            sub1_title_bytes.starts_with(&[0xFE, 0xFF]),
+            "Child bookmark title must also be encoded in UTF-16BE"
+        );
+    }
+
+    #[test]
+    fn test_annotation_status_uses_state_and_statemodel() {
+        let base_pdf = create_test_pdf(1);
+
+        let annot_bytes = crate::pdf_engine::annotations::add_sticky_note(
+            &base_pdf,
+            0,
+            100.0,
+            100.0,
+            "レビュアーのコメント",
+            "#FFCC00",
+        )
+        .expect("add sticky note");
+
+        let annots = crate::pdf_engine::annot_manage::get_annotations(&annot_bytes).unwrap();
+        assert_eq!(annots.len(), 1);
+        let annot_id_str = annots[0]["id"].as_str().unwrap();
+
+        // Parse (u32, u16)
+        let parts: Vec<&str> = annot_id_str
+            .trim_matches(|c| c == '(' || c == ')')
+            .split(|c| c == ',' || c == '_')
+            .collect();
+        let oid = (parts[0].trim().parse::<u32>().unwrap(), parts[1].trim().parse::<u16>().unwrap());
+
+        // Set status to "Accepted"
+        let updated = crate::pdf_engine::annot_manage::set_annotation_status(&annot_bytes, oid, "Accepted").unwrap();
+        let updated_doc = Document::load_mem(&updated).unwrap();
+        let annot_dict = updated_doc.get_dictionary(oid).unwrap();
+
+        // ISO 32000-1 §12.5.6.3 check
+        let state = annot_dict.get(b"State").expect("/State must be set").as_str().unwrap();
+        assert_eq!(state, b"Accepted", "/State must equal Accepted");
+
+        let state_model = annot_dict.get(b"StateModel").expect("/StateModel must be set").as_str().unwrap();
+        assert_eq!(state_model, b"Review", "/StateModel must equal Review");
+
+        // get_annotations should read status as "Accepted"
+        let fetched = crate::pdf_engine::annot_manage::get_annotations(&updated).unwrap();
+        assert_eq!(fetched[0]["status"].as_str().unwrap(), "Accepted");
+    }
+
+    #[test]
+    fn test_action_wizard_extended_steps() {
+        let base_pdf = create_test_pdf(1);
+        let wizard_json = serde_json::json!({
+            "name": "FullWorkflow",
+            "steps": [
+                {
+                    "action_type": "rotate_pages",
+                    "params": {
+                        "rotation": 90
+                    }
+                },
+                {
+                    "action_type": "sanitize_document",
+                    "params": {}
+                }
+            ]
+        }).to_string();
+
+        let executed = crate::pdf_engine::convert::execute_action_wizard(&base_pdf, &wizard_json);
+        assert!(executed.is_ok(), "Action wizard with extended actions must succeed: {:?}", executed);
+    }
+
+    #[test]
+    fn test_compare_pdf_documents_multi_stream_and_tj() {
+        // Construct PDF 1 with multi-stream Contents and TJ operator
+        let mut doc1 = Document::with_version("1.7");
+        let stream1 = Stream::new(Dictionary::new(), b"BT /F1 12 Tf 50 700 Td [(Hello) -10 (World)] TJ ET".to_vec());
+        let s1_id = doc1.add_object(Object::Stream(stream1));
+
+        let stream2 = Stream::new(Dictionary::new(), b"BT /F1 16 Tf 50 600 Td (Second Stream Content) Tj ET".to_vec());
+        let s2_id = doc1.add_object(Object::Stream(stream2));
+
+        let mut page1 = Dictionary::new();
+        page1.set("Type", Object::Name("Page".into()));
+        page1.set("Contents", Object::Array(vec![Object::Reference(s1_id), Object::Reference(s2_id)]));
+        page1.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(595.0), Object::Real(842.0)]));
+        let p1_id = doc1.add_object(Object::Dictionary(page1));
+
+        let mut pages1 = Dictionary::new();
+        pages1.set("Type", Object::Name("Pages".into()));
+        pages1.set("Kids", Object::Array(vec![Object::Reference(p1_id)]));
+        pages1.set("Count", Object::Integer(1));
+        let pages1_id = doc1.add_object(Object::Dictionary(pages1));
+
+        let mut cat1 = Dictionary::new();
+        cat1.set("Type", Object::Name("Catalog".into()));
+        cat1.set("Pages", Object::Reference(pages1_id));
+        let cat1_id = doc1.add_object(Object::Dictionary(cat1));
+        doc1.trailer.set("Root", Object::Reference(cat1_id));
+
+        let mut pdf1_data = Vec::new();
+        doc1.save_to(&mut pdf1_data).unwrap();
+
+        // Construct PDF 2 with revised text in the TJ operator
+        let mut doc2 = Document::with_version("1.7");
+        let stream1_rev = Stream::new(Dictionary::new(), b"BT /F1 12 Tf 50 700 Td [(Hello) -10 (Nagisa)] TJ ET".to_vec());
+        let s1_rev_id = doc2.add_object(Object::Stream(stream1_rev));
+        let s2_rev_id = doc2.add_object(Object::Stream(Stream::new(Dictionary::new(), b"BT /F1 16 Tf 50 600 Td (Second Stream Content) Tj ET".to_vec())));
+
+        let mut page2 = Dictionary::new();
+        page2.set("Type", Object::Name("Page".into()));
+        page2.set("Contents", Object::Array(vec![Object::Reference(s1_rev_id), Object::Reference(s2_rev_id)]));
+        page2.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(595.0), Object::Real(842.0)]));
+        let p2_id = doc2.add_object(Object::Dictionary(page2));
+
+        let mut pages2 = Dictionary::new();
+        pages2.set("Type", Object::Name("Pages".into()));
+        pages2.set("Kids", Object::Array(vec![Object::Reference(p2_id)]));
+        pages2.set("Count", Object::Integer(1));
+        let pages2_id = doc2.add_object(Object::Dictionary(pages2));
+
+        let mut cat2 = Dictionary::new();
+        cat2.set("Type", Object::Name("Catalog".into()));
+        cat2.set("Pages", Object::Reference(pages2_id));
+        let cat2_id = doc2.add_object(Object::Dictionary(cat2));
+        doc2.trailer.set("Root", Object::Reference(cat2_id));
+
+        let mut pdf2_data = Vec::new();
+        doc2.save_to(&mut pdf2_data).unwrap();
+
+        // Compare documents
+        let report = crate::pdf_engine::compare::compare_pdf_documents(&pdf1_data, &pdf2_data)
+            .expect("compare must succeed");
+
+        assert!(
+            report.total_changes > 0,
+            "Must detect difference between 'HelloWorld' and 'HelloNagisa' across multi-stream TJ arrays"
+        );
+    }
+
+    #[test]
+    fn test_inspect_bookmarks_and_form_fields_unicode() {
+        let base_pdf = create_test_pdf(2);
+
+        // 1. Add Japanese bookmark tree
+        let bookmarks = serde_json::json!([
+            {
+                "title": "第1章 日本語概要",
+                "page": 0,
+                "children": [
+                    {
+                        "title": "第1節 詳細",
+                        "page": 1,
+                        "children": []
+                    }
+                ]
+            }
+        ]);
+        let bookmarked_pdf = crate::pdf_engine::convert::add_bookmark_tree(&base_pdf, bookmarks.as_array().unwrap())
+            .expect("add_bookmark_tree");
+
+        // 2. Add Japanese Form Field
+        let field_config = crate::pdf_engine::form_creator::FormFieldConfig {
+            field_type: "Text".into(),
+            name: "氏名_フィールド".into(),
+            x: 50.0,
+            y: 700.0,
+            width: 200.0,
+            height: 25.0,
+            value: Some("山田 太郎".into()),
+            options: None,
+            required: false,
+            read_only: false,
+            max_length: None,
+        };
+        let form_pdf = crate::pdf_engine::form_creator::create_form_field(&bookmarked_pdf, 0, &field_config)
+            .expect("create_form_field");
+
+        // 3. Inspect doc with inspect functions
+        let doc = Document::load_mem(&form_pdf).expect("load mem");
+        let extracted_bookmarks = crate::pdf_engine::inspect::get_bookmarks_from_doc(&doc).expect("bookmarks");
+        assert_eq!(extracted_bookmarks.len(), 2);
+        assert_eq!(extracted_bookmarks[0]["title"].as_str().unwrap(), "第1章 日本語概要");
+        assert_eq!(extracted_bookmarks[1]["title"].as_str().unwrap(), "第1節 詳細");
+
+        let extracted_fields = crate::pdf_engine::inspect::get_form_fields_from_doc(&doc).expect("form fields");
+        assert_eq!(extracted_fields.len(), 1);
+        assert_eq!(extracted_fields[0]["name"].as_str().unwrap(), "氏名_フィールド");
+        assert_eq!(extracted_fields[0]["value"].as_str().unwrap(), "山田 太郎");
+    }
+
+    #[test]
+    fn test_watermark_removal_and_cmyk_flatedecode() {
+        let base_pdf = create_test_pdf(1);
+
+        // 1. Add watermark
+        let watermarked = crate::pdf_engine::annotations::add_watermark(
+            &base_pdf,
+            "社外秘 CONFIDENTIAL",
+            0.3,
+            45.0,
+            48.0,
+            "#FF0000",
+            true,
+            &[],
+        ).expect("add_watermark");
+
+        let doc_wm = Document::load_mem(&watermarked).unwrap();
+        let page_ids = get_page_ids(&doc_wm);
+        let content_ids = resolve_page_content_stream_ids(&doc_wm, page_ids[0]);
+        assert_eq!(content_ids.len(), 2, "Base content + watermark stream");
+
+        // 2. Remove watermark
+        let cleaned = crate::pdf_engine::annotations::remove_watermarks(&watermarked)
+            .expect("remove_watermarks");
+
+        let doc_cleaned = Document::load_mem(&cleaned).unwrap();
+        let cleaned_cids = resolve_page_content_stream_ids(&doc_cleaned, page_ids[0]);
+        assert_eq!(cleaned_cids.len(), 1, "Watermark stream must be completely removed");
+
+        // Verify that GSWatermark is gone from page content streams
+        if let Some(Object::Stream(s)) = doc_cleaned.objects.get(&cleaned_cids[0]) {
+            let decomp = s.decompressed_content().unwrap_or_else(|_| s.content.clone());
+            let content_str = String::from_utf8_lossy(&decomp);
+            assert!(!content_str.contains("GSWatermark"), "Cleaned stream must not contain watermark resources");
+        }
+
+        // 3. Test convert_to_cmyk FlateDecode compression
+        // Create a test PDF with an RGB image
+        let mut img_doc = Document::with_version("1.7");
+        let rgb_raw: Vec<u8> = vec![128u8; 100 * 100 * 3]; // 100x100 RGB
+        let mut img_dict = Dictionary::new();
+        img_dict.set("Type", Object::Name("XObject".into()));
+        img_dict.set("Subtype", Object::Name("Image".into()));
+        img_dict.set("Width", Object::Integer(100));
+        img_dict.set("Height", Object::Integer(100));
+        img_dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+        img_dict.set("BitsPerComponent", Object::Integer(8));
+        let img_stream = Stream::new(img_dict, rgb_raw);
+        let img_id = img_doc.add_object(Object::Stream(img_stream));
+
+        let mut p_dict = Dictionary::new();
+        p_dict.set("Type", Object::Name("Page".into()));
+        let mut res = Dictionary::new();
+        let mut xobj = Dictionary::new();
+        xobj.set("Im0", Object::Reference(img_id));
+        res.set("XObject", Object::Dictionary(xobj));
+        p_dict.set("Resources", Object::Dictionary(res));
+        let pid = img_doc.add_object(Object::Dictionary(p_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(pid)]));
+        pages_dict.set("Count", Object::Integer(1));
+        let pages_id = img_doc.add_object(Object::Dictionary(pages_dict));
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = img_doc.add_object(Object::Dictionary(cat));
+        img_doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut initial_pdf = Vec::new();
+        img_doc.save_to(&mut initial_pdf).unwrap();
+
+        let cmyk_pdf = crate::pdf_engine::print_prod::convert_to_cmyk(&initial_pdf)
+            .expect("convert_to_cmyk");
+        let cmyk_doc = Document::load_mem(&cmyk_pdf).unwrap();
+        let cmyk_stream = cmyk_doc.objects.get(&img_id).unwrap().as_stream().unwrap();
+
+        assert_eq!(
+            cmyk_stream.dict.get(b"Filter").unwrap().as_name().unwrap(),
+            b"FlateDecode",
+            "CMYK converted image stream must be compressed with FlateDecode!"
+        );
+    }
+    #[test]
+    fn test_annotation_reply_and_deletion_and_shapes() {
+        use crate::pdf_engine::annot_manage::{add_annotation_reply, delete_annotation};
+        use crate::pdf_engine::annotations::{add_line, add_rectangle};
+
+        // 1. Create a minimal valid PDF with 1 page
+        let mut doc = Document::with_version("1.7");
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name("Page".into()));
+        page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(612.0),
+                Object::Real(792.0),
+            ]),
+        );
+
+        // Add parent annotation
+        let mut parent_annot = Dictionary::new();
+        parent_annot.set("Type", Object::Name("Annot".into()));
+        parent_annot.set("Subtype", Object::Name("Text".into()));
+        parent_annot.set(
+            "Rect",
+            Object::Array(vec![
+                Object::Real(100.0),
+                Object::Real(100.0),
+                Object::Real(120.0),
+                Object::Real(120.0),
+            ]),
+        );
+        let parent_id = doc.add_object(Object::Dictionary(parent_annot));
+
+        page_dict.set(
+            "Annots",
+            Object::Array(vec![Object::Reference(parent_id)]),
+        );
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages_dict));
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut base_pdf = Vec::new();
+        doc.save_to(&mut base_pdf).unwrap();
+
+        // 2. Add reply to parent annotation
+        let reply_pdf = add_annotation_reply(&base_pdf, parent_id, "Alice", "This is a reply")
+            .expect("add_annotation_reply should succeed");
+        let reply_doc = Document::load_mem(&reply_pdf).expect("Load reply PDF");
+
+        // Verify reply annotation dictionary attributes
+        let mut reply_id_opt = None;
+        for (id, obj) in reply_doc.objects.iter() {
+            if let Object::Dictionary(d) = obj {
+                if let Ok(Object::Reference(irt)) = d.get(b"IRT") {
+                    if *irt == parent_id {
+                        reply_id_opt = Some(*id);
+                        // Must have RT == /R
+                        assert_eq!(d.get(b"RT").unwrap().as_name().unwrap(), b"R");
+                        // Must have non-zero Rect
+                        let r = d.get(b"Rect").unwrap().as_array().unwrap();
+                        assert_eq!(r.len(), 4);
+                        assert_ne!(r[2].as_float().unwrap(), 0.0);
+                        // Must have F flags set
+                        assert_eq!(d.get(b"F").unwrap().as_i64().unwrap(), 28);
+                    }
+                }
+            }
+        }
+        let reply_id = reply_id_opt.expect("Reply annotation object must be present in doc");
+
+        // Verify page Annots contains both parent and reply
+        let page_annots = reply_doc
+            .objects
+            .get(&page_id)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Annots")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert!(page_annots.contains(&Object::Reference(parent_id)));
+        assert!(page_annots.contains(&Object::Reference(reply_id)));
+
+        // 3. Delete parent annotation -> must delete reply AND remove both from page Annots with 0 dangling references
+        let deleted_pdf = delete_annotation(&reply_pdf, parent_id).expect("delete_annotation should succeed");
+        let del_doc = Document::load_mem(&deleted_pdf).expect("Load deleted PDF");
+
+        assert!(!del_doc.objects.contains_key(&parent_id), "Parent must be removed from doc");
+        assert!(!del_doc.objects.contains_key(&reply_id), "Reply must be removed from doc");
+
+        let remaining_annots = del_doc
+            .objects
+            .get(&page_id)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Annots")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert!(!remaining_annots.contains(&Object::Reference(parent_id)), "Parent reference must not dangle in Annots");
+        assert!(!remaining_annots.contains(&Object::Reference(reply_id)), "Reply reference must not dangle in Annots");
+        assert!(remaining_annots.is_empty());
+
+        // 4. Test add_rectangle creates an actual /Subtype /Square annotation with /AP /N stream instead of modifying page contents
+        let rect_pdf = add_rectangle(&base_pdf, 0, 50.0, 50.0, 100.0, 100.0, "#FF0000", "#00FF00", 2.0)
+            .expect("add_rectangle should succeed");
+        let rect_doc = Document::load_mem(&rect_pdf).expect("Load rect PDF");
+        let page_annots_rect = rect_doc
+            .objects
+            .get(&page_id)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Annots")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        // Page annots now has 2 annotations: initial parent + new square
+        assert_eq!(page_annots_rect.len(), 2);
+        let square_id = match page_annots_rect[1] {
+            Object::Reference(id) => id,
+            _ => panic!("Expected reference"),
+        };
+        let square_dict = rect_doc.objects.get(&square_id).unwrap().as_dict().unwrap();
+        assert_eq!(square_dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Square");
+        assert!(square_dict.get(b"AP").is_ok(), "Must have /AP appearance dictionary");
+
+        // 5. Test add_line creates an actual /Subtype /Line annotation with /AP /N stream
+        let line_pdf = add_line(&base_pdf, 0, 10.0, 10.0, 200.0, 200.0, "#0000FF", 1.5)
+            .expect("add_line should succeed");
+        let line_doc = Document::load_mem(&line_pdf).expect("Load line PDF");
+        let page_annots_line = line_doc
+            .objects
+            .get(&page_id)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Annots")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(page_annots_line.len(), 2);
+        let line_id = match page_annots_line[1] {
+            Object::Reference(id) => id,
+            _ => panic!("Expected reference"),
+        };
+        let line_dict = line_doc.objects.get(&line_id).unwrap().as_dict().unwrap();
+        assert_eq!(line_dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Line");
+        assert!(line_dict.get(b"AP").is_ok(), "Must have /AP appearance dictionary");
+    }
+
+    #[test]
+    fn test_compress_pdf_quality_images_and_visual_diff() {
+        use crate::pdf_engine::convert::compress_pdf_quality;
+
+        // 1. Create a synthetic PDF containing a raw uncompressed RGB image
+        let mut doc = Document::with_version("1.7");
+        let w = 80u32;
+        let h = 80u32;
+        let mut rgb_raw = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                rgb_raw.push(((x * 3) % 256) as u8);
+                rgb_raw.push(((y * 3) % 256) as u8);
+                rgb_raw.push(128);
+            }
+        }
+
+        let mut img_dict = Dictionary::new();
+        img_dict.set("Type", Object::Name("XObject".into()));
+        img_dict.set("Subtype", Object::Name("Image".into()));
+        img_dict.set("Width", Object::Integer(w as i64));
+        img_dict.set("Height", Object::Integer(h as i64));
+        img_dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+        img_dict.set("BitsPerComponent", Object::Integer(8));
+        let img_stream = Stream::new(img_dict, rgb_raw);
+        let img_id = doc.add_object(Object::Stream(img_stream));
+
+        let mut p_dict = Dictionary::new();
+        p_dict.set("Type", Object::Name("Page".into()));
+        let mut res = Dictionary::new();
+        let mut xobj = Dictionary::new();
+        xobj.set("Im0", Object::Reference(img_id));
+        res.set("XObject", Object::Dictionary(xobj));
+        p_dict.set("Resources", Object::Dictionary(res));
+        let pid = doc.add_object(Object::Dictionary(p_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(pid)]));
+        pages_dict.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages_dict));
+
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name("Catalog".into()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let mut initial_pdf = Vec::new();
+        doc.save_to(&mut initial_pdf).unwrap();
+
+        // Compress at quality 40 -> should re-encode image with DCTDecode (JPEG)
+        let compressed_pdf = compress_pdf_quality(&initial_pdf, 40)
+            .expect("compress_pdf_quality should succeed");
+
+        let c_doc = Document::load_mem(&compressed_pdf).unwrap();
+        let c_stream = c_doc.objects.get(&img_id).unwrap().as_stream().unwrap();
+        let filter_name = c_stream.dict.get(b"Filter").unwrap().as_name().unwrap();
+        assert_eq!(filter_name, b"DCTDecode", "Image must be re-encoded as DCTDecode JPEG!");
+
+        // Output size should be significantly smaller than raw uncompressed 19.2KB
+        assert!(c_stream.content.len() < (w * h * 3) as usize);
+    }
+
+    #[test]
+    fn test_sticky_note_appearance_stream_generation() {
+        let pdf = create_test_pdf(1);
+        let updated = crate::pdf_engine::annotations::add_sticky_note(
+            &pdf,
+            0,
+            100.0,
+            200.0,
+            "Important note for browser viewers",
+            "#ffea00",
+        ).expect("add_sticky_note should succeed");
+
+        let doc = Document::load_mem(&updated).expect("Must load valid PDF");
+        let page_ids = get_page_ids(&doc);
+        let page_dict = doc.objects.get(&page_ids[0]).unwrap().as_dict().unwrap();
+        let annots = page_dict.get(b"Annots").unwrap().as_array().unwrap();
+        assert_eq!(annots.len(), 1);
+
+        let annot_id = annots[0].as_reference().unwrap();
+        let annot_dict = doc.objects.get(&annot_id).unwrap().as_dict().unwrap();
+
+        // Must have Appearance dictionary /AP with normal appearance /N
+        let ap_obj = annot_dict.get(b"AP").expect("Sticky note must contain /AP dictionary");
+        let ap_dict = ap_obj.as_dict().expect("/AP must be dictionary");
+        let n_ref = ap_dict.get(b"N").expect("/AP must have /N entry").as_reference().unwrap();
+
+        // Must point to a Form XObject stream
+        let stream = doc.objects.get(&n_ref).unwrap().as_stream().unwrap();
+        assert_eq!(stream.dict.get(b"Type").unwrap().as_name().unwrap(), b"XObject");
+        assert_eq!(stream.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Form");
+        assert!(!stream.content.is_empty(), "Appearance stream content must not be empty");
+    }
+
+    #[test]
+    fn test_verify_signature_index_filtering() {
+        let pdf = create_test_pdf(1);
+        let signed = add_digital_signature(
+            &pdf,
+            0,
+            100.0,
+            100.0,
+            200.0,
+            50.0,
+            "Alice",
+            "Approval",
+            None,
+        ).expect("Add signature");
+
+        // Verify index 0 succeeds and returns selected signature
+        let res0 = crate::pdf_engine::security::verify_signature(&signed, 0).expect("verify index 0");
+        assert_eq!(res0["count"], 1);
+        assert_eq!(res0["selected_index"], 0);
+        assert_eq!(res0["signature"]["signer"], "Alice");
+
+        // Verify out-of-bounds index returns an error
+        let res_err = crate::pdf_engine::security::verify_signature(&signed, 5);
+        assert!(res_err.is_err(), "Out of bounds signature index must return Err");
+    }
+
+    #[test]
+    fn test_add_circle_annotation() {
+        let pdf = create_test_pdf(1);
+        let circled = crate::pdf_engine::annotations::add_circle(
+            &pdf,
+            0,
+            50.0,
+            100.0,
+            120.0,
+            80.0,
+            "#FF0000",
+            "#00FF00",
+            2.0,
+        ).expect("add_circle should succeed");
+
+        let doc = Document::load_mem(&circled).expect("load doc");
+        let page_id = get_page_ids(&doc)[0];
+        let page = doc.objects.get(&page_id).unwrap().as_dict().unwrap();
+        let annots = page.get(b"Annots").unwrap().as_array().unwrap();
+        assert!(!annots.is_empty());
+
+        let annot_ref = annots.last().unwrap().as_reference().unwrap();
+        let annot_dict = doc.objects.get(&annot_ref).unwrap().as_dict().unwrap();
+        assert_eq!(annot_dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Circle");
+        assert!(annot_dict.has(b"AP"), "Circle annotation must have appearance stream /AP");
+    }
+
+    #[test]
+    fn test_add_digital_signature_with_certificate() {
+        let pdf = create_test_pdf(1);
+        let mock_cert = b"-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----";
+        let signed = add_digital_signature(
+            &pdf,
+            0,
+            50.0,
+            50.0,
+            200.0,
+            50.0,
+            "Bob",
+            "Signed with Cert",
+            Some(mock_cert),
+        ).expect("add_digital_signature with cert");
+
+        let doc = Document::load_mem(&signed).expect("load doc");
+        // Verify /Cert entry is present in signature dictionary
+        let mut found_cert = false;
+        for (_, obj) in doc.objects.iter() {
+            if let Object::Dictionary(dict) = obj {
+                if let Ok(Object::Name(ft)) = dict.get(b"FT") {
+                    if ft == b"Sig" {
+                        if let Ok(v_ref) = dict.get(b"V").and_then(|o| o.as_reference()) {
+                            if let Some(Object::Dictionary(sig_dict)) = doc.objects.get(&v_ref) {
+                                if sig_dict.has(b"Cert") {
+                                    found_cert = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_cert, "Signature dictionary must contain /Cert when certificate_data is provided");
+    }
+
+    #[test]
+    fn test_plain_text_ascii_generates_valid_pdf() {
+        let text = "Hello World!\nThis is standard ASCII text without CJK characters.";
+        let tmp_path = std::env::temp_dir().join(format!("test_ascii_{}.pdf", std::process::id()));
+        let path = tmp_path.to_str().unwrap();
+        crate::pdf_engine::convert::generate_pdf_from_plain_text(text, path).expect("ASCII PDF generation");
+
+        let data = std::fs::read(path).unwrap();
+        let _ = std::fs::remove_file(path);
+        let doc = Document::load_mem(&data).expect("Must load valid PDF");
+        let page_id = get_page_ids(&doc)[0];
+        let page = doc.objects.get(&page_id).unwrap().as_dict().unwrap();
+        assert!(page.has(b"Resources"), "Page must contain /Resources");
+    }
+
+    #[test]
+    fn test_import_xfdf_creates_appearance_stream() {
+        let base_pdf = create_test_pdf(1);
+        let xfdf = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">\n",
+            "  <annotations>\n",
+            "    <square page=\"1\" name=\"rect_1\" title=\"Tester\" color=\"0,255,0\" left=\"50\" top=\"50\" width=\"100\" height=\"80\">\n",
+            "      <contents>Test Square</contents>\n",
+            "    </square>\n",
+            "    <circle page=\"1\" name=\"circ_1\" title=\"Tester\" color=\"#0000FF\" left=\"150\" top=\"50\" width=\"60\" height=\"60\">\n",
+            "      <contents>Test Circle</contents>\n",
+            "    </circle>\n",
+            "  </annotations>\n",
+            "</xfdf>"
+        );
+
+        let result = crate::pdf_engine::forms::import_xfdf(&base_pdf, xfdf).expect("import xfdf");
+        let doc = Document::load_mem(&result).expect("load result PDF");
+        let page_id = get_page_ids(&doc)[0];
+        let page = doc.objects.get(&page_id).unwrap().as_dict().unwrap();
+        let annots = page.get(b"Annots").unwrap().as_array().unwrap();
+        assert_eq!(annots.len(), 2);
+
+        for annot_ref in annots {
+            let annot_id = annot_ref.as_reference().unwrap();
+            let annot = doc.objects.get(&annot_id).unwrap().as_dict().unwrap();
+            // Verify /AP /N Form XObject exists
+            let ap = annot.get(b"AP").expect("Annot must have /AP dictionary").as_dict().unwrap();
+            let n_ref = ap.get(b"N").expect("/AP must contain /N").as_reference().unwrap();
+            let stream_obj = doc.objects.get(&n_ref).unwrap().as_stream().unwrap();
+            assert_eq!(stream_obj.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Form");
+        }
+    }
+
+    #[test]
+    fn test_add_digital_signature_blocks_on_existing_signature() {
+        let base_pdf = create_test_pdf(1);
+        let mut doc = Document::load_mem(&base_pdf).unwrap();
+
+        // Simulate a signed field with ByteRange
+        let mut sig_val = Dictionary::new();
+        sig_val.set("Type", Object::Name(b"Sig".to_vec()));
+        sig_val.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+        sig_val.set("SubFilter", Object::Name(b"adbe.pkcs7.detached".to_vec()));
+        sig_val.set(
+            "ByteRange",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(100),
+                Object::Integer(200),
+                Object::Integer(500),
+            ]),
+        );
+        let sig_val_id = doc.add_object(Object::Dictionary(sig_val));
+
+        let mut sig_field = Dictionary::new();
+        sig_field.set("FT", Object::Name(b"Sig".to_vec()));
+        sig_field.set("T", Object::String(b"ExistingSig".to_vec(), lopdf::StringFormat::Literal));
+        sig_field.set("V", Object::Reference(sig_val_id));
+        doc.add_object(Object::Dictionary(sig_field));
+
+        let signed_bytes = save_doc(&mut doc).unwrap();
+
+        // Attempting to add a new signature on already cryptographically signed PDF without incremental update must return Err
+        let err_result = crate::pdf_engine::security::add_digital_signature(
+            &signed_bytes,
+            0,
+            50.0,
+            50.0,
+            120.0,
+            40.0,
+            "Second Signer",
+            "Approval",
+            None,
+        );
+        assert!(err_result.is_err(), "Must reject modifying signed PDF to prevent ByteRange invalidation");
+        let err_msg = err_result.unwrap_err();
+        assert!(err_msg.contains("already contains cryptographically signed fields"));
+    }
+
+    #[test]
+    fn test_edit_text_color_injection_and_replacement() {
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
+
+        let content = "BT /F1 12 Tf 50 750 Td (Hello World) Tj ET";
+        let content_id = doc.add_object(Object::Stream(lopdf::Stream::new(
+            Dictionary::new(),
+            content.as_bytes().to_vec(),
+        )));
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name("Page".into()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(595.0),
+                Object::Real(842.0),
+            ]),
+        );
+        page_dict.set("Contents", Object::Reference(content_id));
+
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut root_dict = Dictionary::new();
+        root_dict.set("Type", Object::Name("Catalog".into()));
+        root_dict.set("Pages", Object::Reference(pages_id));
+        let root_id = doc.add_object(Object::Dictionary(root_dict));
+        doc.trailer.set("Root", Object::Reference(root_id));
+
+        let mut initial_pdf = Vec::new();
+        doc.save_to(&mut initial_pdf).unwrap();
+
+        // 1. In-place text replace with red color (#FF0000)
+        let edited = crate::pdf_engine::text_edit::edit_text(
+            &initial_pdf,
+            0,
+            "World",
+            "Universe",
+            "Helvetica",
+            14.0,
+            "#FF0000",
+        )
+        .expect("edit_text should succeed");
+
+        let edited_doc = Document::load_mem(&edited).unwrap();
+        // #49 テスト修正: save_to→load_mem 後は page_id が変わる場合があるため
+        // ページリストの先頭から取得する
+        let edited_page_ids = get_page_ids(&edited_doc);
+        let edited_page_id = edited_page_ids[0];
+        let content_bytes = edited_doc
+            .get_page_content(edited_page_id)
+            .expect("Page content must exist");
+        let decoded_str = String::from_utf8_lossy(&content_bytes);
+
+        assert!(
+            decoded_str.contains("Universe"),
+            "Replacement text 'Universe' must appear in stream"
+        );
+        assert!(
+            decoded_str.contains("rg"),
+            "Color operator 'rg' must be injected when color is specified"
+        );
+    }
+
+    #[test]
+    fn test_annot_reply_rejects_missing_parent() {
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name("Page".into()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(595.0),
+                Object::Real(842.0),
+            ]),
+        );
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name("Pages".into()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut root_dict = Dictionary::new();
+        root_dict.set("Type", Object::Name("Catalog".into()));
+        root_dict.set("Pages", Object::Reference(pages_id));
+        let root_id = doc.add_object(Object::Dictionary(root_dict));
+        doc.trailer.set("Root", Object::Reference(root_id));
+
+        let mut initial_pdf = Vec::new();
+        doc.save_to(&mut initial_pdf).unwrap();
+
+        // Non-existent parent annotation ID (999, 0)
+        let reply_res = crate::pdf_engine::annot_manage::add_annotation_reply(
+            &initial_pdf,
+            (999, 0),
+            "Ghost Reply",
+            "Tester",
+        );
+        assert!(
+            reply_res.is_err(),
+            "Must reject adding reply to non-existent parent annotation to prevent zombie objects"
+        );
+    }
 }
+
 
 

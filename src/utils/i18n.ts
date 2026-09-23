@@ -62,6 +62,7 @@ export const translations = {
     passwordMismatch: 'パスワードが一致しません',
     verifyCount: (count: number) => `${count}件の署名を検証しました`,
     noSignatures: '署名は検出されませんでした',
+    needFileOpen: 'PDFファイルを開いてから実行してください',
   },
   en: {
     // Navigation & Workspace
@@ -124,10 +125,12 @@ export const translations = {
     passwordMismatch: 'Passwords do not match',
     verifyCount: (count: number) => `Verified ${count} digital signature(s)`,
     noSignatures: 'No digital signatures detected',
+    needFileOpen: 'Please open a PDF file first',
   }
 }
 
-let currentLang: Language = (typeof localStorage !== 'undefined' && localStorage.getItem('docforge_lang') as Language) || 'ja'
+const storedLang = typeof localStorage !== 'undefined' ? localStorage.getItem('nagisa_lang') : null
+let currentLang: Language = storedLang === 'en' ? 'en' : 'ja'
 
 export function getLanguage(): Language {
   return currentLang
@@ -136,7 +139,7 @@ export function getLanguage(): Language {
 export function setLanguage(lang: Language) {
   currentLang = lang
   if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('docforge_lang', lang)
+    localStorage.setItem('nagisa_lang', lang)
   }
 }
 

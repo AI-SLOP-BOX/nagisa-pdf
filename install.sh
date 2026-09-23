@@ -6,49 +6,49 @@ REPO="AI-SLOP-BOX/nagisa-pdf"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-echo "DocForge Installer"
-echo "=================="
+echo "Nagisa PDF Installer"
+echo "======================"
 echo "Detected Platform: $OS ($ARCH)"
 
 case "$OS" in
   Darwin*)
-    echo "Downloading DocForge for macOS..."
+    echo "Downloading Nagisa PDF for macOS..."
     LATEST_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     if [ -z "$LATEST_TAG" ]; then
       LATEST_TAG="v1.0.0"
     fi
-    DMG_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/DocForge_${ARCH}.dmg"
+    DMG_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/Nagisa_${ARCH}.dmg"
     echo "URL: $DMG_URL"
-    curl -Lo /tmp/DocForge.dmg "$DMG_URL" || true
-    if [ -f /tmp/DocForge.dmg ]; then
-      hdiutil attach /tmp/DocForge.dmg -nobrowse -mountpoint /Volumes/DocForge
-      cp -R "/Volumes/DocForge/DocForge.app" /Applications/
-      hdiutil detach /Volumes/DocForge
-      rm -f /tmp/DocForge.dmg
-      echo "DocForge installed successfully to /Applications/DocForge.app"
+    curl -Lo /tmp/Nagisa.dmg "$DMG_URL" || true
+    if [ -f /tmp/Nagisa.dmg ]; then
+      hdiutil attach /tmp/Nagisa.dmg -nobrowse -mountpoint /Volumes/Nagisa
+      cp -R "/Volumes/Nagisa/Nagisa.app" /Applications/
+      hdiutil detach /Volumes/Nagisa
+      rm -f /tmp/Nagisa.dmg
+      echo "Nagisa PDF installed successfully to /Applications/Nagisa.app"
     else
       echo "Pre-built binary not found. Running local build fallback..."
       git clone "https://github.com/$REPO.git"
-      cd docforge && ./build.sh
+      cd nagisa-pdf && ./build.sh
     fi
     ;;
   Linux*)
-    echo "Downloading DocForge for Linux (AppImage)..."
+    echo "Downloading Nagisa PDF for Linux (AppImage)..."
     LATEST_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     if [ -z "$LATEST_TAG" ]; then
       LATEST_TAG="v1.0.0"
     fi
-    APPIMAGE_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/DocForge_x86_64.AppImage"
-    curl -Lo /tmp/DocForge.AppImage "$APPIMAGE_URL" || true
-    if [ -f /tmp/DocForge.AppImage ]; then
-      chmod +x /tmp/DocForge.AppImage
+    APPIMAGE_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/Nagisa_x86_64.AppImage"
+    curl -Lo /tmp/Nagisa.AppImage "$APPIMAGE_URL" || true
+    if [ -f /tmp/Nagisa.AppImage ]; then
+      chmod +x /tmp/Nagisa.AppImage
       mkdir -p "$HOME/.local/bin"
-      mv /tmp/DocForge.AppImage "$HOME/.local/bin/docforge"
-      echo "DocForge installed to $HOME/.local/bin/docforge"
+      mv /tmp/Nagisa.AppImage "$HOME/.local/bin/nagisa"
+      echo "Nagisa PDF installed to $HOME/.local/bin/nagisa"
     else
       echo "Pre-built binary not found. Running local build fallback..."
       git clone "https://github.com/$REPO.git"
-      cd docforge && ./build.sh
+      cd nagisa-pdf && ./build.sh
     fi
     ;;
   *)

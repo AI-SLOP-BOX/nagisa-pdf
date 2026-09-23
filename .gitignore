@@ -19,9 +19,15 @@ target/
 *.swo
 *~
 
-# OS
+# OS / macOS (#44 是正: バイナリ残骸・システムファイルの混入防止)
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Logs
 *.log
@@ -38,10 +44,40 @@ pnpm-debug.log*
 # TypeScript
 *.tsbuildinfo
 
-# Rust
+# Rust (#44 是正: ビルド成果物・デバッグ出力)
 Cargo.lock
-
-# Tauri
+**/*.rs.bk
 src-tauri/target/
 src-tauri/WixTools/
 src-tauri/NSIS/
+
+# Python (OCR・変換スクリプト周辺)
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Temporary processing files (#44 是正: 外部コマンド一時ディレクトリが混入しないよう除外)
+nagisa_ocr_*/
+nagisa_pdf2img_*/
+nagisa_html2pdf_*/
+
+# pdf.js offline assets (copied from node_modules by scripts/copy_pdfjs_assets.mjs)
+public/cmaps/
+public/standard_fonts/
+
+# Tauri / Xcode / Android build artifacts
+gen/
+*.xcworkspace
+*.xcodeproj
+.gradle/
+local.properties
+
+# ZIP / archive (#44 是正: バイナリアーカイブのコミット防止)
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar

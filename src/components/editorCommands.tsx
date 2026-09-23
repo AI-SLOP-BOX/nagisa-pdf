@@ -1,5 +1,7 @@
 import React from 'react'
 import { CommandItem } from './CommandPalette'
+import type { EditorTab } from '../types'
+import type { InteractiveMode } from './PDFViewer'
 import {
   FolderOpenIcon, SaveIcon, EditIcon, AnnotateIcon, FormIcon,
   OrganizeIcon, LockIcon, ToolsIcon, RedactIcon, HighlightIcon,
@@ -9,8 +11,8 @@ import {
 interface CommandItemsOptions {
   onOpen: () => void
   onSave: () => void
-  onSelectTab: (tab: any) => void
-  onSetInteractiveMode: (mode: any) => void
+  onSelectTab: (tab: EditorTab) => void
+  onSetInteractiveMode: (mode: InteractiveMode) => void
   onExec: (cmd: string, args: Record<string, unknown>) => void
   hasPdf: boolean
 }

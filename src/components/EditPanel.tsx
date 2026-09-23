@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Input, NumInput, ColorInput, AccentBtn } from './UIControls'
+import type { PdfExec } from '../types'
 
 export function EditPanel({
   exec,
@@ -8,7 +9,7 @@ export function EditPanel({
   showToast,
   currentPage = 0,
 }: {
-  exec: Function
+  exec: PdfExec
   pdfData: number[] | null
   showToast: (msg: string) => void
   currentPage?: number
@@ -39,7 +40,7 @@ export function EditPanel({
           <NumInput value={fontSize} onChange={setFontSize} label="サイズ (pt)" />
           <ColorInput value={textColor} onChange={setTextColor} label="カラー" />
         </div>
-        <AccentBtn onClick={() => exec('add_text', { page_index: currentPage, text, x: 50, y: 700, size: fontSize, color: textColor })}>
+        <AccentBtn onClick={() => exec('add_text', { pageIndex: currentPage, text, x: 50, y: 700, size: fontSize, color: textColor })}>
           ページに追加 (p{currentPage + 1})
         </AccentBtn>
       </div>
@@ -53,7 +54,7 @@ export function EditPanel({
         <div className="inspector-card-desc">PDF内部の文字オペレータを直接書換</div>
         <Input value={searchText} onChange={setSearchText} placeholder="検索対象の文字列" />
         <Input value={replaceText} onChange={setReplaceText} placeholder="新しい文字列" />
-        <AccentBtn onClick={() => exec('edit_text', { page_index: currentPage, search_text: searchText, replacement: replaceText, font_name: 'Helvetica', font_size: fontSize, color: textColor })}>
+        <AccentBtn onClick={() => exec('edit_text', { pageIndex: currentPage, searchText: searchText, replacement: replaceText, fontName: 'Helvetica', fontSize: fontSize, color: textColor })}>
           テキストを置換 (p{currentPage + 1})
         </AccentBtn>
       </div>
@@ -80,7 +81,7 @@ export function EditPanel({
           <NumInput value={reflowWidth} onChange={setReflowWidth} label="行送り最大幅 (pt)" />
           <NumInput value={lineHeight} onChange={setLineHeight} label="行送り (pt)" />
         </div>
-        <AccentBtn onClick={() => exec('reflow_text', { page_index: currentPage, new_text: reflowText, start_x: 50, start_y: 700, max_width: reflowWidth, font_size: fontSize, line_height: lineHeight, color: textColor })}>
+        <AccentBtn onClick={() => exec('reflow_text', { pageIndex: currentPage, newText: reflowText, startX: 50, startY: 700, maxWidth: reflowWidth, fontSize: fontSize, lineHeight: lineHeight, color: textColor })}>
           組版リフロー流し込み (p{currentPage + 1})
         </AccentBtn>
       </div>

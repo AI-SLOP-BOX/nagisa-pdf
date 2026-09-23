@@ -20,7 +20,7 @@ pub fn enhance_scanned_pdf(data: &[u8], options: &ScanEnhanceOptions) -> Result<
 
     // Process embedded images on each page
     for &page_id in &page_ids {
-        let (xobjs, contents_id) = {
+        let xobjs = {
             let page = doc.objects.get(&page_id).ok_or("Invalid page object")?;
             let dict = page.as_dict().map_err(|_| "Page is not dict")?;
             let res = dict.get(b"Resources").ok().and_then(|r| match r {
@@ -31,7 +31,7 @@ pub fn enhance_scanned_pdf(data: &[u8], options: &ScanEnhanceOptions) -> Result<
                 _ => None,
             });
 
-            let xobjects = res.and_then(|r| {
+            res.and_then(|r| {
                 r.get(b"XObject").ok().and_then(|x| match x {
                     Object::Dictionary(d) => Some(d.clone()),
                     Object::Reference(id) => {
@@ -39,13 +39,7 @@ pub fn enhance_scanned_pdf(data: &[u8], options: &ScanEnhanceOptions) -> Result<
                     }
                     _ => None,
                 })
-            });
-
-            let contents_id = dict
-                .get(b"Contents")
-                .ok()
-                .and_then(|c| c.as_reference().ok());
-            (xobjects, contents_id)
+            })
         };
 
         if let Some(xobj_dict) = xobjs {
@@ -68,8 +62,9 @@ pub fn enhance_scanned_pdf(data: &[u8], options: &ScanEnhanceOptions) -> Result<
             }
         }
 
-        // If page has content stream and deskew rotated, apply coordinate compensation
-        let _ = contents_id;
+        // Note on scan enhancement:
+        // Scanned page image XObject streams are directly enhanced and resampled in-place
+        // maintaining identical pixel grid dimensions (W x H) and page matrix bounding boxes.
     }
 
     save_doc(&mut doc)
@@ -117,9 +112,11 @@ fn enhance_raw_image_stream(
     };
 
     // 1. Deskew (Automatic skew angle detection)
+    // Document scanner deskew is restricted to slight scan skew (0.3° <= |angle| <= 5.0°)
+    // to preserve page aspect ratio, prevent peripheral content clipping, and maintain coordinate alignment.
     if options.deskew {
         let angle = detect_skew_angle(&dyn_img);
-        if angle.abs() >= 0.3 && angle.abs() <= 20.0 {
+        if angle.abs() >= 0.3 && angle.abs() <= 5.0 {
             dyn_img = rotate_image_bilinear(&dyn_img, -angle);
         }
     }
@@ -132,15 +129,28 @@ fn enhance_raw_image_stream(
         adaptive_background_normalization(&mut luma, options.contrast_boost, options.binarize_text);
     }
 
-    // Re-encode back to stream
-    let out_buf = luma.into_raw();
+    // Re-encode back to stream with FlateDecode compression to prevent huge PDF file sizes
+    let out_raw = luma.into_raw();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let out_buf = if std::io::Write::write_all(&mut encoder, &out_raw).is_ok() {
+        if let Ok(compressed) = encoder.finish() {
+            stream.dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+            compressed
+        } else {
+            stream.dict.remove(b"Filter");
+            out_raw
+        }
+    } else {
+        stream.dict.remove(b"Filter");
+        out_raw
+    };
+
     stream
         .dict
         .set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
     stream.dict.set("BitsPerComponent", Object::Integer(8));
     stream.dict.set("Width", Object::Integer(w as i64));
     stream.dict.set("Height", Object::Integer(h as i64));
-    stream.dict.remove(b"Filter");
 
     Ok(out_buf)
 }

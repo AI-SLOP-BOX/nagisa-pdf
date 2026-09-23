@@ -12,6 +12,7 @@ pub fn add_digital_signature(
     height: f64,
     signer_name: String,
     reason: String,
+    certificate_data: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, String> {
     pdf_engine::add_digital_signature(
         &data,
@@ -22,7 +23,7 @@ pub fn add_digital_signature(
         height,
         &signer_name,
         &reason,
-        None,
+        certificate_data.as_deref(),
     )
 }
 

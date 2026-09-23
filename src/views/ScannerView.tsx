@@ -196,11 +196,11 @@ export default function ScannerView({ currentView = 'scanner', onNavigateView }:
 
         <div style={{ flex: 1 }} />
         <button onClick={handleAddFiles} style={{
-          padding: '6px 14px', background: 'var(--accent)', color: 'var(--bg-0)',
+          padding: '6px 14px', background: 'var(--accent)', color: '#ffffff',
           border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
         }}>画像を追加</button>
         <button onClick={handleProcess} disabled={files.length === 0 || isProcessing} style={{
-          padding: '6px 14px', background: 'var(--purple)', color: 'var(--bg-0)',
+          padding: '6px 14px', background: 'var(--purple)', color: '#ffffff',
           border: 'none', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
           opacity: files.length === 0 || isProcessing ? 0.4 : 1,
         }}>

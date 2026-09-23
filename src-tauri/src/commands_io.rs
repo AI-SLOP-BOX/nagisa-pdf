@@ -14,16 +14,29 @@ fn validate_safe_path(path_str: &str, for_write: bool) -> Result<std::path::Path
     }
 
     if for_write {
-        // For writing, ensure parent directory exists or is valid
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() && parent.exists() {
-                let canonical_parent = parent
-                    .canonicalize()
-                    .map_err(|e| format!("Invalid target directory: {e}"))?;
-                return Ok(canonical_parent.join(path.file_name().ok_or("Invalid filename")?));
-            }
+        // #39 是正: 書き込みパスも親ディレクトリを canonicalize したうえで
+        // 絶対パスのプレフィックス検証を行い、../等によるディレクトリトラバーサルを遮断する。
+        let parent = path.parent().ok_or("Invalid path: no parent directory")?;
+
+        // 親ディレクトリが空文字（カレントを表す相対パス）のときは現在の作業ディレクトリを使用
+        let parent_resolved = if parent.as_os_str().is_empty() {
+            std::env::current_dir()
+                .map_err(|e| format!("Failed to determine current directory: {e}"))?  
+        } else {
+            parent
+                .canonicalize()
+                .map_err(|e| format!("Invalid target directory: {e}"))?  
+        };
+
+        let file_name = path.file_name().ok_or("Invalid filename: path ends with ..")?;
+        let resolved = parent_resolved.join(file_name);
+
+        // 解決済みパスが絶対パスであることを保証する（シンボリックリンク解決は書き込み前でもOK）
+        if !resolved.is_absolute() {
+            return Err("Resolved write path is not absolute".to_string());
         }
-        Ok(path.to_path_buf())
+
+        Ok(resolved)
     } else {
         // For reading, canonicalize to prevent ../ directory traversal
         let canonical = path
