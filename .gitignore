@@ -81,3 +81,10 @@ local.properties
 *.tgz
 *.7z
 *.rar
+
+# Development / test artifacts (手動検証用の一時成果物。アプリから参照されない)
+scratch/
+/*.pdf
+/create_screenshot_pdf.py
+/public/*.pdf
+/public/*.png

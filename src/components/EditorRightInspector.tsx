@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import type { View } from '../types'
 import { UserAnnotation } from '../services/annotationService'
+import { InputDialog } from './AppDialog'
 import {
   LinkChainIcon,
   ScissorsIcon,
@@ -45,6 +46,7 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'tools' | 'comments' | 'info'>('tools')
   const [tags, setTags] = useState<string[]>(['提案書', '企画', 'リニューアル'])
+  const [tagDialogOpen, setTagDialogOpen] = useState(false)
 
   if (collapsed) {
     return (
@@ -71,9 +73,16 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
   }
 
   const handleAddTag = () => {
-    const t = prompt('新しいタグを入力してください:')
-    if (t && t.trim()) {
-      setTags(prev => [...prev, t.trim()])
+    // ネイティブ prompt ではなくアプリ内ダイアログで入力させる
+    setTagDialogOpen(true)
+  }
+
+  const handleConfirmTag = (value: string) => {
+    setTagDialogOpen(false)
+    const t = value.trim()
+    if (t) {
+      // 重複タグは追加しない
+      setTags(prev => (prev.includes(t) ? prev : [...prev, t]))
     }
   }
 
@@ -567,6 +576,17 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
                 </button>
               </div>
             </div>
+
+            <InputDialog
+              isOpen={tagDialogOpen}
+              title="タグを追加"
+              message="新しいタグを入力してください。"
+              placeholder="タグ名"
+              confirmLabel="追加"
+              cancelLabel="キャンセル"
+              onSubmit={handleConfirmTag}
+              onCancel={() => setTagDialogOpen(false)}
+            />
 
             {/* Metadata Section */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6, borderTop: '1px solid #f1f5f9' }}>

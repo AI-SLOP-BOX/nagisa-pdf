@@ -6,6 +6,7 @@ import { HomeHeroDropZone } from '../components/HomeHeroDropZone'
 import { HomeToolCards } from '../components/HomeToolCards'
 import { HomeRecentSection } from '../components/HomeRecentSection'
 import { UsageGuideModal, ShortcutKeysModal, SettingsModal } from '../components/HomeModals'
+import { notifyError } from '../utils/notify'
 
 interface HomeViewProps {
   onOpenFile: (bytes: number[], name: string, path?: string, sizeStr?: string) => void
@@ -38,7 +39,9 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
           setRecentFiles(validRealFiles)
           try {
             localStorage.setItem('nagisa_recent_files', JSON.stringify(validRealFiles))
-          } catch {}
+          } catch (err) {
+            console.warn('[HomeView] recent files の localStorage 保存失敗（初期読み込み）:', err)
+          }
           return
         }
       }
@@ -54,7 +57,9 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
       const updated = [item, ...filtered].slice(0, 10)
       try {
         localStorage.setItem('nagisa_recent_files', JSON.stringify(updated))
-      } catch {}
+      } catch (err) {
+        console.warn('[HomeView] recent files の localStorage 保存失敗（追加）:', err)
+      }
       return updated
     })
   }
@@ -95,7 +100,7 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
         } catch (readErr) {
           // File was chosen but could not be read (moved/permission) — fall back to chooser
           console.error('Failed to read selected file:', readErr)
-          alert('ファイルの読み込みに失敗しました')
+          notifyError('ファイルの読み込みに失敗しました')
         }
       }
     } catch (err) {
@@ -127,7 +132,7 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
       onOpenFile(bytes, file.name, undefined, sizeStr)
     } catch (err) {
       console.error('Failed to read selected file:', err)
-      alert('ファイルの読み込みに失敗しました')
+      notifyError('ファイルの読み込みに失敗しました')
     }
   }
 
@@ -156,7 +161,7 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
       onOpenFile(bytes, file.name, undefined, sizeStr)
     } catch (err) {
       console.error('Failed to read dropped file:', err)
-      alert('ファイルの読み込みに失敗しました')
+      notifyError('ファイルの読み込みに失敗しました')
     }
   }
 
@@ -180,7 +185,9 @@ export default function HomeView({ onOpenFile, onNavigateView, onOpenToolTab, hi
       const updated = prev.filter(f => f.id !== id)
       try {
         localStorage.setItem('nagisa_recent_files', JSON.stringify(updated))
-      } catch {}
+      } catch (err) {
+        console.warn('[HomeView] recent files の localStorage 保存失敗（削除）:', err)
+      }
       return updated
     })
   }

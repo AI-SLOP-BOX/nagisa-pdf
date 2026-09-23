@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { PDFJsEngine, DefaultRenderer } from './pdfRenderer'
+import { PDFJsEngine } from './pdfRenderer'
 import type { SignatureInfo } from '../types'
 
 export interface SessionInfo {
@@ -166,17 +166,21 @@ export class DocumentService {
       if (Array.isArray(docIdOrData)) {
         try {
           return await invoke<number>('get_page_count', { data: docIdOrData })
-        } catch {
+        } catch (err) {
+          console.error('[DocumentService.getPageCount] セッションのページ数取得失敗, PDF.jsフォールバック:', err)
           const doc = await PDFJsEngine.getDocument(docIdOrData)
           return doc.numPages
         }
       }
-      if (typeof docIdOrData === 'string' && docIdOrData.startsWith('browser-session-') && DefaultRenderer.lastPdfBytes) {
-        const doc = await PDFJsEngine.getDocument(DefaultRenderer.lastPdfBytes)
-        return doc.numPages
+      if (typeof docIdOrData === 'string' && docIdOrData.startsWith('browser-session-')) {
+        const latestBytes = PDFJsEngine.getLatestBytes()
+        if (latestBytes) {
+          const doc = await PDFJsEngine.getDocument(latestBytes)
+          return doc.numPages
+        }
       }
     } catch (e) {
-      // Browser preview mode fallback
+      console.error('[DocumentService.getPageCount] 予期しないエラー, デフォルト1を返します:', e)
     }
     return 1
   }
@@ -188,9 +192,11 @@ export class DocumentService {
           docId: docIdOrData,
           pageIndex,
         })
-      } catch {}
+      } catch (err) {
+        console.error(`[DocumentService.getPageDimensions] セッションのページサイズ取得失敗 (docId=${docIdOrData}, pageIndex=${pageIndex}):`, err)
+      }
     }
-    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : DefaultRenderer.lastPdfBytes
+    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : PDFJsEngine.getLatestBytes()
     if (sourceBytes && sourceBytes.length > 0) {
       try {
         const doc = await PDFJsEngine.getDocument(sourceBytes)
@@ -198,7 +204,9 @@ export class DocumentService {
         const page = await doc.getPage(pageNum)
         const vp = page.getViewport({ scale: 1.0 })
         return { width: Math.round(vp.width), height: Math.round(vp.height) }
-      } catch {}
+      } catch (err) {
+        console.error(`[DocumentService.getPageDimensions] PDF.jsによるページサイズ取得失敗 (pageIndex=${pageIndex}):`, err)
+      }
     }
     return { width: 595, height: 842 }
   }
@@ -210,9 +218,11 @@ export class DocumentService {
           docId: docIdOrData,
           pageIndex,
         })
-      } catch {}
+      } catch (err) {
+        console.error(`[DocumentService.getTextBlocks] セッションのテキストブロック取得失敗 (docId=${docIdOrData}, pageIndex=${pageIndex}):`, err)
+      }
     }
-    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : DefaultRenderer.lastPdfBytes
+    const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : PDFJsEngine.getLatestBytes()
     if (sourceBytes && sourceBytes.length > 0) {
       try {
         const doc = await PDFJsEngine.getDocument(sourceBytes)
@@ -242,7 +252,9 @@ export class DocumentService {
             page_index: pageIndex,
           }
         })
-      } catch {}
+      } catch (err) {
+        console.error('[DocumentService.getTextBlocks] PDF.jsによるテキストブロック取得失敗:', err)
+      }
     }
     return []
   }
@@ -277,9 +289,19 @@ export class DocumentService {
 
   static async verifySignatures(docIdOrData: string | number[]): Promise<{ signatures?: SignatureInfo[]; count?: number }> {
     if (typeof docIdOrData === 'string') {
-      return invoke('session_verify_signature', { docId: docIdOrData })
+      try {
+        return await invoke<{ signatures?: SignatureInfo[]; count?: number }>('session_verify_signature', { docId: docIdOrData })
+      } catch (err) {
+        console.error('[DocumentService.verifySignatures] セッション署名検証失敗:', err)
+        return { signatures: [], count: 0 }
+      }
     }
-    return invoke('verify_signature', { data: docIdOrData, signatureIndex: 0 })
+    try {
+      return await invoke<{ signatures?: SignatureInfo[]; count?: number }>('verify_signature', { data: docIdOrData, signatureIndex: 0 })
+    } catch (err) {
+      console.error('[DocumentService.verifySignatures] 直接署名検証失敗:', err)
+      return { signatures: [], count: 0 }
+    }
   }
 
   static async printPdf(docIdOrData: string | number[]): Promise<void> {

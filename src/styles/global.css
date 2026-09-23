@@ -561,3 +561,9 @@ body {
 
 
 
+
+
+/* ===== ボタン hover 系（ReactインラインstyleからCSSへ移行した要素） ===== */
+.saveBtn:hover {
+  background: var(--accent-hover);
+}

@@ -41,27 +41,27 @@ export function usePDFCoordinates({
   const scaleX = imgRenderedSize.width > 0 ? imgRenderedSize.width / pageSize.width : 1
   const scaleY = imgRenderedSize.height > 0 ? imgRenderedSize.height / pageSize.height : 1
 
-  const pdfToDom = useCallback((pdfX: number, pdfY: number, pdfW: number, pdfH: number) => {
+  const pdfToDom = useCallback((pdfX: number, pdfY: number, pdfW: number, pdfH: number, pageHeight: number) => {
     const domX = pdfX * scaleX
     // PDF Y is bottom-up; DOM Y is top-down
-    const domY = (pageSize.height - (pdfY + pdfH)) * scaleY
+    const domY = (pageHeight - (pdfY + pdfH)) * scaleY
     const domW = Math.max(pdfW * scaleX, 10)
     const domH = Math.max(pdfH * scaleY, 12)
     return { left: domX, top: domY, width: domW, height: domH }
-  }, [scaleX, scaleY, pageSize.height])
+  }, [scaleX, scaleY])
 
-  const domToPdf = useCallback((domX: number, domY: number, domW: number, domH: number) => {
+  const domToPdf = useCallback((domX: number, domY: number, domW: number, domH: number, pageHeight: number) => {
     const pdfX = scaleX > 0 ? domX / scaleX : 0
     const pdfW = scaleX > 0 ? domW / scaleX : 0
     const pdfH = scaleY > 0 ? domH / scaleY : 0
-    const pdfY = scaleY > 0 ? pageSize.height - ((domY + domH) / scaleY) : 0
+    const pdfY = scaleY > 0 ? pageHeight - ((domY + domH) / scaleY) : 0
     return {
       x: Math.round(pdfX),
       y: Math.round(pdfY),
       width: Math.round(pdfW),
       height: Math.round(pdfH),
     }
-  }, [scaleX, scaleY, pageSize.height])
+  }, [scaleX, scaleY])
 
   // Drawing mouse handlers on overlay
   const handleOverlayMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -101,7 +101,7 @@ export function usePDFCoordinates({
       if (block) {
         const domW = block.width * scaleX
         const domH = block.height * scaleY
-        const pdfCoords = domToPdf(newDomX, newDomY, domW, domH)
+        const pdfCoords = domToPdf(newDomX, newDomY, domW, domH, pageSize.height)
         setTempBlockPos({ id: draggingBlockId, x: pdfCoords.x, y: pdfCoords.y })
       }
       return
@@ -128,7 +128,7 @@ export function usePDFCoordinates({
       const h = Math.abs(drawBox.currentY - drawBox.startY)
 
       if (w > 5 && h > 5) {
-        const pdfRect = domToPdf(minX, minY, w, h)
+        const pdfRect = domToPdf(minX, minY, w, h, pageSize.height)
         onDrawRectComplete?.({
           ...pdfRect,
           page: currentPage,

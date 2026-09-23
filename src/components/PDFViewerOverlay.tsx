@@ -10,7 +10,7 @@ interface PDFViewerOverlayProps {
   selectedTextBlockId?: number | null
   textBlocks: TextBlock[]
   tempBlockPos: { id: number; x: number; y: number } | null
-  pdfToDom: (x: number, y: number, w: number, h: number) => { left: number; top: number; width: number; height: number }
+  pdfToDom: (x: number, y: number, w: number, h: number, pageHeight: number) => { left: number; top: number; width: number; height: number }
   onSelectTextBlock?: (block: TextBlock | null) => void
   setDraggingBlockId: (id: number | null) => void
   setBlockDragOffset: (offset: { x: number; y: number }) => void
@@ -235,7 +235,7 @@ export const PDFViewerOverlay: React.FC<PDFViewerOverlayProps> = ({
           const blockX = isBeingMoved ? tempBlockPos.x : block.x
           const blockY = isBeingMoved ? tempBlockPos.y : block.y
 
-          const dom = pdfToDom(blockX, blockY, block.width, block.height)
+          const dom = pdfToDom(blockX, blockY, block.width, block.height, pageSize.height)
 
           return (
             <div

@@ -1,5 +1,6 @@
-import { PDFDocument, rgb, StandardFonts, degrees, type PDFFont } from 'pdf-lib'
-import fontkit from '@pdf-lib/fontkit'
+import type { PDFDocument as PDFDocumentType, PDFFont } from 'pdf-lib'
+import { safeRevokeObjectUrl } from '../utils/objectUrl'
+import { notifyWarning } from '../utils/notify'
 
 export interface UserAnnotation {
   id: string
@@ -19,7 +20,7 @@ export interface UserAnnotation {
   rotation?: number // in degrees: 0, 90, 180, 270
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
+export function hexToRgb(hex: string): { r: number; g: number; b: number } {
   let clean = hex.replace('#', '')
   if (clean.length === 3) {
     clean = clean.split('').map(c => c + c).join('')
@@ -33,36 +34,36 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   }
 }
 
-// Cache embedded font buffers in memory
-let cachedGothicBytes: ArrayBuffer | null = null
-let cachedMinchoBytes: ArrayBuffer | null = null
+// Cache embedded font buffers in memory (Promiseキャッシュで並行呼び出し時の重複fetchを防止)
+let gothicBytesPromise: Promise<ArrayBuffer | null> | null = null
+let minchoBytesPromise: Promise<ArrayBuffer | null> | null = null
 
 async function getCjkGothicBytes(): Promise<ArrayBuffer | null> {
-  if (cachedGothicBytes) return cachedGothicBytes
-  try {
-    const res = await fetch('/ipaexg.ttf')
-    if (res.ok) {
-      cachedGothicBytes = await res.arrayBuffer()
-      return cachedGothicBytes
+  if (gothicBytesPromise) return gothicBytesPromise
+  gothicBytesPromise = (async () => {
+    try {
+      const res = await fetch('/ipaexg.ttf')
+      if (res.ok) return await res.arrayBuffer()
+    } catch (e) {
+      console.warn('Could not load /ipaexg.ttf from local public assets:', e)
     }
-  } catch (e) {
-    console.warn('Could not load /ipaexg.ttf from local public assets:', e)
-  }
-  return null
+    return null
+  })()
+  return gothicBytesPromise
 }
 
 async function getCjkMinchoBytes(): Promise<ArrayBuffer | null> {
-  if (cachedMinchoBytes) return cachedMinchoBytes
-  try {
-    const res = await fetch('/ipaexm.ttf')
-    if (res.ok) {
-      cachedMinchoBytes = await res.arrayBuffer()
-      return cachedMinchoBytes
+  if (minchoBytesPromise) return minchoBytesPromise
+  minchoBytesPromise = (async () => {
+    try {
+      const res = await fetch('/ipaexm.ttf')
+      if (res.ok) return await res.arrayBuffer()
+    } catch (e) {
+      console.warn('Could not load /ipaexm.ttf from local public assets:', e)
     }
-  } catch (e) {
-    console.warn('Could not load /ipaexm.ttf from local public assets:', e)
-  }
-  return null
+    return null
+  })()
+  return minchoBytesPromise
 }
 
 export class AnnotationService {
@@ -73,8 +74,19 @@ export class AnnotationService {
     sourceBytes: number[] | Uint8Array,
     annotations: UserAnnotation[],
   ): Promise<Uint8Array> {
+    // pdf-lib / fontkit は保存（注釈の焼き込み）時にしか使わないため動的 import とし、
+    // アプリ起動時のバンドルサイズを削減する。
+    const { PDFDocument, rgb, StandardFonts, degrees } = await import('pdf-lib')
+    const fontkit = (await import('@pdf-lib/fontkit')).default
+
     const uint8 = sourceBytes instanceof Uint8Array ? sourceBytes : new Uint8Array(sourceBytes)
-    const pdfDoc = await PDFDocument.load(uint8, { ignoreEncryption: true })
+    let pdfDoc: PDFDocumentType
+    try {
+      pdfDoc = await PDFDocument.load(uint8, { ignoreEncryption: true })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`PDFDocument.load に失敗しました: ${msg}`)
+    }
     pdfDoc.registerFontkit(fontkit)
 
     const pages = pdfDoc.getPages()
@@ -172,14 +184,7 @@ export class AnnotationService {
           } else {
             // CJK font failed to load: log warning and notify
             console.error('CJK font (ipaexg.ttf / ipaexm.ttf) is unavailable. Falling back safely.')
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('app-toast', {
-                detail: {
-                  message: '日本語フォントの読み込みに失敗したため、一部の文字を代替表示します。',
-                  type: 'warning',
-                }
-              }))
-            }
+            notifyWarning('日本語フォントの読み込みに失敗したため、一部の文字を代替表示します。')
           }
         } else {
           if (isMincho) {
@@ -250,7 +255,14 @@ export class AnnotationService {
       }
     }
 
-    return pdfDoc.save()
+    let saved: Uint8Array
+    try {
+      saved = await pdfDoc.save()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`PDF の保存（save）に失敗しました: ${msg}`)
+    }
+    return saved
   }
 
   /**
@@ -265,6 +277,6 @@ export class AnnotationService {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setTimeout(() => safeRevokeObjectUrl(url), 1000)
   }
 }

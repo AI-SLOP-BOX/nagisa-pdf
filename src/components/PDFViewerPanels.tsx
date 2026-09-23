@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { RotateIcon, TrashIcon } from './Icons'
+import { ConfirmDialog } from './AppDialog'
+import { notifyError } from '../utils/notify'
 
 export interface SearchResult {
   page: number
@@ -193,6 +195,8 @@ export function ThumbnailsPanel({
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null)
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  // 削除確認ダイアログに表示中のページindex（null で非表示）
+  const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null)
 
   useEffect(() => {
     let isMounted = true
@@ -241,10 +245,15 @@ export function ThumbnailsPanel({
     }
   }
 
-  const handleDelete = async (e: React.MouseEvent, pageIdx: number) => {
+  const handleDelete = (e: React.MouseEvent, pageIdx: number) => {
     e.stopPropagation()
     if (busy || !onPdfUpdate || pageCount <= 1) return
-    if (!confirm(`ページ ${pageIdx + 1} を削除しますか？`)) return
+    // ネイティブ confirm ではなくアプリ内ダイアログで確認する
+    setPendingDeleteIdx(pageIdx)
+  }
+
+  const performDelete = async (pageIdx: number) => {
+    if (!onPdfUpdate) return
     setBusy(true)
     try {
       const updated = await invoke<number[]>('delete_page', {
@@ -257,6 +266,7 @@ export function ThumbnailsPanel({
       }
     } catch (err) {
       console.error('Delete failed:', err)
+      notifyError('ページの削除に失敗しました')
     } finally {
       setBusy(false)
     }
@@ -423,6 +433,20 @@ export function ThumbnailsPanel({
           )
         })}
       </div>
+      <ConfirmDialog
+        isOpen={pendingDeleteIdx !== null}
+        title="ページを削除"
+        message={pendingDeleteIdx !== null ? `ページ ${pendingDeleteIdx + 1} を削除しますか？この操作は元に戻せません。` : ''}
+        confirmLabel="削除"
+        cancelLabel="キャンセル"
+        danger
+        onConfirm={() => {
+          const idx = pendingDeleteIdx
+          setPendingDeleteIdx(null)
+          if (idx !== null) void performDelete(idx)
+        }}
+        onCancel={() => setPendingDeleteIdx(null)}
+      />
     </div>
   )
 }

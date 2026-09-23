@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { PDFJsEngine, DefaultRenderer } from '../services/pdfRenderer'
+import { PDFJsEngine } from '../services/pdfRenderer'
 import { invoke } from '@tauri-apps/api/core'
 
 interface EditorThumbnailSidebarProps {
@@ -27,7 +27,7 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
   // Generate real thumbnail images for all pages
   useEffect(() => {
     let isCancelled = false
-    const sourceBytes = (pdfData && pdfData.length > 0) ? pdfData : DefaultRenderer.lastPdfBytes
+    const sourceBytes = (pdfData && pdfData.length > 0) ? pdfData : PDFJsEngine.getLatestBytes()
 
     const loadRealThumbnails = async () => {
       const newMap = new Map<number, string>()
@@ -83,7 +83,9 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
               const blob = new Blob([new Uint8Array(pngBytes)], { type: 'image/png' })
               newMap.set(i, URL.createObjectURL(blob))
             }
-          } catch {}
+          } catch (err) {
+            console.warn(`[EditorThumbnailSidebar] ページ ${i + 1}のサムネイル生成失敗:`, err)
+          }
         }
         if (!isCancelled) {
           setThumbnails(new Map(newMap))

@@ -587,6 +587,7 @@ export const EditorTopBar: React.FC<EditorTopBarProps> = ({
 
             {/* Export Action Button */}
             <button
+              className="saveBtn"
               onClick={onSave}
               style={{
                 display: 'flex',
@@ -602,8 +603,6 @@ export const EditorTopBar: React.FC<EditorTopBarProps> = ({
                 cursor: 'pointer',
                 boxShadow: '0 2px 6px rgba(37, 99, 235, 0.25)',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#1d4ed8')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#2563eb')}
             >
               <ExportIcon size={13} color="#fff" />
               <span>書き出し</span>

@@ -104,7 +104,7 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   useEffect(() => {
     return () => {
       if (docIdRef.current) {
-        DocumentService.closeSession(docIdRef.current).catch(() => {})
+        DocumentService.closeSession(docIdRef.current).catch((err) => console.debug('セッションのクローズに失敗:', err))
       }
     }
   }, [])
@@ -135,7 +135,7 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   const loadPdfFromBytes = useCallback(async (bytes: number[], name: string) => {
     try {
       if (docIdRef.current) {
-        await DocumentService.closeSession(docIdRef.current).catch(() => {})
+        await DocumentService.closeSession(docIdRef.current).catch((err) => console.debug('セッションのクローズに失敗:', err))
       }
       let newDocId: string | null = null
       try {

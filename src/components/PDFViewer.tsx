@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { DocumentService } from '../services/documentService'
 import { defaultRenderer } from '../services/pdfRenderer'
+import { safeRevokeObjectUrl } from '../utils/objectUrl'
 import { FileIcon } from './Icons'
 import {
   SearchResult, Bookmark, FormField,
@@ -127,6 +128,10 @@ export default function PDFViewer({
   const [pageSize, setPageSize] = useState<{ width: number; height: number }>({ width: 595, height: 842 })
   const [imgRenderedSize, setImgRenderedSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
 
+  // 前のページの blob URL を保持し、ページ変更時に revoke する（メモリリーク防止）
+  const prevPageUrlRef = useRef<string | null>(null)
+  const prevCacheKeyRef = useRef<string | null>(null)
+
   // Page Cache & Render Token for Instant Page Switching & Thread-safety
   const pageCache = useRef<Map<string, string>>(new Map())
   const renderSeq = useRef(0)
@@ -134,14 +139,14 @@ export default function PDFViewer({
   // Clear cache when pdfData, docId, or revision changes
   useEffect(() => {
     // Revoke old object URLs
-    pageCache.current.forEach(url => URL.revokeObjectURL(url))
+    pageCache.current.forEach(url => safeRevokeObjectUrl(url))
     pageCache.current.clear()
   }, [pdfData, docId, revision])
 
   // Prevent memory leaks: Revoke all object URLs when PDFViewer unmounts
   useEffect(() => {
     return () => {
-      pageCache.current.forEach(url => URL.revokeObjectURL(url))
+      pageCache.current.forEach(url => safeRevokeObjectUrl(url))
       pageCache.current.clear()
       // Cancel any in-flight renderer work tied to this app instance
       defaultRenderer.cancelAll()
@@ -240,6 +245,13 @@ export default function PDFViewer({
     const cacheKey = `${docId || 'data'}_${revision}@${currentPage}@${targetDpi}_c${sepPlates.c ? 1 : 0}m${sepPlates.m ? 1 : 0}y${sepPlates.y ? 1 : 0}k${sepPlates.k ? 1 : 0}tac${sepPlates.tac ? 1 : 0}_${tacLimit}`
     const cachedUrl = pageCache.current.get(cacheKey)
     if (cachedUrl) {
+      // 前のページの blob URL を revoke して refs を更新してからキャッシュヒット画像を表示
+      safeRevokeObjectUrl(prevPageUrlRef.current)
+      if (prevCacheKeyRef.current) {
+        pageCache.current.delete(prevCacheKeyRef.current)
+      }
+      prevPageUrlRef.current = cachedUrl
+      prevCacheKeyRef.current = cacheKey
       setPageImage(cachedUrl)
       setLoading(false)
       return
@@ -248,6 +260,9 @@ export default function PDFViewer({
     const currentToken = ++renderSeq.current
     const abortController = new AbortController()
     setLoading(true)
+
+    // cleanup で revoke する対象を snapshot しておく（新しい effect が refs を更新する前に cleanup が実行されるため）
+    const cleanupSnapshotUrl = prevPageUrlRef.current
 
     const timer = setTimeout(async () => {
       try {
@@ -277,7 +292,7 @@ export default function PDFViewer({
         }
 
         if (currentToken !== renderSeq.current || abortController.signal.aborted) {
-          URL.revokeObjectURL(url)
+          safeRevokeObjectUrl(url)
           return
         }
 
@@ -286,10 +301,18 @@ export default function PDFViewer({
           const firstKey = pageCache.current.keys().next().value
           if (firstKey !== undefined) {
             const oldUrl = pageCache.current.get(firstKey)
-            if (oldUrl) URL.revokeObjectURL(oldUrl)
+            safeRevokeObjectUrl(oldUrl)
             pageCache.current.delete(firstKey)
           }
         }
+
+        // 前のページの blob URL とキャッシュをクリーンアップしてから新しい画像を設定
+        safeRevokeObjectUrl(prevPageUrlRef.current)
+        if (prevCacheKeyRef.current) {
+          pageCache.current.delete(prevCacheKeyRef.current)
+        }
+        prevPageUrlRef.current = url
+        prevCacheKeyRef.current = cacheKey
         pageCache.current.set(cacheKey, url)
         setPageImage(url)
       } catch (err) {
@@ -308,6 +331,13 @@ export default function PDFViewer({
     return () => {
       clearTimeout(timer)
       abortController.abort()
+      // 前のページの blob URL を revoke する（snapshot を使用）
+      safeRevokeObjectUrl(cleanupSnapshotUrl)
+      if (prevCacheKeyRef.current) {
+        pageCache.current.delete(prevCacheKeyRef.current)
+      }
+      prevPageUrlRef.current = null
+      prevCacheKeyRef.current = null
     }
   }, [docId, pdfData, revision, currentPage, pageCount, targetDpi, sepPlates, tacLimit])
 

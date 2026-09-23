@@ -1,18 +1,20 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 
 export function useHistory(initialData: number[] | null = null, maxHistory = 30) {
   const [data, setData] = useState<number[] | null>(initialData)
   const [history, setHistory] = useState<number[][]>(initialData ? [initialData] : [])
   const [historyIndex, setHistoryIndex] = useState(initialData ? 0 : -1)
+  const historyIndexRef = useRef(historyIndex)
+  historyIndexRef.current = historyIndex
 
   const pushHistory = useCallback((newData: number[]) => {
     setData(newData)
     setHistory(prev => {
-      const next = [...prev.slice(0, historyIndex + 1), newData]
+      const next = [...prev.slice(0, historyIndexRef.current + 1), newData]
       return next.length > maxHistory ? next.slice(-maxHistory) : next
     })
     setHistoryIndex(prev => Math.min(prev + 1, maxHistory - 1))
-  }, [historyIndex, maxHistory])
+  }, [maxHistory])
 
   const undo = useCallback(() => {
     if (historyIndex > 0) {
@@ -46,6 +48,6 @@ export function useHistory(initialData: number[] | null = null, maxHistory = 30)
     redo,
     resetHistory,
     canUndo: historyIndex > 0,
-    canRedo: historyIndex >= 0 && historyIndex < history.length - 1,
+    canRedo: historyIndex < history.length - 1,
   }
 }

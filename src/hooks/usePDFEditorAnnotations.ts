@@ -20,9 +20,11 @@ interface AnnotationHistory {
 }
 
 const MAX_HISTORY = 50
-let annIdSeq = 0
-const nextAnnotationId = () =>
-  `ann_${Date.now().toString(36)}_${(annIdSeq++).toString(36)}`
+
+/** ページ番号とタイムスタンプ＋ランダム文字列で一意な注釈IDを生成する（ホットリロード対策）。 */
+function generateAnnotationId(page: number): string {
+  return `ann_${page}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`
+}
 
 export function usePDFEditorAnnotations({
   currentPage,
@@ -82,7 +84,7 @@ export function usePDFEditorAnnotations({
 
   const handleAddTextAnnotation = useCallback(() => {
     const newAnn: UserAnnotation = {
-      id: nextAnnotationId(),
+      id: generateAnnotationId(currentPage),
       page: currentPage,
       type: 'text',
       x: 80,
@@ -105,7 +107,7 @@ export function usePDFEditorAnnotations({
 
   const handleAddHighlightAnnotation = useCallback(() => {
     const newAnn: UserAnnotation = {
-      id: nextAnnotationId(),
+      id: generateAnnotationId(currentPage),
       page: currentPage,
       type: 'highlight',
       x: 80,
@@ -122,7 +124,7 @@ export function usePDFEditorAnnotations({
 
   const handleAddShapeAnnotation = useCallback(() => {
     const newAnn: UserAnnotation = {
-      id: nextAnnotationId(),
+      id: generateAnnotationId(currentPage),
       page: currentPage,
       type: 'shape',
       x: 80,

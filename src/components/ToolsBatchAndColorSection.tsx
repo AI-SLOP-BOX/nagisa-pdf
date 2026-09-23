@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { DocumentService } from '../services/documentService'
 import { SectionTitle, AccentBtn } from './UIControls'
+import { InputDialog } from './AppDialog'
 import type { PdfExec } from '../types'
 
 interface ToolsBatchAndColorSectionProps {
@@ -19,12 +20,22 @@ export function ToolsBatchAndColorSection({
   showToast,
 }: ToolsBatchAndColorSectionProps) {
   const [batchPaths, setBatchPaths] = useState<string[]>([])
+  const [protectDialogOpen, setProtectDialogOpen] = useState(false)
 
   const getCurrentBytes = async (): Promise<number[] | null> => {
     if (docId) {
       return DocumentService.getSessionBytes(docId)
     }
     return pdfData
+  }
+
+  const handleBatchProtect = async (password: string) => {
+    setProtectDialogOpen(false)
+    if (!password || batchPaths.length === 0) return
+    try {
+      const results = await invoke<number[][]>('batch_protect', { paths: batchPaths, password })
+      showToast(`${results.length}ファイルを暗号化しました`)
+    } catch (err) { showToast(`エラー: ${err}`) }
   }
 
   return (
@@ -60,15 +71,9 @@ export function ToolsBatchAndColorSection({
       }} disabled={batchPaths.length === 0}>
         一括最適化
       </AccentBtn>
-      <AccentBtn onClick={async () => {
+      <AccentBtn onClick={() => {
         if (batchPaths.length === 0) { showToast('ファイルを選択してください'); return }
-        const password = prompt('パスワードを入力:')
-        if (password) {
-          try {
-            const results = await invoke<number[][]>('batch_protect', { paths: batchPaths, password })
-            showToast(`${results.length}ファイルを暗号化しました`)
-          } catch (err) { showToast(`エラー: ${err}`) }
-        }
+        setProtectDialogOpen(true)
       }} disabled={batchPaths.length === 0}>
         一括暗号化
       </AccentBtn>
@@ -132,6 +137,17 @@ export function ToolsBatchAndColorSection({
       <AccentBtn onClick={() => exec('embed_icc_profile', { profileName: 'sRGB IEC61966-2.1' })}>
         ICCプロファイル埋め込み
       </AccentBtn>
+
+      <InputDialog
+        isOpen={protectDialogOpen}
+        title="一括暗号化"
+        message={`選択した ${batchPaths.length} 件のPDFに設定するパスワードを入力してください。`}
+        inputType="password"
+        confirmLabel="暗号化"
+        cancelLabel="キャンセル"
+        onSubmit={(v) => { void handleBatchProtect(v) }}
+        onCancel={() => setProtectDialogOpen(false)}
+      />
     </div>
   )
 }

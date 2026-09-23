@@ -9,6 +9,7 @@ import { ToolsPDFXSection } from './ToolsPDFXSection'
 import { ToolsAdvancedEngineeringSection } from './ToolsAdvancedEngineeringSection'
 import { ToolsBatchAndColorSection } from './ToolsBatchAndColorSection'
 import type { PdfExec } from '../types'
+import { InputDialog } from './AppDialog'
 
 export function ToolsPanel({
   exec,
@@ -47,6 +48,36 @@ export function ToolsPanel({
   const [compressQuality, setCompressQuality] = useState(85)
   const [outlineBusy, setOutlineBusy] = useState(false)
   const [accessReport, setAccessReport] = useState<AccessibilityReport | null>(null)
+  const [jsDialogOpen, setJsDialogOpen] = useState(false)
+  const [unlockDialogOpen, setUnlockDialogOpen] = useState(false)
+
+  const handleEmbedJavaScript = async (script: string) => {
+    setJsDialogOpen(false)
+    if (!script.trim()) return
+    try {
+      const bytes = await getCurrentBytes()
+      if (!bytes) return
+      const updated = await invoke<number[]>('embed_javascript', { data: bytes, script })
+      if (onPdfUpdate) {
+        await onPdfUpdate(updated)
+      }
+      showToast('JavaScriptを埋め込みました')
+    } catch (err) { showToast(`エラー: ${err}`) }
+  }
+
+  const handleUnlockPdf = async (password: string) => {
+    setUnlockDialogOpen(false)
+    if (!password) return
+    try {
+      const bytes = await getCurrentBytes()
+      if (!bytes) return
+      const unlocked = await invoke<number[]>('unlock_pdf', { data: bytes, password })
+      if (onPdfUpdate) {
+        await onPdfUpdate(unlocked)
+      }
+      showToast('PDFロック解除完了')
+    } catch (err) { showToast(`エラー: ${err}`) }
+  }
   const [optResult, setOptResult] = useState<{
     beforeBytes: number
     afterBytes: number
@@ -419,16 +450,8 @@ export function ToolsPanel({
       <AccentBtn onClick={async () => {
         const bytes = await getCurrentBytes()
         if (!bytes) return
-        const password = prompt('パスワードを入力:')
-        if (password) {
-          try {
-            const unlocked = await invoke<number[]>('unlock_pdf', { data: bytes, password })
-            if (onPdfUpdate) {
-              await onPdfUpdate(unlocked)
-            }
-            showToast('PDFロック解除完了')
-          } catch (err) { showToast(`エラー: ${err}`) }
-        }
+        // ネイティブ prompt ではなくアプリ内ダイアログで入力させる
+        setUnlockDialogOpen(true)
       }}>
         パスワード解除
       </AccentBtn>
@@ -490,16 +513,8 @@ export function ToolsPanel({
       <AccentBtn onClick={async () => {
         const bytes = await getCurrentBytes()
         if (!bytes) return
-        const script = prompt('JavaScriptコードを入力:', 'app.alert("Hello from PDF!");')
-        if (script) {
-          try {
-            const updated = await invoke<number[]>('embed_javascript', { data: bytes, script })
-            if (onPdfUpdate) {
-              await onPdfUpdate(updated)
-            }
-            showToast('JavaScriptを埋め込みました')
-          } catch (err) { showToast(`エラー: ${err}`) }
-        }
+        // ネイティブ prompt ではなくアプリ内ダイアログで入力させる
+        setJsDialogOpen(true)
       }}>
         JavaScript埋め込み
       </AccentBtn>
@@ -524,6 +539,30 @@ export function ToolsPanel({
       }}>
         デジタルID一覧
       </AccentBtn>
+
+      <InputDialog
+        isOpen={jsDialogOpen}
+        title="JavaScript埋め込み"
+        message="PDFに埋め込むJavaScriptコードを入力してください。"
+        initialValue={'app.alert("Hello from PDF!");'}
+        placeholder={'app.alert("Hello");'}
+        confirmLabel="埋め込む"
+        cancelLabel="キャンセル"
+        multiline
+        onSubmit={(v) => { void handleEmbedJavaScript(v) }}
+        onCancel={() => setJsDialogOpen(false)}
+      />
+
+      <InputDialog
+        isOpen={unlockDialogOpen}
+        title="パスワード解除"
+        message="PDFのパスワードを入力してください。"
+        inputType="password"
+        confirmLabel="解除"
+        cancelLabel="キャンセル"
+        onSubmit={(v) => { void handleUnlockPdf(v) }}
+        onCancel={() => setUnlockDialogOpen(false)}
+      />
     </div>
   )
 }
