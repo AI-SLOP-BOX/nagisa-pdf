@@ -53,7 +53,11 @@ export default function OCRView({ currentView = 'ocr', onNavigateView }: OCRView
             outputPath: path,
             title: 'OCR Converted Document',
           })
-          showSuccess(`EPUBを生成しました (信頼度: ${Math.round(ocrResult.confidence)}%)`)
+          if (ocrResult.confidence <= 0) {
+            showToast('EPUBを生成しましたが、文字は認識されませんでした。言語設定やスキャン解像度を確認してください')
+          } else {
+            showSuccess(`EPUBを生成しました (信頼度: ${Math.round(ocrResult.confidence)}%)`)
+          }
         }
       } else if (outputMode === 'txt') {
         const path = await save({
@@ -275,10 +279,16 @@ export default function OCRView({ currentView = 'ocr', onNavigateView }: OCRView
                 padding: '8px 16px', background: 'var(--bg-1)', borderBottom: '1px solid var(--border)',
                 display: 'flex', alignItems: 'center', gap: 12, fontSize: 12,
               }}>
-                <span style={{ color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
-                  <CheckIcon size={14} color="var(--green)" /> OCR完了
-                </span>
-                <span style={{ color: 'var(--text-dim)' }}>信頼度: {Math.round(result.confidence)}%</span>
+                {result.confidence <= 0 || result.text.trim().length === 0 ? (
+                  <span style={{ color: '#e3b341', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
+                    ⚠ 文字を認識できませんでした
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
+                    <CheckIcon size={14} color="var(--green)" /> OCR完了
+                  </span>
+                )}
+                <span style={{ color: result.confidence <= 0 ? '#e3b341' : 'var(--text-dim)' }}>信頼度: {Math.round(result.confidence)}%</span>
                 <span style={{ color: 'var(--text-dim)' }}>{result.text.length}文字</span>
               </div>
               <div style={{

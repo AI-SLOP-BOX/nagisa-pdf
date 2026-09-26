@@ -35,6 +35,7 @@ export function NumInput({ value, onChange, label }: { value: number; onChange: 
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
         <input
           type="number"
+          aria-label={label}
           value={value}
           onChange={e => onChange(Number(e.target.value))}
           style={{

@@ -3,7 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import type { SignatureInfo, PdfExec, Pkcs11Slot } from '../types'
 import { DocumentService } from '../services/documentService'
-import { Input, AccentBtn } from './UIControls'
+import { Input, AccentBtn, NumInput } from './UIControls'
 
 export type { SignatureInfo }
 
@@ -46,6 +46,25 @@ export function SecurityPanel({
   const [pkcs11Pin, setPkcs11Pin] = useState('')
   const [pkcs11Loaded, setPkcs11Loaded] = useState(false)
   const [keychainLoaded, setKeychainLoaded] = useState(false)
+  // Signature widget placement in PDF user space (points, origin bottom-left).
+  // Shared by all three signing sources and the field-frame button so
+  // signatures no longer land on per-call-site magic numbers. The UI uses
+  // 1-based page numbers; PDF commands expect 0-based page indexes.
+  const [sigPage, setSigPage] = useState(1)
+  const [sigX, setSigX] = useState(50)
+  const [sigY, setSigY] = useState(50)
+  const [sigWidth, setSigWidth] = useState(200)
+  const [sigHeight, setSigHeight] = useState(60)
+  const sigPlacement = () => {
+    const int = (v: number, min: number) => (Number.isFinite(v) ? Math.max(min, Math.floor(v)) : min)
+    return {
+      pageIndex: int(sigPage, 1) - 1,
+      x: int(sigX, 0),
+      y: int(sigY, 0),
+      width: int(sigWidth, 40),
+      height: int(sigHeight, 20),
+    }
+  }
 
   const loadKeychainIdentities = async () => {
     try {
@@ -80,11 +99,7 @@ export function SecurityPanel({
       setIsSigning(true)
       const signedBytes = await invoke<number[]>('sign_pdf_with_keychain', {
         data: currentBytes,
-        pageIndex: 0,
-        x: 50,
-        y: 50,
-        width: 200,
-        height: 60,
+        ...sigPlacement(),
         signerName: cmsSignerName || '署名者',
         reason: cmsReason || '承認',
         identityNickname: selectedIdentity,
@@ -135,11 +150,7 @@ export function SecurityPanel({
       setIsSigning(true)
       const signedBytes = await invoke<number[]>('sign_pdf_with_pkcs11', {
         data: currentBytes,
-        pageIndex: 0,
-        x: 50,
-        y: 50,
-        width: 200,
-        height: 60,
+        ...sigPlacement(),
         signerName: cmsSignerName || '署名者',
         reason: cmsReason || '承認',
         slotId: selectedSlot,
@@ -188,11 +199,7 @@ export function SecurityPanel({
       const p12Bytes = await invoke<number[]>('read_file_bytes', { path: p12Path })
       const signedBytes = await DocumentService.signPdfCms({
         data: currentBytes,
-        pageIndex: 0,
-        x: 50,
-        y: 50,
-        width: 200,
-        height: 60,
+        ...sigPlacement(),
         signerName: cmsSignerName || '署名者',
         reason: cmsReason || '承認',
         p12Data: p12Bytes,
@@ -361,6 +368,18 @@ export function SecurityPanel({
           </>
         )}
 
+        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+          <NumInput value={sigPage} onChange={setSigPage} label="ページ (1始まり)" />
+          <NumInput value={sigX} onChange={setSigX} label="X (pt)" />
+          <NumInput value={sigY} onChange={setSigY} label="Y (pt)" />
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <NumInput value={sigWidth} onChange={setSigWidth} label="幅 (pt)" />
+          <NumInput value={sigHeight} onChange={setSigHeight} label="高さ (pt)" />
+        </div>
+        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>
+          署名欄の配置位置（左下原点・pt）。「署名フィールド枠」の配置にも共通で使われます。
+        </div>
         <Input value={tsaUrl} onChange={setTsaUrl} placeholder="RFC 3161 TSAタイムスタンプURL (任意)" />
         {signSource === 'keychain' ? (
           <AccentBtn onClick={handleKeychainSign} disabled={!selectedIdentity || isSigning} style={{ marginTop: 4, background: '#1f6feb', color: '#fff' }}>
@@ -387,7 +406,7 @@ export function SecurityPanel({
         <Input value={signerName} onChange={setSignerName} placeholder="署名予定者名 (例: Taro Yamada)" />
         <Input value={signReason} onChange={setSignReason} placeholder="署名理由 (例: 承認済み)" />
         <AccentBtn
-          onClick={() => exec('add_digital_signature', { pageIndex: 0, x: 400, y: 50, width: 150, height: 60, signerName: signerName, reason: signReason })}
+          onClick={() => exec('add_digital_signature', { ...sigPlacement(), signerName, reason: signReason })}
           disabled={!signerName}
           style={{ marginTop: 6 }}
         >
