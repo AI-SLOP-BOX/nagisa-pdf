@@ -36,6 +36,174 @@ pub fn verify_signature(
 }
 
 #[tauri::command]
+pub fn sign_pdf_cms(
+    data: Vec<u8>,
+    page_index: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    signer_name: String,
+    reason: String,
+    location: Option<String>,
+    contact_info: Option<String>,
+    p12_data: Option<Vec<u8>>,
+    p12_password: Option<String>,
+    private_key_pem: Option<String>,
+    certificate_pem: Option<String>,
+    tsa_url: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let seed = pdf_engine::cms_sign::SignatureFieldSeed {
+        page_index,
+        rect: [x, y, x + width, y + height],
+        field_name: format!(
+            "Signature_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ),
+        signer_name,
+        reason,
+        location: location.unwrap_or_default(),
+        contact_info: contact_info.unwrap_or_default(),
+    };
+
+    let req = pdf_engine::cms_sign::CmsSignRequest {
+        seed,
+        private_key_pem: private_key_pem.map(|s| s.into_bytes()).unwrap_or_default(),
+        certificate_pem: certificate_pem.map(|s| s.into_bytes()).unwrap_or_default(),
+        chain_pem: Vec::new(),
+        p12_der: p12_data,
+        p12_password,
+        tsa_url,
+    };
+
+    pdf_engine::cms_sign::sign_pdf_cms(&req, &data)
+}
+
+#[tauri::command]
+pub fn verify_pdf_cms(
+    data: Vec<u8>,
+    signature_index: usize,
+    trust_roots_pem: Option<String>,
+) -> Result<pdf_engine::cms_sign::CmsVerifyReport, String> {
+    pdf_engine::cms_sign::verify_pdf_cms_with_trust(
+        &data,
+        signature_index,
+        trust_roots_pem.as_deref().map(|s| s.as_bytes()),
+    )
+}
+
+#[tauri::command]
+pub fn inspect_compatibility(
+    data: Vec<u8>,
+) -> Result<pdf_engine::compatibility::CompatibilityReport, String> {
+    pdf_engine::compatibility::inspect_pdf(&data)
+}
+
+#[tauri::command]
+pub fn get_engine_health() -> Result<serde_json::Value, String> {
+    Ok(pdf_engine::inspect::engine_health())
+}
+
+/// Enumerate code-signing identities available in the OS keychain.
+#[tauri::command]
+pub fn list_keychain_identities() -> Result<Vec<pdf_engine::cms_sign::KeychainIdentity>, String> {
+    pdf_engine::cms_sign::list_keychain_identities()
+}
+
+/// Sign a PDF using a private key that never leaves the OS keychain.
+#[tauri::command]
+pub fn sign_pdf_with_keychain(
+    data: Vec<u8>,
+    page_index: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    signer_name: String,
+    reason: String,
+    identity_nickname: String,
+    tsa_url: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let identities = pdf_engine::cms_sign::list_keychain_identities()?;
+    let identity = identities
+        .iter()
+        .find(|i| i.nickname == identity_nickname || i.common_name == identity_nickname)
+        .ok_or_else(|| format!("証明書「{identity_nickname}」がキーチェーンに見つかりません"))?
+        .clone();
+
+    let seed = pdf_engine::cms_sign::SignatureFieldSeed {
+        page_index,
+        rect: [x, y, x + width, y + height],
+        field_name: format!(
+            "Signature_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ),
+        signer_name,
+        reason,
+        location: String::new(),
+        contact_info: String::new(),
+    };
+
+    pdf_engine::cms_sign::sign_pdf_cms_with_keychain(&data, seed, &identity, tsa_url)
+}
+
+/// List PKCS#11 signing certificate/key pairs without requiring the token PIN.
+#[tauri::command]
+pub fn list_pkcs11_slots() -> Result<Vec<pdf_engine::hsm::Pkcs11Slot>, String> {
+    pdf_engine::hsm::list_pkcs11_slots()
+}
+
+/// Sign a PDF with a selected PKCS#11 identity. The PIN is used only for the
+/// signing session and is never returned or persisted.
+#[tauri::command]
+pub fn sign_pdf_with_pkcs11(
+    data: Vec<u8>,
+    page_index: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    signer_name: String,
+    reason: String,
+    slot_id: u64,
+    certificate_id: String,
+    pin: String,
+    tsa_url: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let seed = pdf_engine::cms_sign::SignatureFieldSeed {
+        page_index,
+        rect: [x, y, x + width, y + height],
+        field_name: format!(
+            "Signature_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ),
+        signer_name,
+        reason,
+        location: String::new(),
+        contact_info: String::new(),
+    };
+    pdf_engine::cms_sign::sign_pdf_cms_with_pkcs11(
+        &data,
+        seed,
+        slot_id,
+        &certificate_id,
+        // Ownership moves down to cryptoki's zeroizing AuthPin so the PIN
+        // buffer is wiped as soon as the token session is done.
+        pin,
+        tsa_url,
+    )
+}
+
+#[tauri::command]
 pub fn embed_font(data: Vec<u8>, page_index: usize, font_path: String) -> Result<Vec<u8>, String> {
     pdf_engine::embed_font(&data, page_index, &font_path)
 }
@@ -96,59 +264,6 @@ pub fn export_xfdf(data: Vec<u8>) -> Result<String, String> {
 #[tauri::command]
 pub fn import_xfdf(data: Vec<u8>, xfdf_content: String) -> Result<Vec<u8>, String> {
     pdf_engine::import_xfdf(&data, &xfdf_content)
-}
-
-#[tauri::command]
-pub fn detect_hardware_tokens() -> Result<Vec<serde_json::Value>, String> {
-    let tokens = pdf_engine::detect_hardware_tokens()?;
-    let result: Vec<serde_json::Value> = tokens
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "slot_id": t.slot_id,
-                "label": t.label,
-                "manufacturer": t.manufacturer,
-                "serial": t.serial,
-                "initialized": t.initialized,
-            })
-        })
-        .collect();
-    Ok(result)
-}
-
-#[tauri::command]
-pub fn sign_with_hardware_token(
-    data: Vec<u8>,
-    slot_id: u32,
-    pin: String,
-    page_index: usize,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    signer_name: String,
-    reason: String,
-) -> Result<Vec<u8>, String> {
-    pdf_engine::sign_with_hardware_token(
-        &data,
-        slot_id,
-        &pin,
-        page_index,
-        x,
-        y,
-        width,
-        height,
-        &signer_name,
-        &reason,
-    )
-}
-
-#[tauri::command]
-pub fn verify_hardware_token_signature(
-    data: Vec<u8>,
-    slot_id: u32,
-) -> Result<serde_json::Value, String> {
-    pdf_engine::verify_hardware_token_signature(&data, slot_id)
 }
 
 #[tauri::command]

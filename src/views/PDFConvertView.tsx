@@ -9,6 +9,11 @@ import {
   MoreHorizontalIcon,
   OcrScanIcon,
 } from '../components/Icons'
+import { invoke } from '@tauri-apps/api/core'
+import { open, save } from '@tauri-apps/plugin-dialog'
+import { DocumentService } from '../services/documentService'
+import { notifyError, notifySuccess, notifyWarning } from '../utils/notify'
+import { formatBytes } from '../utils/format'
 
 interface PDFConvertViewProps {
   onNavigateView: (view: View) => void
@@ -17,11 +22,91 @@ interface PDFConvertViewProps {
 
 interface ConvertFileItem {
   id: string
+  /** Absolute file path — bytes are read from disk at conversion time. */
+  path: string
   name: string
   pages: number
   size: string
   status: '準備完了' | '変換中' | '完了'
   checked: boolean
+}
+
+/** Parse a "1-5, 8, 11-13" page spec into sorted, unique 0-based indexes. */
+function parsePageRanges(spec: string, pageCount: number): number[] {
+  const result: number[] = []
+  for (const part of spec.split(',')) {
+    const token = part.trim()
+    if (!token) continue
+    const range = token.match(/^(\d+)\s*-\s*(\d+)$/)
+    if (range) {
+      const from = parseInt(range[1], 10)
+      const to = parseInt(range[2], 10)
+      for (let p = Math.min(from, to); p <= Math.max(from, to); p++) {
+        if (p >= 1 && p <= pageCount) result.push(p - 1)
+      }
+    } else if (/^\d+$/.test(token)) {
+      const p = parseInt(token, 10)
+      if (p >= 1 && p <= pageCount) result.push(p - 1)
+    }
+  }
+  return [...new Set(result)].sort((a, b) => a - b)
+}
+
+/**
+ * Extract full-document text via a backend session (zero-byte IPC after
+ * load); falls back to the PDF.js path when no native backend is available.
+ * `rangeSpec` uses the 1-based "1-5, 8" form; omitted = all pages.
+ */
+async function extractDocumentText(data: number[], rangeSpec?: string): Promise<string> {
+  let docId: string | null = null
+  try {
+    docId = await DocumentService.createSession(data)
+  } catch {
+    docId = null // browser preview mode → PDF.js fallback below
+  }
+  try {
+    const source: string | number[] = docId ?? data
+    const count = await DocumentService.getPageCount(source)
+    let targets: number[]
+    if (rangeSpec && rangeSpec.trim()) {
+      targets = parsePageRanges(rangeSpec, count)
+      if (targets.length === 0) {
+        throw new Error('指定したページ範囲に有効なページがありません')
+      }
+    } else {
+      targets = Array.from({ length: count }, (_, i) => i)
+    }
+    const parts: string[] = []
+    for (const p of targets) {
+      const blocks = await DocumentService.getTextBlocks(source, p)
+      if (blocks.length > 0) parts.push(blocks.map(b => b.text).join(' '))
+    }
+    return parts.join('\n\n')
+  } finally {
+    if (docId) {
+      await DocumentService.closeSession(docId).catch(() => {})
+    }
+  }
+}
+
+/** Wrap extracted plain text in a minimal, escaped HTML document. */
+function buildHtmlDocument(title: string, text: string): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const paras = text
+    .split(/\n{2,}/)
+    .map(p => `  <p>${esc(p)}</p>`)
+    .join('\n')
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>${esc(title)}</title>
+</head>
+<body>
+${paras}
+</body>
+</html>
+`
 }
 
 export const PDFConvertView: React.FC<PDFConvertViewProps> = ({ onNavigateView }) => {
@@ -60,13 +145,126 @@ export const PDFConvertView: React.FC<PDFConvertViewProps> = ({ onNavigateView }
     setFiles([])
   }
 
-  const handleStartConvert = () => {
+  /** Convert a single file. Returns true when an output file was written. */
+  const convertOne = async (file: ConvertFileItem): Promise<boolean> => {
+    const data = await invoke<number[]>('read_file_bytes', { path: file.path })
+    const base = file.name.replace(/\.pdf$/i, '')
+
+    if (selectedFormat === 'word' || selectedFormat === 'excel' || selectedFormat === 'ppt') {
+      const cmd =
+        selectedFormat === 'word'
+          ? 'pdf_to_word'
+          : selectedFormat === 'excel'
+            ? 'pdf_to_excel'
+            : 'pdf_to_powerpoint'
+      const ext = selectedFormat === 'word' ? 'docx' : selectedFormat === 'excel' ? 'xlsx' : 'pptx'
+      const outputPath = await save({
+        defaultPath: `${base}.${ext}`,
+        filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+      })
+      if (!outputPath) return false // user cancelled
+      await invoke(cmd, { data, outputPath })
+      return true
+    }
+
+    if (selectedFormat === 'image') {
+      const outputDir = await open({
+        directory: true,
+        multiple: false,
+        title: '画像の出力先フォルダを選択',
+      })
+      if (!outputDir || typeof outputDir !== 'string') return false // user cancelled
+      await invoke('pdf_to_images', { data, outputDir, format: 'png', dpi: 200 })
+      return true
+    }
+
+    // text | html — extract through the session (page range honored here)
+    const rangeSpec = pageRangeMode === 'custom' && customPages.trim() ? customPages : undefined
+    const text = await extractDocumentText(data, rangeSpec)
+    const isHtml = selectedFormat === 'html'
+    const outputPath = await save({
+      defaultPath: `${base}.${isHtml ? 'html' : 'txt'}`,
+      filters: [
+        { name: isHtml ? 'HTML' : 'Text', extensions: [isHtml ? 'html' : 'txt'] },
+      ],
+    })
+    if (!outputPath) return false // user cancelled
+    const content = isHtml ? buildHtmlDocument(file.name, text) : text
+    await invoke('write_text_file', { path: outputPath, content })
+    return true
+  }
+
+  /** Real conversion pipeline replacing the old setTimeout stub. */
+  const handleStartConvert = async () => {
+    if (isConverting) return
+    const targets = files.filter(f => f.checked)
+    if (targets.length === 0) {
+      notifyWarning('変換するファイルを1つ以上チェックしてください')
+      return
+    }
     setIsConverting(true)
-    setTimeout(() => {
+    const setStatus = (id: string, status: ConvertFileItem['status']) => {
+      setFiles(prev => prev.map(f => (f.id === id ? { ...f, status } : f)))
+    }
+    let okCount = 0
+    try {
+      for (const file of targets) {
+        setStatus(file.id, '変換中')
+        try {
+          const written = await convertOne(file)
+          if (written) {
+            setStatus(file.id, '完了')
+            okCount++
+          } else {
+            setStatus(file.id, '準備完了') // dialog cancelled — not an error
+          }
+        } catch (err) {
+          setStatus(file.id, '準備完了')
+          console.error(`[PDFConvertView] 変換に失敗 (${file.name}):`, err)
+          notifyError(`${file.name} の変換に失敗しました`, String(err))
+        }
+      }
+      if (okCount > 0) {
+        setConvertDone(true)
+        setTimeout(() => setConvertDone(false), 3000)
+        notifySuccess(`${okCount}件の変換が完了しました`)
+      }
+    } finally {
       setIsConverting(false)
-      setConvertDone(true)
-      setTimeout(() => setConvertDone(false), 3000)
-    }, 1200)
+    }
+  }
+
+  /** Add PDFs via the native dialog; pages/size come from native metadata (JSON only over IPC). */
+  const handleAddFiles = async () => {
+    try {
+      const selected = await open({ multiple: true, filters: [{ name: 'PDF', extensions: ['pdf'] }] })
+      if (!selected) return
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter(
+        (p): p is string => typeof p === 'string',
+      )
+      for (const path of paths) {
+        const name = path.split(/[/\\]/).pop() || 'document.pdf'
+        const id = `cv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`
+        setFiles(prev =>
+          prev.some(f => f.path === path)
+            ? prev
+            : [...prev, { id, path, name, pages: 0, size: '…', status: '準備完了', checked: true }],
+        )
+        try {
+          const info = await invoke<{ page_count?: number; size?: number }>('get_pdf_file_info', { path })
+          setFiles(prev =>
+            prev.map(f =>
+              f.id === id ? { ...f, pages: info.page_count ?? 0, size: formatBytes(info.size ?? 0) } : f,
+            ),
+          )
+        } catch (err) {
+          console.warn('[PDFConvertView] ファイル情報の取得に失敗:', err)
+          setFiles(prev => prev.map(f => (f.id === id ? { ...f, pages: 0, size: '?' } : f)))
+        }
+      }
+    } catch (err) {
+      notifyError('ファイルの追加に失敗しました', String(err))
+    }
   }
 
   return (
@@ -181,13 +379,7 @@ export const PDFConvertView: React.FC<PDFConvertViewProps> = ({ onNavigateView }
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <button
-                onClick={() => {
-                  const newId = String(Date.now())
-                  setFiles(prev => [
-                    ...prev,
-                    { id: newId, name: `追加資料_${prev.length + 1}.pdf`, pages: 6, size: '1.2 MB', status: '準備完了', checked: true }
-                  ])
-                }}
+                onClick={handleAddFiles}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

@@ -21,12 +21,49 @@ impl Drop for TempDirGuard {
 
 // ===== PDF→IMAGE CONVERSION =====
 
+/// Extract a page number from a pdftoppm/fallback output filename
+/// (`page-03.png` ⇒ Some(3)). Returns None when the name doesn't match.
+fn page_num_from_filename(name: &str) -> Option<usize> {
+    let stem = name.split('.').next()?;
+    let num = stem.rsplit('-').next()?;
+    num.parse().ok()
+}
+
 pub fn pdf_to_images(
     data: &[u8],
     output_dir: &str,
     format: &str,
     dpi: u32,
 ) -> Result<Vec<String>, String> {
+    pdf_to_images_ex(data, output_dir, format, dpi, None)
+}
+
+/// `page_indexes` (0-based, may be unordered) limits which pages are rendered.
+/// Out-of-range entries are dropped; an empty effective selection is an error.
+pub fn pdf_to_images_ex(
+    data: &[u8],
+    output_dir: &str,
+    format: &str,
+    dpi: u32,
+    page_indexes: Option<&[usize]>,
+) -> Result<Vec<String>, String> {
+    // Validate the selection against the real page count before doing any work.
+    let selection: Option<Vec<usize>> = match page_indexes {
+        None => None,
+        Some(list) => {
+            let doc =
+                Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+            let count = get_page_ids(&doc).len();
+            let mut sel: Vec<usize> = list.iter().copied().filter(|&i| i < count).collect();
+            sel.sort_unstable();
+            sel.dedup();
+            if sel.is_empty() {
+                return Err("指定したページ範囲に有効なページがありません".into());
+            }
+            Some(sel)
+        }
+    };
+    let selected_set = selection.as_ref();
     let unique = format!(
         "nagisa_pdf2img_{}_{}",
         std::process::id(),
@@ -49,6 +86,14 @@ pub fn pdf_to_images(
     } else {
         cmd.arg("-png");
     }
+    // Restrict rendering to the span of the selection (sparse gaps are removed
+    // when copying to the output directory below).
+    if let Some(sel) = &selection {
+        if let (Some(&first), Some(&last)) = (sel.first(), sel.last()) {
+            cmd.arg("-f").arg((first + 1).to_string());
+            cmd.arg("-l").arg((last + 1).to_string());
+        }
+    }
     cmd.arg(&input).arg(tmp.join("page"));
 
     // #42 是正: pdftoppm をタイムアウト付き実行に変更（細工ファイルによるDoS防止）
@@ -63,8 +108,15 @@ pub fn pdf_to_images(
         // when poppler pdftoppm is not installed on the system)
         if let Ok(doc) = Document::load_mem(data) {
             let mut extracted_count = 0;
-            let mut page_idx = 1;
-            for page_id in get_page_ids(&doc) {
+            for (page_num, page_id) in get_page_ids(&doc).into_iter().enumerate() {
+                // page_num is the 0-based logical page; filenames below are 1-based
+                // actual page numbers so the output filter can honor the selection.
+                let page_idx = page_num + 1;
+                if let Some(sel) = selected_set {
+                    if !sel.contains(&page_num) {
+                        continue;
+                    }
+                }
                 let resources = resolve_page_resources(&doc, page_id);
                 if let Ok(Object::Dictionary(xobj_dict)) = resources.get(b"XObject") {
                     for (_, obj_ref) in xobj_dict.iter() {
@@ -95,7 +147,6 @@ pub fn pdf_to_images(
                                         };
                                         if save_res.is_ok() {
                                             extracted_count += 1;
-                                            page_idx += 1;
                                             break; // Found primary page image
                                         }
                                     }
@@ -130,6 +181,14 @@ pub fn pdf_to_images(
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("page") && (name.ends_with(".jpg") || name.ends_with(".png")) {
+                // Drop sparse gaps left by the -f/-l span render so only the
+                // requested pages reach the output directory.
+                if let Some(sel) = selected_set {
+                    match page_num_from_filename(&name) {
+                        Some(n) if sel.contains(&(n - 1)) => {}
+                        _ => continue,
+                    }
+                }
                 let dest = std::path::Path::new(output_dir).join(&name);
                 if std::fs::copy(entry.path(), &dest).is_ok() {
                     result.push(dest.to_string_lossy().to_string());
@@ -138,7 +197,15 @@ pub fn pdf_to_images(
         }
     }
     let _ = std::fs::remove_dir_all(&tmp);
-    result.sort();
+    // Numeric sort on the parsed page number (lexicographic sort misorders
+    // page-100 before page-20 once a document passes 99 pages).
+    result.sort_by(|a, b| {
+        let na = page_num_from_filename(std::path::Path::new(a).file_name().unwrap_or_default().to_str().unwrap_or(""))
+            .unwrap_or(usize::MAX);
+        let nb = page_num_from_filename(std::path::Path::new(b).file_name().unwrap_or_default().to_str().unwrap_or(""))
+            .unwrap_or(usize::MAX);
+        na.cmp(&nb).then_with(|| a.cmp(b))
+    });
     Ok(result)
 }
 

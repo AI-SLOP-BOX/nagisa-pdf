@@ -1,11 +1,15 @@
 import React, { useState } from 'react'
 import type { View } from '../types'
+import { invoke } from '@tauri-apps/api/core'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   LinkChainIcon,
   DocumentPlusIcon,
   MoreHorizontalIcon,
 } from '../components/Icons'
 import { MergeSettingsPanel } from '../components/MergeSettingsPanel'
+import { notifyError, notifySuccess, notifyWarning } from '../utils/notify'
+import { formatBytes } from '../utils/format'
 
 interface PDFMergeViewProps {
   onNavigateView: (view: View) => void
@@ -14,6 +18,8 @@ interface PDFMergeViewProps {
 
 interface MergeItem {
   id: string
+  /** Absolute file path — passed straight to the path-based merge backend. */
+  path: string
   name: string
   pages: number
   size: string
@@ -40,13 +46,79 @@ export const PDFMergeView: React.FC<PDFMergeViewProps> = ({ onNavigateView }) =>
     setItems([])
   }
 
-  const handleStartMerge = () => {
+  const handleRemoveItem = (id: string) => {
+    setItems(prev => prev.filter(i => i.id !== id))
+  }
+
+  /** Add PDFs via the native dialog; metadata is fetched natively (JSON only over IPC). */
+  const handleAddFiles = async () => {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      })
+      if (!selected) return
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter(
+        (p): p is string => typeof p === 'string',
+      )
+      for (const path of paths) {
+        const name = path.split(/[/\\]/).pop() || 'document.pdf'
+        const id = `merge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`
+        setItems(prev =>
+          prev.some(i => i.path === path)
+            ? prev
+            : [...prev, { id, path, name, pages: 0, size: '…' }],
+        )
+        try {
+          const info = await invoke<{ page_count?: number; size?: number }>('get_pdf_file_info', { path })
+          setItems(prev =>
+            prev.map(i =>
+              i.id === id
+                ? { ...i, pages: info.page_count ?? 0, size: formatBytes(info.size ?? 0) }
+                : i,
+            ),
+          )
+        } catch (err) {
+          console.warn('[PDFMergeView] ファイル情報の取得に失敗:', err)
+          setItems(prev => prev.map(i => (i.id === id ? { ...i, pages: 0, size: '?' } : i)))
+        }
+      }
+    } catch (err) {
+      notifyError('ファイルの追加に失敗しました', String(err))
+    }
+  }
+
+  /** Real merge: pick the output with the native save dialog, then invoke the Rust backend. */
+  const handleStartMerge = async () => {
+    if (isMerging) return
+    if (items.length < 2) {
+      notifyWarning('結合には2つ以上のPDFファイルが必要です')
+      return
+    }
+    let outputPath: string | null = null
+    try {
+      outputPath = await save({
+        defaultPath: outputName || 'merged.pdf',
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      })
+    } catch (err) {
+      notifyError('保存ダイアログを開けませんでした', String(err))
+      return
+    }
+    if (!outputPath) return // user cancelled
     setIsMerging(true)
-    setTimeout(() => {
-      setIsMerging(false)
+    try {
+      await invoke('batch_merge_pdfs', { paths: items.map(i => i.path), outputPath })
+      setSavePath(outputPath)
       setMergeSuccess(true)
       setTimeout(() => setMergeSuccess(false), 3000)
-    }, 1200)
+      notifySuccess(`${items.length}ファイルの結合が完了しました`)
+    } catch (err) {
+      console.error('[PDFMergeView] PDF結合に失敗:', err)
+      notifyError('PDFの結合に失敗しました', String(err))
+    } finally {
+      setIsMerging(false)
+    }
   }
 
   return (
@@ -114,13 +186,7 @@ export const PDFMergeView: React.FC<PDFMergeViewProps> = ({ onNavigateView }) =>
             </span>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
-                onClick={() => {
-                  const newId = String(Date.now())
-                  setItems(prev => [
-                    ...prev,
-                    { id: newId, name: `新規ドキュメント_${prev.length + 1}.pdf`, pages: 10, size: '2.0 MB', previewColor: '#60a5fa' }
-                  ])
-                }}
+                onClick={handleAddFiles}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -323,6 +389,8 @@ export const PDFMergeView: React.FC<PDFMergeViewProps> = ({ onNavigateView }) =>
 
                   {/* Menu */}
                   <button
+                    onClick={() => handleRemoveItem(item.id)}
+                    title="このファイルを削除"
                     style={{
                       background: 'transparent',
                       border: 'none',

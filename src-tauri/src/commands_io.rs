@@ -64,9 +64,34 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&safe_path, &content).map_err(|e| format!("Failed to write file: {e}"))
 }
 
+/// Read a PDF file from disk natively and return its metadata (page count,
+/// size, version, …) as small JSON. Only the JSON crosses IPC — the file
+/// bytes never leave the Rust side (zero-IPC-byte standard).
 #[tauri::command]
-pub fn batch_merge_pdfs(paths: Vec<String>, output_path: String) -> Result<(), String> {
-    pdf_engine::batch_merge_pdfs(&paths, &output_path)
+pub fn get_pdf_file_info(path: String) -> Result<serde_json::Value, String> {
+    let safe_path = validate_safe_path(&path, false)?;
+    let bytes = std::fs::read(&safe_path).map_err(|e| format!("Failed to read file: {e}"))?;
+    pdf_engine::get_pdf_metadata(&bytes)
+}
+
+#[tauri::command]
+pub fn batch_merge_pdfs(
+    paths: Vec<String>,
+    output_path: String,
+    keep_bookmarks: Option<bool>,
+    handle_password: Option<bool>,
+    insert_separator: Option<bool>,
+    separator_text: Option<String>,
+    password: Option<String>,
+) -> Result<(), String> {
+    let opts = pdf_engine::MergeOptions {
+        keep_bookmarks: keep_bookmarks.unwrap_or(true),
+        handle_password: handle_password.unwrap_or(true),
+        insert_separator: insert_separator.unwrap_or(false),
+        separator_text: separator_text.unwrap_or_default(),
+        password,
+    };
+    pdf_engine::batch_merge_pdfs_with_options(&paths, &output_path, &opts)
 }
 
 #[tauri::command]
@@ -99,8 +124,9 @@ pub fn pdf_to_images(
     output_dir: String,
     format: String,
     dpi: u32,
+    page_indexes: Option<Vec<usize>>,
 ) -> Result<Vec<String>, String> {
-    pdf_engine::pdf_to_images(&data, &output_dir, &format, dpi)
+    pdf_engine::pdf_to_images_ex(&data, &output_dir, &format, dpi, page_indexes.as_deref())
 }
 
 #[tauri::command]
@@ -114,18 +140,54 @@ pub fn html_to_pdf(html_content: String, output_path: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn pdf_to_word(data: Vec<u8>, output_path: String) -> Result<(), String> {
-    pdf_engine::pdf_to_word(&data, &output_path)
+pub fn pdf_to_word(
+    data: Vec<u8>,
+    output_path: String,
+    page_indexes: Option<Vec<usize>>,
+    keep_images: Option<bool>,
+    editable_tables: Option<bool>,
+    run_ocr: Option<bool>,
+) -> Result<(), String> {
+    pdf_engine::pdf_to_word_ex(
+        &data,
+        &output_path,
+        page_indexes.as_deref(),
+        keep_images.unwrap_or(false),
+        editable_tables.unwrap_or(false),
+        run_ocr.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
-pub fn pdf_to_excel(data: Vec<u8>, output_path: String) -> Result<(), String> {
-    pdf_engine::pdf_to_excel(&data, &output_path)
+pub fn pdf_to_excel(
+    data: Vec<u8>,
+    output_path: String,
+    page_indexes: Option<Vec<usize>>,
+    editable_tables: Option<bool>,
+    run_ocr: Option<bool>,
+) -> Result<(), String> {
+    pdf_engine::pdf_to_excel_ex(
+        &data,
+        &output_path,
+        page_indexes.as_deref(),
+        editable_tables.unwrap_or(true),
+        run_ocr.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
-pub fn pdf_to_powerpoint(data: Vec<u8>, output_path: String) -> Result<(), String> {
-    pdf_engine::pdf_to_powerpoint(&data, &output_path)
+pub fn pdf_to_powerpoint(
+    data: Vec<u8>,
+    output_path: String,
+    page_indexes: Option<Vec<usize>>,
+    run_ocr: Option<bool>,
+) -> Result<(), String> {
+    pdf_engine::pdf_to_powerpoint_ex(
+        &data,
+        &output_path,
+        page_indexes.as_deref(),
+        run_ocr.unwrap_or(false),
+    )
 }
 
 #[tauri::command]

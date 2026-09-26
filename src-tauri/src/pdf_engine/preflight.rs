@@ -375,9 +375,13 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
         }
     }
 
-    let score = 100
-        - (issues.iter().filter(|i| i.severity == "error").count() as u32 * 10)
-        - (issues.iter().filter(|i| i.severity == "warning").count() as u32 * 5);
+    // デバッグビルドでの減算オーバーフロー（パニック）を防ぐため saturating_sub を使う。
+    // エラー/警告が多いPDFで 100 - errors*10 - warnings*5 が負に転じてクラッシュしていた。
+    let error_count = issues.iter().filter(|i| i.severity == "error").count() as u32;
+    let warning_count = issues.iter().filter(|i| i.severity == "warning").count() as u32;
+    let score = 100u32
+        .saturating_sub(error_count.saturating_mul(10))
+        .saturating_sub(warning_count.saturating_mul(5));
 
     Ok(PreflightResult {
         passed: issues.iter().filter(|i| i.severity == "error").count() == 0,

@@ -1,6 +1,6 @@
 import { SignatureInfo } from '../types'
 import { ShieldCheckIcon, CloseIcon, CheckIcon } from './Icons'
-import { t } from '../utils/i18n'
+import { useT } from '../utils/i18n'
 
 interface SignatureVerificationModalProps {
   signatures: SignatureInfo[]
@@ -8,6 +8,7 @@ interface SignatureVerificationModalProps {
 }
 
 export function SignatureVerificationModal({ signatures, onClose }: SignatureVerificationModalProps) {
+  const { t } = useT()
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
@@ -74,6 +75,24 @@ export function SignatureVerificationModal({ signatures, onClose }: SignatureVer
                     </div>
                     {sig.certificate_issuer && (
                       <div><b>発行認証局:</b> <span style={{ color: 'var(--text-muted)' }}>{sig.certificate_issuer}</span></div>
+                    )}
+                    {sig.digest_algorithm && (
+                      <div><b>暗号ダイジェスト:</b> <span style={{ color: 'var(--text-muted)' }}>{sig.digest_algorithm} {sig.digest_matches ? '(整合性確認済)' : '(不一致)'}</span></div>
+                    )}
+                    {sig.tsa_subject && (
+                      <div><b>RFC 3161 タイムスタンプ:</b> <span style={{ color: '#00ff88' }}>{sig.tsa_subject} {sig.imprint_matches ? '(検証済)' : ''}</span></div>
+                    )}
+                    {sig.chain_details && sig.chain_valid === true && (
+                      <div><b>証明書チェーン:</b> <span style={{ color: 'var(--text-muted)' }}>{sig.chain_details}</span></div>
+                    )}
+                    {sig.chain_details && sig.chain_valid === false && (
+                      <div><b>証明書チェーン:</b> <span style={{ color: '#e3b341' }}>{sig.chain_details}</span></div>
+                    )}
+                    {sig.revocation_status && (
+                      <div><b>失効状態:</b> <span style={{ color: sig.revocation_status === '未確認' ? '#e3b341' : 'var(--text-muted)' }}>{sig.revocation_status}</span></div>
+                    )}
+                    {sig.revocation_details && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 8 }}>{sig.revocation_details}</div>
                     )}
                     {sig.notice && (
                       <div style={{

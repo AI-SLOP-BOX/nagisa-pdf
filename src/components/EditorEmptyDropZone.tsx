@@ -1,6 +1,6 @@
 import React from 'react'
 import { FileIcon } from './Icons'
-import { t } from '../utils/i18n'
+import { useT } from '../utils/i18n'
 
 interface EditorEmptyDropZoneProps {
   onOpen: () => void
@@ -17,6 +17,7 @@ export const EditorEmptyDropZone: React.FC<EditorEmptyDropZoneProps> = ({
   onOpenStart,
   onError,
 }) => {
+  const { t } = useT()
   return (
     <div
       onDragOver={e => {

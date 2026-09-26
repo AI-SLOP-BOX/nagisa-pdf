@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { PDFJsEngine } from '../services/pdfRenderer'
 import { invoke } from '@tauri-apps/api/core'
+import { safeRevokeObjectUrl } from '../utils/objectUrl'
 
 interface EditorThumbnailSidebarProps {
   pageCount: number
@@ -23,6 +24,29 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
 }) => {
   const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map())
   const [detectedPageCount, setDetectedPageCount] = useState<number>(0)
+  const blobUrlsRef = useRef<Set<string>>(new Set())
+
+  // Revoke any still-tracked blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      for (const url of blobUrlsRef.current) {
+        safeRevokeObjectUrl(url)
+      }
+      blobUrlsRef.current.clear()
+    }
+  }, [])
+
+  // Prune blob URLs that are no longer referenced by the active thumbnail map.
+  // Runs after `thumbnails` state has committed so the DOM never points at a revoked URL.
+  useEffect(() => {
+    const activeUrls = new Set(thumbnails.values())
+    for (const url of Array.from(blobUrlsRef.current)) {
+      if (!activeUrls.has(url)) {
+        safeRevokeObjectUrl(url)
+        blobUrlsRef.current.delete(url)
+      }
+    }
+  }, [thumbnails])
 
   // Generate real thumbnail images for all pages
   useEffect(() => {
@@ -81,7 +105,9 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
             })
             if (pngBytes && pngBytes.length > 0) {
               const blob = new Blob([new Uint8Array(pngBytes)], { type: 'image/png' })
-              newMap.set(i, URL.createObjectURL(blob))
+              const url = URL.createObjectURL(blob)
+              blobUrlsRef.current.add(url)
+              newMap.set(i, url)
             }
           } catch (err) {
             console.warn(`[EditorThumbnailSidebar] ページ ${i + 1}のサムネイル生成失敗:`, err)

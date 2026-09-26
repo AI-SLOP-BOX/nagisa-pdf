@@ -53,9 +53,12 @@ Forms & Fields (AcroForms):
 
 Prepress & Conversion:
   preflight   <input.pdf>                              Run full PDF/X & prepress diagnostic
+  compat      <input.pdf>                              Inspect compatibility/fidelity report (JSON)
+  health                                               Print engine version, external-tool availability and feature flags (JSON)
   ink-coverage <input.pdf> -p <page>                   Calculate CMYK ink coverage percentages
   convert-cmyk <input.pdf> -o <out>                    Convert RGB graphics to CMYK
   pdfa        <input.pdf> -o <out>                     Convert to archival PDF/A-1b format
+  validate-pdfa <input.pdf> [--conformance A|B]          Inspect PDF/A (ISO 19005) conformance (JSON)
   compress    <input.pdf> [--quality 1-100] -o <out>   Compress PDF stream objects
 "#
     );
@@ -370,12 +373,16 @@ fn main() {
                     Err(e) => eprintln!("Error: {e}"),
                 }
             } else {
-                let count = get_page_count_from_data(&data).unwrap_or(1);
-                for i in 0..count {
-                    println!("--- PAGE {} ---", i + 1);
-                    if let Ok(txt) = get_page_text(&data, i) {
-                        println!("{txt}");
+                // 全頁一括抽出: 頁毎に get_page_text すると全文書再パースで O(n²) になるため
+                // 1回パースの extract_all_text を使う（1000頁級での実質ハング対策）。
+                match extract_all_text(&data) {
+                    Ok(pages) => {
+                        for (i, txt) in pages.iter().enumerate() {
+                            println!("--- PAGE {} ---", i + 1);
+                            println!("{txt}");
+                        }
                     }
+                    Err(e) => eprintln!("Error: {e}"),
                 }
             }
         }
@@ -475,6 +482,30 @@ fn main() {
             }
         }
 
+        "compat" => {
+            let input = &subargs[0];
+            let data = fs::read(input).expect("Failed to read input");
+            match compatibility::inspect_pdf(&data) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        "health" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&engine_health()).unwrap_or_default()
+            );
+        }
+
         "preflight" => {
             let input = &subargs[0];
             let data = fs::read(input).expect("Failed to read input");
@@ -543,6 +574,20 @@ fn main() {
             }
         }
 
+        "validate-pdfa" => {
+            let input = &subargs[0];
+            let conformance = get_arg(subargs, "--conformance").unwrap_or_else(|| "B".into());
+            let data = fs::read(input).expect("Failed to read input");
+            match validate_pdfa_compliance(&data, &conformance) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).unwrap_or_default()
+                    );
+                }
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
         "compress" => {
             let input = &subargs[0];
             let quality = get_arg(subargs, "--quality")

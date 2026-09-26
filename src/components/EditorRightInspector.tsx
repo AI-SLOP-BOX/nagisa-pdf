@@ -1,6 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import type { View } from '../types'
 import { UserAnnotation } from '../services/annotationService'
+import { DocumentService } from '../services/documentService'
+import { formatPaperSize } from '../utils/paperSize'
 import { InputDialog } from './AppDialog'
 import {
   LinkChainIcon,
@@ -16,6 +18,7 @@ interface EditorRightInspectorProps {
   fileName: string
   pageCount: number
   fileSize?: string
+  docId?: string | null
   editorMode: 'inspect' | 'edit'
   collapsed?: boolean
   onToggleCollapse?: () => void
@@ -33,6 +36,7 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
   fileName,
   pageCount,
   fileSize = '—',
+  docId,
   editorMode,
   collapsed = false,
   onToggleCollapse,
@@ -47,6 +51,50 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
   const [activeTab, setActiveTab] = useState<'tools' | 'comments' | 'info'>('tools')
   const [tags, setTags] = useState<string[]>(['提案書', '企画', 'リニューアル'])
   const [tagDialogOpen, setTagDialogOpen] = useState(false)
+
+  // Real document metadata fetched via session IPC (never hardcoded)
+  const [docMeta, setDocMeta] = useState<{
+    version: string
+    encrypted: boolean
+    creator: string
+    paper: string
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadMeta = async () => {
+      if (!docId || docId.startsWith('browser-session-')) {
+        if (!cancelled) setDocMeta(null)
+        return
+      }
+      try {
+        const [meta, dims] = await Promise.all([
+          DocumentService.getPdfMetadata(docId),
+          DocumentService.getPageDimensions(docId, 0),
+        ])
+        if (cancelled) return
+        const version =
+          typeof meta.version === 'string' && meta.version ? meta.version : '—'
+        const creator =
+          (typeof meta.creator === 'string' && meta.creator) ||
+          (typeof meta.producer === 'string' && meta.producer) ||
+          '—'
+        setDocMeta({
+          version,
+          encrypted: meta.encrypted === true,
+          creator,
+          paper: formatPaperSize(dims),
+        })
+      } catch (err) {
+        console.warn('[EditorRightInspector] メタデータ取得失敗:', err)
+        if (!cancelled) setDocMeta(null)
+      }
+    }
+    void loadMeta()
+    return () => {
+      cancelled = true
+    }
+  }, [docId])
 
   if (collapsed) {
     return (
@@ -596,19 +644,21 @@ export const EditorRightInspector: React.FC<EditorRightInspectorProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7, fontSize: 11.5 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>PDFバージョン</span>
-                  <span style={{ color: '#1e293b', fontWeight: 600 }}>1.7 (Acrobat 8.x)</span>
+                  <span style={{ color: '#1e293b', fontWeight: 600 }}>{docMeta?.version ?? '—'}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>暗号化</span>
-                  <span style={{ color: '#16a34a', fontWeight: 600 }}>なし (標準)</span>
+                  <span style={{ color: docMeta?.encrypted ? '#dc2626' : '#16a34a', fontWeight: 600 }}>
+                    {docMeta === null ? '—' : docMeta.encrypted ? '有り' : 'なし'}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>作成アプリケーション</span>
-                  <span style={{ color: '#1e293b', fontWeight: 600 }}>Nagisa Engine v1.0</span>
+                  <span style={{ color: '#1e293b', fontWeight: 600 }}>{docMeta?.creator ?? '—'}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>用紙サイズ</span>
-                  <span style={{ color: '#1e293b', fontWeight: 600 }}>A4 (210 x 297 mm)</span>
+                  <span style={{ color: '#1e293b', fontWeight: 600 }}>{docMeta?.paper ?? '—'}</span>
                 </div>
               </div>
             </div>

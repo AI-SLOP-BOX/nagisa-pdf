@@ -8,11 +8,23 @@ import { EditorThumbnailSidebar } from '../components/EditorThumbnailSidebar'
 import { EditorRightInspector } from '../components/EditorRightInspector'
 import { EditorEmptyDropZone } from '../components/EditorEmptyDropZone'
 import { SignatureVerificationModal } from '../components/SignatureVerificationModal'
+import { SecurityPanel } from '../components/SecurityPanel'
+import { EditPanel } from '../components/EditPanel'
+import { AnnotatePanel } from '../components/AnnotatePanel'
+import { FormCreatorPanel } from '../components/FormCreatorPanel'
+import { OrganizePanel } from '../components/OrganizePanel'
+import { PagesPanel } from '../components/PagesPanel'
+import { TextEditPanel } from '../components/TextEditPanel'
+import { ToolsPanel } from '../components/ToolsPanel'
+import {
+  EditIcon, AnnotateIcon, FormIcon, OrganizeIcon,
+  FileIcon, LockIcon, TypeIcon, ToolsIcon,
+} from '../components/Icons'
 import type { SignatureInfo } from '../types'
 import { useHistory } from '../hooks/useHistory'
 import { useToast } from '../hooks/useToast'
 import { formatError } from '../utils/errorHandler'
-import { t } from '../utils/i18n'
+import { useT } from '../utils/i18n'
 
 import { DocumentService } from '../services/documentService'
 import { AnnotationService, UserAnnotation } from '../services/annotationService'
@@ -38,6 +50,7 @@ const DEFAULT_STROKE_WIDTH = 2
 const DEFAULT_REDACT_COLOR = '#000000'
 
 export default function PDFEditorView({ currentView, onNavigateView, initialFile, initialTab, onOpenStart }: PDFEditorViewProps) {
+  const { t } = useT()
   const { data: pdfData, setData: setPdfData, pushHistory, resetHistory, undo: fallbackUndo, redo: fallbackRedo, canUndo: fallbackCanUndo, canRedo: fallbackCanRedo } = useHistory(null, 30)
   const { toast, toastType, showToast, showError, showSuccess } = useToast(2800)
 
@@ -61,6 +74,25 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   const [searchQuery, setSearchQuery] = useState('')
   const [zoom, setZoom] = useState(1.0)
   const [selectedEditTool, setSelectedEditTool] = useState('select')
+
+  // Panel-local state persisted across tab switches (restored from the original tab drawer design)
+  const [annotationColor, setAnnotationColor] = useState(DEFAULT_ANNOTATION_COLOR)
+  const [stickyNoteText, setStickyNoteText] = useState('')
+  const [strokeWidth, setStrokeWidth] = useState(DEFAULT_STROKE_WIDTH)
+  const [watermarkText, setWatermarkText] = useState('CONFIDENTIAL')
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.3)
+  const [watermarkRotation, setWatermarkRotation] = useState(-45)
+  const [watermarkFontSize, setWatermarkFontSize] = useState(48)
+  const [watermarkColor, setWatermarkColor] = useState('#808080')
+  const [headerText, setHeaderText] = useState('')
+  const [footerText, setFooterText] = useState('Page {page} of {total}')
+  const [hfFontSize, setHfFontSize] = useState(10)
+  const [batesPrefix, setBatesPrefix] = useState('DOC')
+  const [batesStart, setBatesStart] = useState(1)
+  const [batesFontSize, setBatesFontSize] = useState(10)
+  const [redactColor, setRedactColor] = useState(DEFAULT_REDACT_COLOR)
+  const [redactSearchText, setRedactSearchText] = useState('')
+  const [redactReplacement, setRedactReplacement] = useState('')
 
   // User Annotations & In-Place Editing Hook
   const {
@@ -609,6 +641,35 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         onRunOCR={handleRunOCR}
       />
 
+      {/* Editor Tab Strip (contextual tool categories) */}
+      {pdfData && (
+        <div style={{
+          display: 'flex', gap: 2, padding: '4px 10px',
+          background: 'var(--bg-1)', borderBottom: '1px solid var(--border)',
+          flexShrink: 0, overflowX: 'auto',
+        }}>
+          {([
+            ['edit', <EditIcon size={14} />, t().tabEdit],
+            ['annotate', <AnnotateIcon size={14} />, t().tabAnnotate],
+            ['forms', <FormIcon size={14} />, t().tabForms],
+            ['organize', <OrganizeIcon size={14} />, t().tabOrganize],
+            ['pages', <FileIcon size={14} />, t().tabPages],
+            ['security', <LockIcon size={14} />, t().tabSecurity],
+            ['text', <TypeIcon size={14} />, t().tabText],
+            ['tools', <ToolsIcon size={14} />, t().tabTools],
+          ] as const).map(([tab, icon, label]) => (
+            <button
+              key={tab}
+              onClick={() => handleSelectTab(tab)}
+              className={`editor-tab-btn ${activeTab === tab ? 'active' : ''}`}
+            >
+              <span style={{ display: 'flex', alignItems: 'center' }}>{icon}</span>
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Main 3-Column Workspace */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', width: '100%', background: '#eef2f6' }}>
         {/* Left Thumbnail Sidebar (only when PDF is loaded) */}
@@ -622,6 +683,96 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
             pdfData={pdfData}
             docId={docId}
           />
+        )}
+
+        {/* Contextual Tool Drawer (tab panel) */}
+        {pdfData && activeTab && (
+          <div style={{
+            width: 290, background: 'var(--bg-1)', borderRight: '1px solid var(--border)',
+            padding: 12, overflowY: 'auto', flexShrink: 0,
+          }}>
+            {activeTab === 'edit' && (
+              <EditPanel exec={exec} pdfData={pdfData} showToast={showToast} currentPage={currentPage} />
+            )}
+            {activeTab === 'annotate' && (
+              <AnnotatePanel
+                exec={exec}
+                pdfData={pdfData}
+                docId={docId}
+                annotationColor={annotationColor}
+                setAnnotationColor={setAnnotationColor}
+                stickyNoteText={stickyNoteText}
+                setStickyNoteText={setStickyNoteText}
+                strokeWidth={strokeWidth}
+                setStrokeWidth={setStrokeWidth}
+                onActivateDraw={mode => setInteractiveMode(mode)}
+                currentPage={currentPage}
+              />
+            )}
+            {activeTab === 'forms' && (
+              <FormCreatorPanel
+                pdfData={pdfData}
+                docId={docId}
+                currentPage={currentPage}
+                exec={exec}
+                showToast={showToast}
+                onPdfUpdate={handlePdfUpdate}
+              />
+            )}
+            {activeTab === 'organize' && (
+              <OrganizePanel exec={exec} />
+            )}
+            {activeTab === 'pages' && (
+              <PagesPanel
+                watermarkText={watermarkText} setWatermarkText={setWatermarkText}
+                watermarkOpacity={watermarkOpacity} setWatermarkOpacity={setWatermarkOpacity}
+                watermarkRotation={watermarkRotation} setWatermarkRotation={setWatermarkRotation}
+                watermarkFontSize={watermarkFontSize} setWatermarkFontSize={setWatermarkFontSize}
+                watermarkColor={watermarkColor} setWatermarkColor={setWatermarkColor}
+                headerText={headerText} setHeaderText={setHeaderText}
+                footerText={footerText} setFooterText={setFooterText}
+                hfFontSize={hfFontSize} setHfFontSize={setHfFontSize}
+                batesPrefix={batesPrefix} setBatesPrefix={setBatesPrefix}
+                batesStart={batesStart} setBatesStart={setBatesStart}
+                batesFontSize={batesFontSize} setBatesFontSize={setBatesFontSize}
+                exec={exec}
+              />
+            )}
+            {activeTab === 'security' && (
+              <SecurityPanel
+                exec={exec}
+                pdfData={pdfData}
+                docId={docId}
+                showToast={showToast}
+                onInspectSignatures={(sigs: SignatureInfo[]) => setVerifiedSignatures(sigs)}
+                onPdfUpdate={handlePdfUpdate}
+              />
+            )}
+            {activeTab === 'text' && (
+              <TextEditPanel
+                pdfData={pdfData}
+                docId={docId}
+                exec={exec}
+                showToast={showToast}
+                onPdfUpdate={handlePdfUpdate}
+                selectedBlockFromCanvas={selectedTextBlock}
+                currentPage={currentPage}
+              />
+            )}
+            {activeTab === 'tools' && (
+              <ToolsPanel
+                exec={exec}
+                pdfData={pdfData}
+                docId={docId}
+                redactColor={redactColor} setRedactColor={setRedactColor}
+                redactSearchText={redactSearchText} setRedactSearchText={setRedactSearchText}
+                redactReplacement={redactReplacement} setRedactReplacement={setRedactReplacement}
+                showToast={showToast}
+                onActivateDrawRedact={() => setInteractiveMode('draw-redact')}
+                onPdfUpdate={handlePdfUpdate}
+              />
+            )}
+          </div>
         )}
 
         {/* Center Canvas / Desk Area */}
@@ -671,6 +822,7 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
             fileName={fileName}
             pageCount={pageCount}
             fileSize={pdfData && pdfData.length > 0 ? `${(pdfData.length / 1024 / 1024).toFixed(1)} MB` : undefined}
+            docId={docId}
             editorMode={editorMode}
             collapsed={isInspectorCollapsed}
             onToggleCollapse={() => setIsInspectorCollapsed(!isInspectorCollapsed)}

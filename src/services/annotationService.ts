@@ -6,7 +6,14 @@ export interface UserAnnotation {
   id: string
   page: number
   type: 'text' | 'highlight' | 'shape' | 'note'
-  x: number // in PDF points (72 DPI)
+  // COORDINATE CONTRACT: PDF points (72 DPI) measured from the page's
+  // TOP-LEFT corner (y grows downward, DOM/CSS-like) — NOT standard PDF
+  // user space. `AnnotationService.applyAnnotations` flips y at burn time
+  // (`pageH - y - height`). Backend commands (add_highlight / redact_area /
+  // add_rectangle) expect bottom-left PDF user space: convert with
+  // `domToPdf` first. Contrasts with `TextBlock.y` (documentService),
+  // which IS bottom-origin PDF user space.
+  x: number
   y: number
   width: number
   height: number

@@ -6,6 +6,7 @@ import { SectionTitle, Input, SliderInput, ColorInput, AccentBtn } from './UICon
 import { RedactIcon, VectorPathIcon, CheckIcon, ZapIcon } from './Icons'
 import { AccessibilitySection, AccessibilityReport } from './ToolsAccessibilitySection'
 import { ToolsPDFXSection } from './ToolsPDFXSection'
+import { ToolsPreflightSection } from './ToolsPreflightSection'
 import { ToolsAdvancedEngineeringSection } from './ToolsAdvancedEngineeringSection'
 import { ToolsBatchAndColorSection } from './ToolsBatchAndColorSection'
 import type { PdfExec } from '../types'
@@ -484,6 +485,13 @@ export function ToolsPanel({
       <AccentBtn onClick={() => exec('flatten_transparency', {})} style={{ background: 'var(--green)' }}>
         トランスペアレンシー平坦化
       </AccentBtn>
+
+      <ToolsPreflightSection
+        pdfData={pdfData}
+        docId={docId}
+        showToast={showToast}
+        onPdfUpdate={onPdfUpdate}
+      />
 
       <ToolsPDFXSection
         pdfData={pdfData}

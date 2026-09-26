@@ -4,7 +4,11 @@ export interface OCRDetectedBlock {
   id: string
   page: number
   text: string
-  x: number // in PDF points (72 DPI)
+  // PDF points (72 DPI) measured from the image/page TOP edge (y grows
+  // downward, canvas-style). Same top-origin convention as
+  // `UserAnnotation.y`, so detected blocks map 1:1 into user annotations.
+  // Contrasts with `TextBlock.y`, which is bottom-origin PDF user space.
+  x: number
   y: number
   width: number
   height: number
@@ -174,13 +178,15 @@ export class OCRService {
                 detected.push({
                   id: `ocr-block-${pageIndex}-${blockIdCounter++}`,
                   page: pageIndex,
-                  text: '', // To be recognized or labeled
+                  text: '', // Pixel projection only locates text-like bands; no characters are recognized
                   x: Math.round(pdfX),
                   y: Math.round(pdfY),
                   width: Math.round(pdfW),
                   height: Math.round(pdfH),
                   fontSize: estFontSize,
-                  confidence: 96,
+                  // No characters were recognized, so confidence is 0.
+                  // Anything above 0 would falsely claim verified OCR output.
+                  confidence: 0,
                 })
               }
               inWord = false

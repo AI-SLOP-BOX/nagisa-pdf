@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { PDFJsEngine } from './pdfRenderer'
-import type { SignatureInfo } from '../types'
+import type { SignatureInfo, CompatibilityReport, EngineHealth } from '../types'
 
 export interface SessionInfo {
   id: string
@@ -13,6 +13,12 @@ export interface SessionInfo {
 export interface TextBlock {
   id: number
   text: string
+  // COORDINATE CONTRACT: PDF user-space points (72 DPI), origin at the
+  // page's BOTTOM-LEFT (y grows upward) — matches the Rust backend (`Tm`
+  // text matrix) and the `domToPdf`/`pdfToDom` converters in
+  // `usePDFCoordinates`, which flip y when rendering to the DOM.
+  // Contrasts with `UserAnnotation.y` / `OCRDetectedBlock.y`, which are
+  // top-origin: never assign one to the other without converting.
   x: number
   y: number
   width: number
@@ -288,21 +294,128 @@ export class DocumentService {
   }
 
   static async verifySignatures(docIdOrData: string | number[]): Promise<{ signatures?: SignatureInfo[]; count?: number }> {
+    let rawResult: { signatures?: SignatureInfo[]; count?: number } = { signatures: [], count: 0 }
     if (typeof docIdOrData === 'string') {
       try {
-        return await invoke<{ signatures?: SignatureInfo[]; count?: number }>('session_verify_signature', { docId: docIdOrData })
+        rawResult = await invoke<{ signatures?: SignatureInfo[]; count?: number }>('session_verify_signature', { docId: docIdOrData })
       } catch (err) {
         console.error('[DocumentService.verifySignatures] セッション署名検証失敗:', err)
         return { signatures: [], count: 0 }
       }
+    } else {
+      try {
+        rawResult = await invoke<{ signatures?: SignatureInfo[]; count?: number }>('verify_signature', { data: docIdOrData, signatureIndex: 0 })
+      } catch (err) {
+        console.error('[DocumentService.verifySignatures] 直接署名検証失敗:', err)
+        return { signatures: [], count: 0 }
+      }
     }
-    try {
-      return await invoke<{ signatures?: SignatureInfo[]; count?: number }>('verify_signature', { data: docIdOrData, signatureIndex: 0 })
-    } catch (err) {
-      console.error('[DocumentService.verifySignatures] 直接署名検証失敗:', err)
-      return { signatures: [], count: 0 }
+
+    // Try full CMS cryptographic verification for signed signatures
+    let bytes: number[] | null = null
+    if (typeof docIdOrData === 'string') {
+      bytes = await DocumentService.getSessionBytes(docIdOrData)
+    } else {
+      bytes = docIdOrData
     }
+
+    if (bytes && rawResult.signatures && rawResult.signatures.length > 0) {
+      const enriched = await Promise.all(
+        rawResult.signatures.map(async (sig, idx) => {
+          try {
+            const cmsReport = await invoke<{
+              cms_signature_valid: boolean
+              digest_matches: boolean
+              digest_algorithm: string
+              signer_subject: string
+              signer_issuer: string
+              chain_valid: boolean | null
+              chain_details: string
+               revocation_status: string
+               revocation_details: string
+              timestamp?: {
+                present: boolean
+                imprint_matches: boolean
+                gen_time: string
+                tsa_subject: string
+              }
+              warnings: string[]
+            }>('verify_pdf_cms', { data: bytes, signatureIndex: idx, trustRootsPem: null })
+
+            return {
+              ...sig,
+              status: cmsReport.cms_signature_valid ? 'valid' : 'invalid',
+              integrity_verified: cmsReport.digest_matches,
+              digest_algorithm: cmsReport.digest_algorithm,
+              digest_matches: cmsReport.digest_matches,
+              cms_signature_valid: cmsReport.cms_signature_valid,
+               revocation_status: cmsReport.revocation_status,
+               chain_details: cmsReport.chain_details,
+               revocation_details: cmsReport.revocation_details,
+              chain_valid: cmsReport.chain_valid,
+              trust_level: cmsReport.cms_signature_valid
+                ? (cmsReport.timestamp?.present ? 'PAdES / RFC3161 LTV署名' : 'CMS/PKCS#7 デジタル署名')
+                : '暗号署名検証不一致',
+              certificate_issuer: cmsReport.signer_issuer || sig.certificate_issuer,
+              tsa_subject: cmsReport.timestamp?.tsa_subject,
+              imprint_matches: cmsReport.timestamp?.imprint_matches,
+              notice: cmsReport.warnings.length > 0 ? cmsReport.warnings.join('; ') : undefined,
+            }
+          } catch {
+            return sig
+          }
+        })
+      )
+      return { signatures: enriched, count: enriched.length }
+    }
+
+    return rawResult
   }
+
+  static async signPdfCms(params: {
+    data: number[]
+    pageIndex: number
+    x: number
+    y: number
+    width: number
+    height: number
+    signerName: string
+    reason: string
+    location?: string
+    contactInfo?: string
+    p12Data?: number[]
+    p12Password?: string
+    privateKeyPem?: string
+    certificatePem?: string
+    tsaUrl?: string
+  }): Promise<number[]> {
+    return invoke<number[]>('sign_pdf_cms', {
+      data: params.data,
+      pageIndex: params.pageIndex,
+      x: params.x,
+      y: params.y,
+      width: params.width,
+      height: params.height,
+      signerName: params.signerName,
+      reason: params.reason,
+      location: params.location,
+      contactInfo: params.contactInfo,
+      p12Data: params.p12Data,
+      p12Password: params.p12Password,
+      privateKeyPem: params.privateKeyPem,
+      certificatePem: params.certificatePem,
+      tsaUrl: params.tsaUrl,
+    })
+  }
+
+  static async inspectCompatibility(data: number[]): Promise<CompatibilityReport> {
+    return invoke<CompatibilityReport>('inspect_compatibility', { data })
+  }
+
+  static async getEngineHealth(): Promise<EngineHealth> {
+    return invoke<EngineHealth>('get_engine_health')
+  }
+
 
   static async printPdf(docIdOrData: string | number[]): Promise<void> {
     if (typeof docIdOrData === 'string') {

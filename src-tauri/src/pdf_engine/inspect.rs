@@ -210,20 +210,42 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
     Ok(png_data)
 }
 
-pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
-    let page_ids = get_page_ids(&doc);
-    if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+/// コンテンツストリームにテキスト描画演算子(Tj/TJ/'/")が含まれ得るかを高速事前判定する。
+/// 巨大なベクター描画のみのページ（CAD図面等、数百万オペレータ）で
+/// Content::decode の全走査をスキップするためのもの。
+/// 誤検出（文字列・名前中の "Tj" 等）は起こり得るがデコードに倒れるだけで安全。
+/// 逆に検出漏れは演算子トークンが空白を跨げないため起こらない。
+fn may_contain_text_ops(data: &[u8]) -> bool {
+    if data.contains(&b'\'') || data.contains(&b'"') {
+        return true;
     }
+    let mut idx = 0;
+    while idx < data.len() {
+        match data[idx..].iter().position(|&b| b == b'T') {
+            Some(pos) => {
+                let abs = idx + pos;
+                if abs + 1 < data.len() && (data[abs + 1] == b'j' || data[abs + 1] == b'J') {
+                    return true;
+                }
+                idx = abs + 1;
+            }
+            None => return false,
+        }
+    }
+    false
+}
 
-    let page_id = page_ids[page_index];
+/// パース済み Document から指定ページのテキストを抽出する内部ヘルパー。
+/// 全頁処理時にページ毎の全文書再パース（O(n²)）を避けるため分離。
+fn page_text_from_doc(doc: &Document, page_id: lopdf::ObjectId) -> String {
     let mut text = String::new();
-
-    let content_ids = resolve_page_content_stream_ids(&doc, page_id);
+    let content_ids = resolve_page_content_stream_ids(doc, page_id);
     for cid in content_ids {
         if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
             let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+            if !may_contain_text_ops(&decomp) {
+                continue;
+            }
             if let Ok(content) = lopdf::content::Content::decode(&decomp) {
                 for op in &content.operations {
                     match op.operator.as_str() {
@@ -247,8 +269,28 @@ pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, String> {
             }
         }
     }
+    text
+}
 
-    Ok(text)
+pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, String> {
+    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    let page_ids = get_page_ids(&doc);
+    if page_index >= page_ids.len() {
+        return Err("Page index out of range".into());
+    }
+    Ok(page_text_from_doc(&doc, page_ids[page_index]))
+}
+
+/// 全ページのテキストを1回のパースで抽出する。
+/// `get_page_text` を全ページ分ループするとページ毎に全文書を再パースして
+/// O(ページ数²) になり、1000ページ級のPDFで実質ハングするためのバッチ版。
+pub fn extract_all_text(data: &[u8]) -> Result<Vec<String>, String> {
+    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    let page_ids = get_page_ids(&doc);
+    Ok(page_ids
+        .iter()
+        .map(|&pid| page_text_from_doc(&doc, pid))
+        .collect())
 }
 
 pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json::Value>, String> {
@@ -256,35 +298,8 @@ pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json:
     let mut results = Vec::new();
 
     for (i, &page_id) in page_ids.iter().enumerate() {
-        let content_ids = resolve_page_content_stream_ids(doc, page_id);
-        let mut page_text = String::new();
-
-        for cid in content_ids {
-            if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
-                let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
-                if let Ok(content) = lopdf::content::Content::decode(&decomp) {
-                    for op in &content.operations {
-                        match op.operator.as_str() {
-                            "Tj" => {
-                                if let Some(Object::String(bytes, _)) = op.operands.first() {
-                                    page_text.push_str(&String::from_utf8_lossy(bytes));
-                                }
-                            }
-                            "TJ" => {
-                                if let Some(Object::Array(arr)) = op.operands.first() {
-                                    for item in arr {
-                                        if let Object::String(bytes, _) = item {
-                                            page_text.push_str(&String::from_utf8_lossy(bytes));
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
+        // 抽出ロジックは page_text_from_doc に統一（テキスト無しページのデコードをスキップ）
+        let page_text = page_text_from_doc(doc, page_id);
 
         if page_text.contains(query) {
             results.push(serde_json::json!({
@@ -825,6 +840,8 @@ pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, St
 
     let mut title = String::new();
     let mut author = String::new();
+    let mut creator = String::new();
+    let mut producer = String::new();
 
     if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
         if let Some(Object::Dictionary(info)) = doc.objects.get(&info_id) {
@@ -834,13 +851,25 @@ pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, St
             if let Ok(Object::String(bytes, _)) = info.get(b"Author") {
                 author = String::from_utf8_lossy(bytes).to_string();
             }
+            if let Ok(Object::String(bytes, _)) = info.get(b"Creator") {
+                creator = String::from_utf8_lossy(bytes).to_string();
+            }
+            if let Ok(Object::String(bytes, _)) = info.get(b"Producer") {
+                producer = String::from_utf8_lossy(bytes).to_string();
+            }
         }
     }
+
+    // A document is encrypted iff its trailer references an /Encrypt dictionary.
+    let encrypted = doc.trailer.get(b"Encrypt").is_ok();
 
     Ok(serde_json::json!({
         "page_count": page_count,
         "title": title,
         "author": author,
+        "creator": creator,
+        "producer": producer,
+        "encrypted": encrypted,
         "version": doc.version,
     }))
 }
@@ -852,4 +881,46 @@ pub fn get_pdf_metadata(data: &[u8]) -> Result<serde_json::Value, String> {
         obj.insert("size".to_string(), serde_json::json!(data.len()));
     }
     Ok(val)
+}
+
+
+/// Release-readiness / engine health matrix, suitable for a `nagisa-cli health`
+/// smoke command and offline assertion in tests.
+fn binary_available(name: &str) -> bool {
+    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"];
+    for dir in &candidates {
+        if std::path::Path::new(&format!("{dir}/{name}")).exists() {
+            return true;
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+            if dir.join(exe).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn engine_health() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "binaries": {
+            "openssl": binary_available("openssl"),
+            "qpdf": binary_available("qpdf"),
+            "pdftoppm": binary_available("pdftoppm"),
+            "libreoffice": binary_available("libreoffice"),
+            "ghostscript": binary_available("gs"),
+            "tesseract": binary_available("tesseract"),
+        },
+        "features": {
+            "cms_sign": true,
+            "compatibility": true,
+            "repair": true,
+            "preflight": true,
+            "dss_ltv": true,
+        },
+    })
 }

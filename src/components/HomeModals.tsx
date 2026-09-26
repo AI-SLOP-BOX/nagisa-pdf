@@ -1,5 +1,6 @@
 import React from 'react'
 import { SettingsIcon } from './Icons'
+import { useT, type Language } from '../utils/i18n'
 
 interface UsageGuideModalProps {
   isOpen: boolean
@@ -150,6 +151,7 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+  const { lang, setLang } = useT()
   if (!isOpen) return null
 
   return (
@@ -189,6 +191,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <span>ローカルエンジン処理モード</span>
             <span style={{ color: '#16a34a', fontWeight: 600 }}>高精度 (高速)</span>
           </label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>言語 / Language</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['ja', 'en'] as Language[]).map((code) => (
+                <button
+                  key={code}
+                  onClick={() => setLang(code)}
+                  style={{
+                    background: lang === code ? '#2563eb' : '#f1f5f9',
+                    color: lang === code ? '#fff' : '#475569',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {code === 'ja' ? '日本語' : 'English'}
+                </button>
+              ))}
+            </div>
+          </div>
           <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>バージョン</span>
             <span style={{ color: '#64748b' }}>v1.0.0 (Apple Silicon Optimized)</span>

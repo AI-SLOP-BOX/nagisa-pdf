@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react'
+
 export type Language = 'ja' | 'en'
 
 export const translations = {
@@ -136,13 +138,38 @@ export function getLanguage(): Language {
   return currentLang
 }
 
+export const LANG_CHANGE_EVENT = 'i18n-change'
+
 export function setLanguage(lang: Language) {
   currentLang = lang
   if (typeof localStorage !== 'undefined') {
     localStorage.setItem('nagisa_lang', lang)
   }
+  // Notify React subscribers (useT hook) so components using t() re-render
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(LANG_CHANGE_EVENT, { detail: { lang } }))
+  }
 }
 
 export function t(): typeof translations['ja'] {
   return translations[currentLang] || translations.ja
+}
+
+/**
+ * React hook version of `t()`. Subscribes to language-change events so that
+ * calling `setLanguage()` outside of React still triggers a re-render of
+ * every component using this hook.
+ */
+export function useT() {
+  const [, forceUpdate] = useState(0)
+  useEffect(() => {
+    const handler = () => forceUpdate((n) => n + 1)
+    window.addEventListener(LANG_CHANGE_EVENT, handler)
+    return () => window.removeEventListener(LANG_CHANGE_EVENT, handler)
+  }, [])
+  return {
+    t: () => translations[currentLang] || translations.ja,
+    lang: currentLang,
+    setLang: setLanguage,
+  }
 }

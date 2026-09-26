@@ -363,42 +363,7 @@ pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_jso
     Ok(val)
 }
 
-// ===== HARDWARE TOKEN (PKCS#11 STUB) =====
-
-pub struct HardwareToken {
-    pub slot_id: u32,
-    pub label: String,
-    pub manufacturer: String,
-    pub serial: String,
-    pub initialized: bool,
-}
-
-pub fn detect_hardware_tokens() -> Result<Vec<HardwareToken>, String> {
-    // Honest: Return empty list when no PKCS#11 hardware device/HSM driver is configured
-    Ok(Vec::new())
-}
-
-pub fn sign_with_hardware_token(
-    _data: &[u8],
-    _slot_id: u32,
-    _pin: &str,
-    _page_index: usize,
-    _x: f64,
-    _y: f64,
-    _width: f64,
-    _height: f64,
-    _signer_name: &str,
-    _reason: &str,
-) -> Result<Vec<u8>, String> {
-    Err("ハードウェアトークン(PKCS#11)署名にはベンダー提供のPKCS#11動的ライブラリ(例: OpenSC opensc-pkcs11 / Yubico ykcs11)およびHSMミドルウェアの設定が必要です。ソフトウェア証明書(.p12/.pfx)による署名をご利用ください。".into())
-}
-
-pub fn verify_hardware_token_signature(
-    _data: &[u8],
-    _slot_id: u32,
-) -> Result<serde_json::Value, String> {
-    Err("ハードウェアトークン署名の検証には対応するPKCS#11 Cryptokiミドルウェアが必要です。".into())
-}
+// ===== HARDWARE / OS KEYCHAIN CREDENTIALS =====
 
 // ===== PDF UNLOCK (PASSWORD REMOVAL) =====
 

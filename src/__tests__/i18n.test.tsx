@@ -1,5 +1,7 @@
-import { t, setLanguage, getLanguage } from '../utils/i18n'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { t, setLanguage, getLanguage, LANG_CHANGE_EVENT, useT } from '../utils/i18n'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { render, screen, act, cleanup } from '@testing-library/react'
+import React from 'react'
 
 describe('i18n (legacy API)', () => {
   beforeEach(() => {
@@ -51,5 +53,43 @@ describe('i18n (legacy API)', () => {
       setLanguage('ja')
       expect(localStorage.getItem('nagisa_lang')).toBe('ja')
     }
+  })
+})
+
+describe('i18n reactive (useT + LANG_CHANGE_EVENT)', () => {
+  beforeEach(() => {
+    setLanguage('ja')
+  })
+
+  afterEach(() => {
+    cleanup()
+    setLanguage('ja')
+  })
+
+  it('setLanguage は LANG_CHANGE_EVENT を発行して購読者に通知する', () => {
+    let received: string | null = null
+    const handler = (e: Event) => {
+      received = (e as CustomEvent<{ lang: string }>).detail.lang
+    }
+    window.addEventListener(LANG_CHANGE_EVENT, handler)
+    try {
+      setLanguage('en')
+      expect(received).toBe('en')
+    } finally {
+      window.removeEventListener(LANG_CHANGE_EVENT, handler)
+    }
+  })
+
+  it('useT は setLanguage で再レンダリングし、新しい言語の翻訳を返す', () => {
+    const Probe: React.FC = () => {
+      const { t: tt, lang } = useT()
+      return <span data-testid="i18n-probe">{`${lang}:${tt().workspace}`}</span>
+    }
+    render(<Probe />)
+    expect(screen.getByTestId('i18n-probe').textContent).toBe('ja:ワークスペース')
+    act(() => {
+      setLanguage('en')
+    })
+    expect(screen.getByTestId('i18n-probe').textContent).toBe('en:Workspace')
   })
 })

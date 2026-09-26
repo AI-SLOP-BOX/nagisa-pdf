@@ -1,12 +1,16 @@
 pub mod accessibility;
+pub mod cms_sign;
+
 pub mod annot_manage;
 pub mod annotations;
 pub mod batch_ops;
+pub use batch_ops::*;
 pub mod common;
 pub mod convert;
 pub mod export_office;
 pub mod font_style;
 pub mod font_unicode;
+pub mod hsm;
 pub mod form_creator;
 pub mod forms;
 pub mod inspect;
@@ -25,12 +29,14 @@ pub mod page_tree;
 pub use page_tree::*;
 
 pub mod compare;
+pub mod compatibility;
 pub mod repair;
 pub mod scan_enhance;
 
 pub use annotations::*;
 pub use common::*;
 pub use compare::*;
+pub use compatibility::*;
 pub use convert::*;
 pub use forms::*;
 pub use inspect::*;

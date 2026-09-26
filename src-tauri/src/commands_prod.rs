@@ -24,9 +24,35 @@ pub fn validate_pdfx_compliance(
     pdf_engine::validate_pdfx_compliance(&data, &target_standard)
 }
 
+/// Inspect a PDF for PDF/A (ISO 19005) conformance without modifying it.
+#[tauri::command]
+pub fn validate_pdfa_compliance(
+    data: Vec<u8>,
+    target_conformance: String,
+) -> Result<pdf_engine::PdfaValidationReport, String> {
+    pdf_engine::validate_pdfa_compliance(&data, &target_conformance)
+}
+
+
 #[tauri::command]
 pub fn check_accessibility(data: Vec<u8>) -> Result<serde_json::Value, String> {
     pdf_engine::check_accessibility(&data)
+}
+
+/// Acrobat Pro 相当のプリフライト検査: フォント埋め込み・カラースペース・
+/// 画像解像度・インク被覆率・ページ寸法を総合診断しスコアを返す。
+#[tauri::command]
+pub fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightResult, String> {
+    pdf_engine::preflight::preflight_check(&data)
+}
+
+/// 指定ページのCMYKインク被覆率(%)を実測する。
+#[tauri::command]
+pub fn check_ink_coverage(
+    data: Vec<u8>,
+    page_index: usize,
+) -> Result<serde_json::Value, String> {
+    pdf_engine::preflight::check_ink_coverage(&data, page_index)
 }
 
 #[tauri::command]

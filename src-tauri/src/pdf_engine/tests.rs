@@ -35,6 +35,9 @@ mod tests {
         None
     }
 
+    const TEST_SIGNING_KEY_PEM: &str = include_str!("testdata/nagisa_signing_test.key");
+    const TEST_SIGNING_CERT_PEM: &str = include_str!("testdata/nagisa_signing_test.crt");
+
     fn create_test_pdf(num_pages: usize) -> Vec<u8> {
         let mut doc = Document::with_version("1.7");
         let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
@@ -1167,6 +1170,40 @@ mod tests {
         let err_msg = res.unwrap_err();
         assert!(err_msg.contains("Standard Security Handler") || err_msg.contains("暗号化"));
     }
+    #[test]
+    fn test_phase1_preflight_score_no_overflow_on_many_warnings() {
+        // 回帰テスト: preflight のスコア計算が u32 減算オーバーフローで
+        // パニックしていた問題（デバッグビルドで「attempt to subtract with overflow」）。
+        // 100x100pt の極小ページ25枚で「small page」警告が25件(125点分)発生し、
+        // 100 - 25*5 が負に転じるケースを再現する。
+        let data = create_test_pdf(25);
+        let mut doc = Document::load_mem(&data).expect("load test pdf");
+        let page_ids: Vec<_> = doc.get_pages().values().copied().collect();
+        for page_id in page_ids {
+            if let Ok(Object::Dictionary(page_dict)) = doc.get_object_mut(page_id) {
+                page_dict.set(
+                    "MediaBox",
+                    Object::Array(vec![
+                        Object::Real(0.0),
+                        Object::Real(0.0),
+                        Object::Real(100.0),
+                        Object::Real(100.0),
+                    ]),
+                );
+            }
+        }
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save modified pdf");
+
+        let result = crate::pdf_engine::preflight::preflight_check(&buf)
+            .expect("preflight_check must not panic or error on many warnings");
+        assert_eq!(
+            result.score, 0,
+            "警告が100点分を超えてもスコアは0にクランプされるべき"
+        );
+    }
+
+
 
     #[test]
     fn test_phase2_portfolio_valid_catalog_pages_and_names() {
@@ -3753,6 +3790,205 @@ mod tests {
     }
 
     #[test]
+    fn test_cms_signature_round_trip_incremental() {
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: TEST_SIGNING_KEY_PEM.as_bytes().to_vec(),
+            certificate_pem: TEST_SIGNING_CERT_PEM.as_bytes().to_vec(),
+            chain_pem: Vec::new(),
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("CMS signing must succeed");
+        assert!(signed.len() > pdf.len());
+        // Incremental updates keep the original %%EOF and append a new one.
+        let eof_count = signed.windows(5).filter(|window| *window == b"%%EOF".as_slice()).count();
+        assert!(eof_count >= 2, "signed PDF must contain the original and the incremental %%EOF, found {eof_count}");
+        // Incremental updates preserve every original byte as a prefix.
+        assert_eq!(&signed[..pdf.len()], &pdf[..]);
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&signed, 0).expect("CMS verification must succeed");
+        assert_eq!(report.signatures_found, 1);
+        assert!(report.digest_matches, "ByteRange digest must match CMS signature");
+        assert!(report.cms_signature_valid, "detached CMS token must verify");
+        assert_eq!(report.digest_algorithm, "SHA-256");
+        let mut tampered = signed.clone();
+        let flip = pdf.len().saturating_sub(20);
+        tampered[flip] ^= 0x01;
+        let tampered_report = crate::pdf_engine::cms_sign::verify_pdf_cms(&tampered, 0).expect("tampered verification parses");
+        assert!(!tampered_report.digest_matches, "tampering with signed bytes must fail digest");
+        assert!(!tampered_report.cms_signature_valid, "tampering with signed bytes must fail CMS validity");
+    }
+
+
+    fn run_openssl_test(args: &[&str]) -> Result<(), String> {
+        let bin = find_tool("openssl").ok_or_else(|| "opensslが見つかりません".to_string())?;
+        let output = std::process::Command::new(&bin).args(args).output().map_err(|e| format!("openssl起動失敗: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("openssl失敗: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_cms_chain_validation() {
+        if find_tool("openssl").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nagisa_chain_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_ca_key, ca_crt, leaf_key, leaf_crt) = {
+            let ca_key = dir.join("ca.key");
+            let ca_crt = dir.join("ca.crt");
+            let leaf_key = dir.join("leaf.key");
+            let leaf_csr = dir.join("leaf.csr");
+            let leaf_crt = dir.join("leaf.crt");
+            run_openssl_test(&["req","-x509","-newkey","rsa:2048","-nodes","-subj","/CN=Nagisa Test CA","-keyout",ca_key.to_str().unwrap(),"-out",ca_crt.to_str().unwrap(),"-days","365","-sha256"]).unwrap();
+            run_openssl_test(&["req","-newkey","rsa:2048","-nodes","-subj","/CN=Nagisa Leaf","-keyout",leaf_key.to_str().unwrap(),"-out",leaf_csr.to_str().unwrap(),"-sha256"]).unwrap();
+            run_openssl_test(&["x509","-req","-in",leaf_csr.to_str().unwrap(),"-CA",ca_crt.to_str().unwrap(),"-CAkey",ca_key.to_str().unwrap(),"-CAcreateserial","-out",leaf_crt.to_str().unwrap(),"-days","365","-sha256"]).unwrap();
+            (String::new(), std::fs::read_to_string(&ca_crt).unwrap(), std::fs::read_to_string(&leaf_key).unwrap(), std::fs::read_to_string(&leaf_crt).unwrap())
+        };
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: leaf_key.into_bytes(),
+            certificate_pem: leaf_crt.clone().into_bytes(),
+            chain_pem: vec![ca_crt.clone().into_bytes()],
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("chain signing must succeed");
+        let trusted = crate::pdf_engine::cms_sign::verify_pdf_cms_with_trust(&signed, 0, Some(ca_crt.as_bytes())).expect("trusted verify");
+        assert_eq!(trusted.chain_valid, Some(true), "trusted root must validate chain: {}", trusted.chain_details);
+        let bogus_crt = dir.join("bogus.crt");
+        run_openssl_test(&["req","-x509","-newkey","rsa:2048","-nodes","-subj","/CN=Bogus Root","-keyout",dir.join("bogus.key").to_str().unwrap(),"-out",bogus_crt.to_str().unwrap(),"-days","365","-sha256"]).unwrap();
+        let bogus = std::fs::read_to_string(&bogus_crt).unwrap();
+        let untrusted = crate::pdf_engine::cms_sign::verify_pdf_cms_with_trust(&signed, 0, Some(bogus.as_bytes())).expect("bogus verify");
+        assert_eq!(untrusted.chain_valid, Some(false), "bogus root must fail chain validation");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cms_sign_with_p12() {
+        if find_tool("openssl").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nagisa_p12_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p12_path = dir.join("bundle.p12");
+        run_openssl_test(&["pkcs12","-export","-inkey","src/pdf_engine/testdata/nagisa_signing_test.key","-in","src/pdf_engine/testdata/nagisa_signing_test.crt","-out",p12_path.to_str().unwrap(),"-passout","pass:secret"]).expect("p12 export");
+        let p12_der = std::fs::read(&p12_path).expect("read p12");
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: Vec::new(),
+            certificate_pem: Vec::new(),
+            chain_pem: Vec::new(),
+            p12_der: Some(p12_der),
+            p12_password: Some("secret".to_string()),
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("p12 signing must succeed");
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&signed, 0).expect("p12 verify");
+        assert!(report.digest_matches && report.cms_signature_valid, "p12 signature must verify");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_append_dss_update_structure() {
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: TEST_SIGNING_KEY_PEM.as_bytes().to_vec(),
+            certificate_pem: TEST_SIGNING_CERT_PEM.as_bytes().to_vec(),
+            chain_pem: Vec::new(),
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("sign for DSS");
+        let material = crate::pdf_engine::cms_sign::LtvMaterial {
+            certificates_pem: vec![TEST_SIGNING_CERT_PEM.as_bytes().to_vec()],
+            ocsps_der: vec![b"\x00\x00".to_vec()],
+            crls_der: vec![b"\x00\x00".to_vec()],
+        };
+        let with_dss = crate::pdf_engine::cms_sign::append_dss_update(&signed, &material).expect("append DSS");
+        let doc = Document::load_mem(&with_dss).expect("load dss doc");
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let catalog = doc.objects.get(&root).unwrap().as_dict().unwrap();
+        let dss_ref = catalog.get(b"DSS").unwrap().as_reference().unwrap();
+        let dss = doc.objects.get(&dss_ref).unwrap().as_dict().unwrap();
+        assert_eq!(dss.get(b"Type").unwrap().as_name().unwrap(), b"DSS");
+        assert_eq!(dss.get(b"Certs").unwrap().as_array().unwrap().len(), 1);
+        let vri_ref = dss.get(b"VRI").unwrap().as_reference().unwrap();
+        let vri = doc.objects.get(&vri_ref).unwrap().as_dict().unwrap();
+        assert_eq!(vri.len(), 1, "VRI must contain one entry per certificate");
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&with_dss, 0).expect("verify after DSS");
+        assert!(report.digest_matches && report.cms_signature_valid, "signature must still verify after DSS append");
+        assert_eq!(&with_dss[..signed.len()], &signed[..], "DSS must be an incremental update");
+    }
+
+    #[test]
+    fn test_cms_signature_no_timestamp_by_default() {
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: TEST_SIGNING_KEY_PEM.as_bytes().to_vec(),
+            certificate_pem: TEST_SIGNING_CERT_PEM.as_bytes().to_vec(),
+            chain_pem: Vec::new(),
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("sign for timestamp test");
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&signed, 0).expect("verify base");
+        assert!(report.timestamp.is_none(), "no timestamp expected on base signature");
+    }
+    #[test]
     fn test_add_digital_signature_with_certificate() {
         let pdf = create_test_pdf(1);
         let mock_cert = b"-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----";
@@ -4006,7 +4242,397 @@ mod tests {
             "Must reject adding reply to non-existent parent annotation to prevent zombie objects"
         );
     }
+    #[test]
+    fn test_inspect_pdf_synthetic_doc() {
+        let mut doc = Document::with_version("1.7");
+        let pages = doc.add_object(lopdf::Dictionary::new());
+        let page = doc.add_object({
+            let mut dict = lopdf::Dictionary::new();
+            dict.set("Type", Object::Name(b"Page".into()));
+            dict.set("Parent", Object::Reference(pages));
+            dict.set("MediaBox", Object::Array(vec![Object::Integer(0), Object::Integer(0), Object::Integer(612), Object::Integer(792)]));
+            dict
+        });
+        let mut kids = lopdf::Dictionary::new();
+        kids.set("Type", Object::Name(b"Pages".into()));
+        kids.set("Count", Object::Integer(1));
+        kids.set("Kids", Object::Array(vec![Object::Reference(page)]));
+        doc.objects.insert(pages, Object::Dictionary(kids));
+        let mut catalog = lopdf::Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".into()));
+        catalog.set("Pages", Object::Reference(pages));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        let bytes = crate::pdf_engine::common::save_doc(&mut doc).expect("save synthetic");
+        let report = crate::pdf_engine::compatibility::inspect_pdf(&bytes).expect("inspect synthetic");
+        assert!(report.parseable);
+        assert_eq!(report.pdf_version, "1.7");
+        assert_eq!(report.page_count, 1);
+        assert!(!report.encrypted);
+        assert_eq!(report.signed_signature_count, 0);
+    }
+
+    #[test]
+    fn test_inspect_pdf_malformed_does_not_panic() {
+        for bad in [b"".as_ref(), b"%PDF-1.7".as_ref(), b"%PDF-1.7\n%binary garbage not a pdf".as_ref(), b"not a pdf at all".as_ref()] {
+            let result = crate::pdf_engine::compatibility::inspect_pdf(bad);
+            assert!(result.is_err(), "malformed PDF must return Err, not panic: {:?}", std::str::from_utf8(bad));
+        }
+    }
+
+    #[test]
+    fn test_inspect_pdf_signed_doc_reports_signature() {
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: TEST_SIGNING_KEY_PEM.as_bytes().to_vec(),
+            certificate_pem: TEST_SIGNING_CERT_PEM.as_bytes().to_vec(),
+            chain_pem: Vec::new(),
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("sign for inspect");
+        let report = crate::pdf_engine::compatibility::inspect_pdf(&signed).expect("inspect signed");
+        assert!(report.parseable);
+        assert!(report.signed_signature_count >= 1, "signed doc must report >=1 signature field");
+        let material = crate::pdf_engine::cms_sign::LtvMaterial {
+            certificates_pem: vec![TEST_SIGNING_CERT_PEM.as_bytes().to_vec()],
+            ocsps_der: Vec::new(),
+            crls_der: Vec::new(),
+        };
+        let with_dss = crate::pdf_engine::cms_sign::append_dss_update(&signed, &material).expect("append DSS");
+        let report2 = crate::pdf_engine::compatibility::inspect_pdf(&with_dss).expect("inspect dss");
+        assert_eq!(report2.page_count, report.page_count, "DSS append must not change page count");
+        assert_eq!(report2.signed_signature_count, report.signed_signature_count, "DSS append must not change signature count");
+    }
+
+    #[test]
+    fn test_engine_health_release_readiness() {
+        let health = crate::pdf_engine::inspect::engine_health();
+        let version = health["version"].as_str().expect("version string");
+        assert!(!version.is_empty(), "engine version must be reported");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(health["features"]["cms_sign"], true);
+        assert_eq!(health["features"]["compatibility"], true);
+        assert_eq!(health["features"]["dss_ltv"], true);
+        // openssl availability in the health matrix must match the test finder.
+        let openssl_available = health["binaries"]["openssl"].as_bool().expect("openssl bool");
+        assert_eq!(openssl_available, find_tool("openssl").is_some(), "openssl availability mismatch");
+    }
+
+    #[test]
+    fn test_inspect_pdf_invalid_returns_err_not_panic() {
+        // A truncated / corrupted PDF body must yield Err, not abort the process.
+        for bad in [b"not a pdf".as_ref(), b"%PDF-1.7\n%\xff\xff\xfe".as_ref(), b"%PDF-1.4\n%%EOF only header".as_ref()] {
+            let res = std::panic::catch_unwind(|| crate::pdf_engine::compatibility::inspect_pdf(bad));
+            assert!(res.is_ok(), "inspect_pdf must not panic on malformed input");
+            assert!(res.unwrap().is_err(), "malformed PDF must return Err");
+        }
+    }
+
+    #[test]
+    fn test_validate_pdfa_compliance_reports_violations_on_plain_pdf() {
+        let pdf = create_test_pdf(1);
+        let report = crate::pdf_engine::validate_pdfa_compliance(&pdf, "B")
+            .expect("validate_pdfa_compliance must not error on a valid PDF");
+
+        // A plain test PDF has none of the PDF/A apparatus.
+        assert!(!report.is_compliant, "plain PDF must not be PDF/A compliant");
+        assert_eq!(report.standard, "PDF/A-1B (ISO 19005-1)");
+        assert!(
+            report.violations.iter().any(|v| v.contains("GTS_PDFA1")),
+            "must report the missing PDF/A OutputIntent, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.violations.iter().any(|v| v.contains("XMP metadata")),
+            "must report missing XMP metadata, got: {:?}",
+            report.violations
+        );
+        assert_eq!(report.details["has_output_intent"], false);
+        assert_eq!(report.details["has_icc_profile"], false);
+        assert_eq!(report.details["marked"], false);
+    }
+
+    #[test]
+    fn test_validate_pdfa_compliance_passes_after_convert_to_pdfa() {
+        // convert_to_pdfa only accepts documents whose fonts are already embedded
+        // (ISO 19005-1 hard requirement). We therefore inject a minimal embedded
+        // FontFile2 into the test PDF's font descriptor, then verify the full
+        // round-trip: embedded -> convert_to_pdfa -> validate as compliant.
+        let mut doc = Document::load_mem(&create_test_pdf(1)).expect("load test pdf");
+        let font_id = doc
+            .objects
+            .iter()
+            .find_map(|(id, obj)| match obj {
+                Object::Dictionary(d) if d.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"Font") => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("test PDF must contain a font object");
+
+        // Minimal valid TrueType stream (sfnt header) — the validator only checks
+        // structural presence, matching how the engine treats embedding.
+        let mut font_stream = lopdf::Stream::new(Dictionary::new(), vec![0u8; 16]);
+        font_stream.dict.set("Length1", Object::Integer(16));
+        let font_stream_id = doc.add_object(Object::Stream(font_stream));
+
+        let mut descriptor = Dictionary::new();
+        descriptor.set("Type", Object::Name(b"FontDescriptor".into()));
+        descriptor.set("FontName", Object::Name(b"Helvetica".into()));
+        descriptor.set("FontFile2", Object::Reference(font_stream_id));
+        let descriptor_id = doc.add_object(Object::Dictionary(descriptor));
+
+        if let Some(Object::Dictionary(font)) = doc.objects.get_mut(&font_id) {
+            font.set("FontDescriptor", Object::Reference(descriptor_id));
+        }
+
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("serialize embedded-font PDF");
+
+        let archival =
+            crate::pdf_engine::convert_to_pdfa(&buf).expect("convert_to_pdfa must succeed once fonts are embedded");
+        let report = crate::pdf_engine::validate_pdfa_compliance(&archival, "B")
+            .expect("validate_pdfa_compliance must parse the archival PDF");
+
+        // OutputIntent + XMP + MarkInfo must all be present after conversion.
+        assert!(
+            report.is_compliant,
+            "converted PDF must be PDF/A compliant, violations: {:?}",
+            report.violations
+        );
+        assert_eq!(report.details["has_output_intent"], true);
+        assert_eq!(report.details["has_icc_profile"], true);
+        assert_eq!(report.details["has_xmp"], true);
+        assert_eq!(report.details["marked"], true);
+        assert!(report.passed_checks.iter().any(|c| c.contains("GTS_PDFA1")));
+    }
+
+    #[test]
+    fn test_validate_pdfa_compliance_flags_non_embedded_fonts() {
+        // create_test_pdf references /Helvetica without embedding it, which is the
+        // single most common PDF/A violation.
+        let pdf = create_test_pdf(1);
+        let report = crate::pdf_engine::validate_pdfa_compliance(&pdf, "B").unwrap();
+        assert!(
+            report.violations.iter().any(|v| v.contains("not fully embedded")),
+            "must flag the non-embedded Helvetica font, got: {:?}",
+            report.violations
+        );
+        assert_eq!(report.details["has_output_intent"], false);
+    }
+
+    #[test]
+    fn test_validate_pdfa_compliance_selects_conformance_level() {
+        let pdf = create_test_pdf(1);
+        let b = crate::pdf_engine::validate_pdfa_compliance(&pdf, "B").unwrap();
+        let a = crate::pdf_engine::validate_pdfa_compliance(&pdf, "A").unwrap();
+        assert_eq!(b.standard, "PDF/A-1B (ISO 19005-1)");
+        assert_eq!(a.standard, "PDF/A-1A (ISO 19005-1)");
+    }
+
+    #[test]
+    fn test_validate_pdfa_compliance_errors_on_malformed_pdf() {
+        let res = std::panic::catch_unwind(|| {
+            crate::pdf_engine::validate_pdfa_compliance(b"not a pdf at all", "B")
+        });
+        assert!(res.is_ok(), "validate_pdfa_compliance must not panic on malformed input");
+        assert!(res.unwrap().is_err(), "malformed PDF must return Err");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_keychain_identity_listing_parses_real_keychain() {
+        // Exercises the real Security framework; it must never panic and every
+        // returned entry must carry a usable selector for `security cms -N`.
+        let identities = crate::pdf_engine::cms_sign::list_keychain_identities()
+            .expect("listing keychain identities must not error");
+        for id in &identities {
+            assert!(
+                id.sha1_fingerprint.len() >= 40,
+                "fingerprint should be a SHA-1 hex string, got {}",
+                id.sha1_fingerprint
+            );
+            assert!(!id.common_name.is_empty());
+            assert!(!id.nickname.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sign_pdf_cms_with_keychain_round_trip() {
+        let identities = crate::pdf_engine::cms_sign::list_keychain_identities()
+            .expect("listing keychain identities must not error");
+        let Some(identity) = identities.first() else {
+            // No code-signing identity on this machine (CI): the parsing path is
+            // still covered by the listing test above.
+            return;
+        };
+
+        let pdf = create_test_pdf(1);
+        let seed = crate::pdf_engine::cms_sign::SignatureFieldSeed {
+            page_index: 0,
+            rect: [50.0, 50.0, 250.0, 100.0],
+            field_name: "KeychainSignature".to_string(),
+            signer_name: "Nagisa Keychain Test".to_string(),
+            reason: "keychain round trip".to_string(),
+            location: String::new(),
+            contact_info: String::new(),
+        };
+
+        let signed =
+            crate::pdf_engine::cms_sign::sign_pdf_cms_with_keychain(&pdf, seed, identity, None)
+                .expect("keychain signing must succeed for a valid identity");
+
+        // Incremental update must preserve the original bytes as a prefix.
+        assert_eq!(&signed[..pdf.len()], &pdf[..]);
+
+        // The result must pass the same cryptographic verification used for the
+        // file-based paths: ByteRange digest binding + detached CMS validation.
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&signed, 0)
+            .expect("verify_pdf_cms must parse the keychain-signed PDF");
+        assert!(report.digest_matches, "ByteRange digest must match");
+        assert!(report.cms_signature_valid, "detached CMS must verify");
+        assert_eq!(report.digest_algorithm, "SHA-256");
+    }
+    /// Regression tests for the expanded ISO 19005-1 rule set. Each case injects
+    /// exactly one prohibited construct so a failure points at a specific rule.
+    #[cfg(test)]
+    mod pdfa_rules {
+        use super::*;
+        use lopdf::Document;
+
+        /// Load the base PDF, mutate it, serialise, and validate.
+        fn validate(mutate: impl FnOnce(&mut Document)) -> crate::pdf_engine::PdfaValidationReport {
+            let mut doc = Document::load_mem(&create_test_pdf(1)).expect("load base pdf");
+            mutate(&mut doc);
+            let mut buf = Vec::new();
+            doc.save_to(&mut buf).expect("serialize mutated pdf");
+            crate::pdf_engine::validate_pdfa_compliance(&buf, "B")
+                .expect("validate_pdfa_compliance must parse the mutated pdf")
+        }
+
+        #[test]
+        fn detects_encryption_as_violation() {
+            let report = validate(|doc| {
+                doc.trailer
+                    .set("Encrypt", Object::Integer(42));
+            });
+            assert!(!report.is_compliant);
+            assert_eq!(report.details["encrypted"], true);
+            assert!(
+                report.violations.iter().any(|v| v.contains("encrypted")),
+                "must flag encryption, got {:?}",
+                report.violations
+            );
+        }
+
+        #[test]
+        fn detects_javascript_as_violation() {
+            let report = validate(|doc| {
+                let mut action = Dictionary::new();
+                action.set("S", Object::Name(b"JavaScript".into()));
+                action.set("JS", Object::String(b"app.alert(1)".to_vec(), lopdf::StringFormat::Literal));
+                let id = doc.add_object(Object::Dictionary(action));
+                doc.get_object_mut(id).unwrap();
+            });
+            assert_eq!(report.details["has_javascript"], true);
+            assert!(report.violations.iter().any(|v| v.contains("JavaScript")));
+        }
+
+        #[test]
+        fn detects_lzw_compression_as_violation() {
+            let report = validate(|doc| {
+                let mut stream_dict = Dictionary::new();
+                stream_dict.set("Filter", Object::Name(b"LZWDecode".into()));
+                let id = doc.add_object(Object::Stream(lopdf::Stream::new(stream_dict, vec![0u8; 8])));
+                doc.get_object_mut(id).unwrap();
+            });
+            assert_eq!(report.details["has_lzw"], true);
+            assert!(report.violations.iter().any(|v| v.contains("LZW")));
+        }
+
+        #[test]
+        fn detects_transparency_as_violation() {
+            let report = validate(|doc| {
+                // /Group belongs on a page (or catalog), not a floating object,
+                // so attach it to a real page dictionary to mirror a genuine
+                // transparency group.
+                let page_id = *crate::pdf_engine::get_page_ids(doc).first().expect("page");
+                if let Some(Object::Dictionary(page)) = doc.objects.get_mut(&page_id) {
+                    let mut group = Dictionary::new();
+                    group.set("S", Object::Name(b"Transparency".into()));
+                    group.set("CS", Object::Name(b"DeviceRGB".into()));
+                    page.set("Group", Object::Dictionary(group));
+                }
+            });
+            assert_eq!(report.details["has_transparency"], true);
+            assert!(report.violations.iter().any(|v| v.contains("transparency")));
+        }
+
+        #[test]
+        fn detects_postscript_xobject_as_violation() {
+            let report = validate(|doc| {
+                let mut xobject = Dictionary::new();
+                xobject.set("Subtype", Object::Name(b"PS".into()));
+                xobject.set("Type", Object::Name(b"XObject".into()));
+                let id = doc.add_object(Object::Dictionary(xobject));
+                doc.get_object_mut(id).unwrap();
+            });
+            assert_eq!(report.details["has_postscript_xobject"], true);
+            assert!(report.violations.iter().any(|v| v.contains("PostScript")));
+        }
+
+        #[test]
+        fn missing_marked_is_fine_for_level_b_but_violation_for_level_a() {
+            // Level B does not mandate a tagged document, so this must NOT be a
+            // violation for PDF/A-1b (it previously was a false positive).
+            let mut doc = Document::load_mem(&create_test_pdf(1)).expect("load");
+            let mut buf = Vec::new();
+            doc.save_to(&mut buf).expect("serialize");
+            let level_b = crate::pdf_engine::validate_pdfa_compliance(&buf, "B").unwrap();
+            assert!(
+                !level_b.violations.iter().any(|v| v.contains("MarkInfo")),
+                "Marked must not be a level-B violation, got {:?}",
+                level_b.violations
+            );
+            let level_a = crate::pdf_engine::validate_pdfa_compliance(&buf, "A").unwrap();
+            assert!(
+                level_a.violations.iter().any(|v| v.contains("MarkInfo")),
+                "Marked must be a level-A violation when absent"
+            );
+        }
+
+        #[test]
+        fn reports_rule_count_and_trailer_id_state() {
+            let report = validate(|_| {});
+            assert_eq!(report.details["checked_rule_count"], 15);
+            // The synthetic base PDF has no /ID, which the validator must say.
+            assert_eq!(report.details["has_trailer_id"], false);
+            assert!(report.violations.iter().any(|v| v.contains("/ID")));
+        }
+
+        #[test]
+        fn clean_document_reports_many_passing_checks() {
+            let report = validate(|_| {});
+            // A plain PDF fails several rules, but the passing side must still be
+            // populated (encryption, JS, XFA, LZW, transparency, OPI, ...).
+            assert!(
+                report.passed_checks.len() >= 8,
+                "expected many passing checks, got {:?}",
+                report.passed_checks
+            );
+        }
+    }
+
 }
-
-
-
