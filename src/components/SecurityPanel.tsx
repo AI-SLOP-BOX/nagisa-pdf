@@ -34,6 +34,7 @@ export function SecurityPanel({
   const [p12Password, setP12Password] = useState('')
   const [tsaUrl, setTsaUrl] = useState('')
   const [isSigning, setIsSigning] = useState(false)
+  const [isStamping, setIsStamping] = useState(false)
 
   // OS keychain signing states: the private key never leaves the Secure Enclave
   // / keychain, so no file or password is ever handled.
@@ -222,6 +223,42 @@ export function SecurityPanel({
     }
   }
 
+  // Embed PAdES-LTV material (/DSS with cert chains + CRL/OCSP when the
+  // certificates advertise reachable URIs) as an additive incremental
+  // update. Existing ByteRange signatures stay byte-for-byte valid.
+  const handleStampLtv = async () => {
+    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    if (!currentBytes?.length) {
+      showToast('PDFデータが見つかりません')
+      return
+    }
+    try {
+      setIsStamping(true)
+      const res = await invoke<{
+        data: number[]
+        certificates_embedded: number
+        crls_embedded: number
+        ocsps_embedded: number
+        warnings: string[]
+      }>('stamp_pdf_ltv', { data: currentBytes })
+      if (onPdfUpdate) {
+        onPdfUpdate(res.data)
+      } else {
+        await exec('update_pdf', { data: res.data })
+      }
+      const parts = [
+        `証明書${res.certificates_embedded}本`,
+        `CRL ${res.crls_embedded}本`,
+        `OCSP ${res.ocsps_embedded}件`,
+      ]
+      showToast(`DSS焼付け完了: ${parts.join(' / ')}${res.warnings.length ? `（${res.warnings[0]}）` : ''}`)
+    } catch (err) {
+      showToast(`LTV書き込み失敗: ${err}`)
+    } finally {
+      setIsStamping(false)
+    }
+  }
+
   const handleVerify = async () => {
     const target = docId || pdfData
     if (!target) return
@@ -290,7 +327,7 @@ export function SecurityPanel({
       <div className="inspector-card">
         <div className="inspector-card-header">
           <span>電子署名 (CMS / PAdES)</span>
-          <span style={{ fontSize: 9, color: '#00ff88', fontWeight: 600 }}>LTV</span>
+          <span style={{ fontSize: 9, color: '#00ff88', fontWeight: 600 }}>{tsaUrl.trim() ? 'PAdES B-T' : 'PAdES B-B'}</span>
         </div>
         <div className="inspector-card-desc">暗号ハッシュによる公式デジタル署名。秘密鍵はキーチェーンまたはPKCS#11/HSM内に留まります。</div>
 
@@ -417,6 +454,13 @@ export function SecurityPanel({
           style={{ marginTop: 6, background: 'rgba(46, 160, 67, 0.15)', color: '#2ea043', border: '1px solid rgba(46, 160, 67, 0.4)' }}
         >
           署名検証インスペクターを開く
+        </AccentBtn>
+        <AccentBtn
+          onClick={handleStampLtv}
+          disabled={isStamping}
+          style={{ marginTop: 6, background: 'rgba(122, 82, 255, 0.15)', color: '#a371f7', border: '1px solid rgba(122, 82, 255, 0.4)' }}
+        >
+          {isStamping ? 'DSS焼付中...' : 'LTV/DSSを書き込む（検証材料をPDFへ埋め込み）'}
         </AccentBtn>
       </div>
     </div>

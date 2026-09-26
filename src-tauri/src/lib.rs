@@ -527,6 +527,7 @@ pub fn run() {
             verify_signature,
             sign_pdf_cms,
             verify_pdf_cms,
+            stamp_pdf_ltv,
             inspect_compatibility,
             get_engine_health,
             embed_font,

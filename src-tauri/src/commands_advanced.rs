@@ -95,6 +95,15 @@ pub fn verify_pdf_cms(
     )
 }
 
+/// Embed PAdES-LTV validation material (cert chains + CRL/OCSP when
+/// reachable) into the document catalog's /DSS as an additive update.
+#[tauri::command]
+pub fn stamp_pdf_ltv(
+    data: Vec<u8>,
+) -> Result<pdf_engine::cms_sign::LtvStampResult, String> {
+    pdf_engine::cms_sign::stamp_ltv_dss(&data)
+}
+
 #[tauri::command]
 pub fn inspect_compatibility(
     data: Vec<u8>,

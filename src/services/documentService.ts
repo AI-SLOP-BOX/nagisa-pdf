@@ -339,6 +339,7 @@ export class DocumentService {
                 gen_time: string
                 tsa_subject: string
               }
+              has_verification_dss: boolean
               warnings: string[]
             }>('verify_pdf_cms', { data: bytes, signatureIndex: idx, trustRootsPem: null })
 
@@ -353,8 +354,15 @@ export class DocumentService {
                chain_details: cmsReport.chain_details,
                revocation_details: cmsReport.revocation_details,
               chain_valid: cmsReport.chain_valid,
+              has_verification_dss: cmsReport.has_verification_dss,
+              // Honest PAdES profile: LTV only when a /DSS with validation
+              // material is actually embedded; B-T requires a timestamp.
               trust_level: cmsReport.cms_signature_valid
-                ? (cmsReport.timestamp?.present ? 'PAdES / RFC3161 LTV署名' : 'CMS/PKCS#7 デジタル署名')
+                ? cmsReport.has_verification_dss
+                  ? 'PAdES-LTV（DSS検証材料を埋め込み済み）'
+                  : cmsReport.timestamp?.present
+                    ? 'PAdES-B-T (RFC3161タイムスタンプ)'
+                    : 'PAdES-B-B（基礎署名・失効情報なし）'
                 : '暗号署名検証不一致',
               certificate_issuer: cmsReport.signer_issuer || sig.certificate_issuer,
               tsa_subject: cmsReport.timestamp?.tsa_subject,

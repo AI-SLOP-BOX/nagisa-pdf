@@ -76,6 +76,9 @@ pub struct CmsVerifyReport {
     pub revocation_status: String,
     pub revocation_details: String,
     pub timestamp: Option<TimestampReport>,
+    /// True when the document catalog carries a /DSS dictionary, i.e. real
+    /// PAdES-LTV validation material has been embedded (ISO 32000-2 §5.4.9).
+    pub has_verification_dss: bool,
     pub warnings: Vec<String>,
 }
 
@@ -1738,6 +1741,7 @@ pub fn verify_pdf_cms_with_trust(
         revocation_status,
         revocation_details,
         timestamp,
+        has_verification_dss: has_verification_dss(pdf),
         warnings,
     })
 }
@@ -2434,6 +2438,195 @@ pub fn append_dss_update(pdf: &[u8], material: &LtvMaterial) -> Result<Vec<u8>, 
         .objects
         .insert(root_id, Object::Dictionary(updated_catalog));
     append_incremental_update(pdf, overlay)
+}
+
+/// True when the document catalog carries a /DSS dictionary.
+pub fn has_verification_dss(pdf: &[u8]) -> bool {
+    Document::load_mem(pdf)
+        .ok()
+        .and_then(|doc| {
+            let root = doc.trailer.get(b"Root").ok()?.as_reference().ok()?;
+            let catalog = doc.objects.get(&root)?.as_dict().ok()?;
+            Some(catalog.get(b"DSS").is_ok())
+        })
+        .unwrap_or(false)
+}
+
+/// First http(s) URI listed under "CRL Distribution Points" in the dump.
+fn certificate_crl_uri(cert_der: &[u8]) -> Option<String> {
+    let text = certificate_text(cert_der, "-text");
+    if text.is_empty() {
+        return None;
+    }
+    let section = text.split("CRL Distribution Points").nth(1)?;
+    let idx = section.find("http")?;
+    let rest = &section[idx..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == '\'' || c == '"')
+        .unwrap_or(rest.len());
+    Some(rest[..end].to_string())
+}
+
+/// Plain GET fetch (CRL distribution points). 8s budget, redirects followed.
+fn fetch_url_bytes(url: &str) -> Option<Vec<u8>> {
+    let outcome = Command::new(curl_binary())
+        .args(["-sS", "-f", "-L", "--max-time", "8", url])
+        .output()
+        .ok()?;
+    if !outcome.status.success() || outcome.stdout.is_empty() {
+        return None;
+    }
+    Some(outcome.stdout)
+}
+
+fn is_valid_der_crl(der: &[u8]) -> bool {
+    let work = match temp_workdir("nagisa_crl") {
+        Ok(work) => work,
+        Err(_) => return false,
+    };
+    let path = work.join("crl.der");
+    let ok = std::fs::write(&path, der).is_ok()
+        && run_openssl(
+            &[
+                "crl".to_string(),
+                "-inform".to_string(),
+                "DER".to_string(),
+                "-noout".to_string(),
+                "-in".to_string(),
+                path.to_string_lossy().to_string(),
+            ],
+            None,
+        )
+        .is_ok();
+    let _ = std::fs::remove_dir_all(&work);
+    ok
+}
+
+fn fetch_crl(uri: &str) -> Option<Vec<u8>> {
+    let der = fetch_url_bytes(uri)?;
+    if is_valid_der_crl(&der) {
+        Some(der)
+    } else {
+        None
+    }
+}
+
+/// Query an OCSP responder once and keep the DER response for embedding.
+fn fetch_ocsp_response(cert_pem: &[u8], issuer_pem: &[u8], url: &str) -> Option<Vec<u8>> {
+    let work = temp_workdir("nagisa_ocspder").ok()?;
+    let result = (|| {
+        let cert_path = work.join("cert.pem");
+        let issuer_path = work.join("issuer.pem");
+        let resp_path = work.join("resp.der");
+        std::fs::write(&cert_path, cert_pem).ok()?;
+        std::fs::write(&issuer_path, issuer_pem).ok()?;
+        let outcome = Command::new(openssl_binary())
+            .args([
+                "ocsp",
+                "-issuer",
+                &issuer_path.to_string_lossy(),
+                "-cert",
+                &cert_path.to_string_lossy(),
+                "-url",
+                url,
+                "-nonce",
+                "-timeout",
+                "5",
+                "-out",
+                &resp_path.to_string_lossy(),
+            ])
+            .output()
+            .ok()?;
+        if !outcome.status.success() {
+            return None;
+        }
+        std::fs::read(&resp_path).ok()
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LtvStampResult {
+    pub data: Vec<u8>,
+    pub certificates_embedded: usize,
+    pub crls_embedded: usize,
+    pub ocsps_embedded: usize,
+    pub warnings: Vec<String>,
+}
+/// Collect validation material from every CMS signature in the document
+/// (embedded certificate chains plus freshly fetched CRL/OCSP responses
+/// when the certificates advertise reachable URIs) and append it as a
+/// /DSS incremental update. Purely additive: existing ByteRange
+/// signatures stay byte-for-byte valid.
+pub fn stamp_ltv_dss(pdf: &[u8]) -> Result<LtvStampResult, String> {
+    let doc = Document::load_mem(pdf).map_err(|e| format!("PDFの解析に失敗しました: {e}"))?;
+    let entries = signature_entries(&doc);
+    if entries.is_empty() {
+        return Err("LTV焼付け対象のCMS署名が見つかりません".to_string());
+    }
+    let mut material = LtvMaterial::default();
+    let mut warnings = Vec::new();
+    let mut seen_certs: Vec<Vec<u8>> = Vec::new();
+    let mut seen_crl_uris: Vec<String> = Vec::new();
+    let mut any_revocation = false;
+
+    for (_byterange, cms_der) in &entries {
+        let chain_pem = all_certificates_pem(cms_der);
+        if chain_pem.is_empty() {
+            warnings.push("証明書を含む署名がありません".to_string());
+            continue;
+        }
+        for cert_pem in &chain_pem {
+            let der = pem_block(cert_pem, "CERTIFICATE")?;
+            if !seen_certs.contains(&der) {
+                seen_certs.push(der.clone());
+                material.certificates_pem.push(cert_pem.clone());
+            }
+            if let Some(uri) = certificate_crl_uri(&der) {
+                if !seen_crl_uris.contains(&uri) {
+                    seen_crl_uris.push(uri.clone());
+                    match fetch_crl(&uri) {
+                        Some(crl) => {
+                            material.crls_der.push(crl);
+                            any_revocation = true;
+                        }
+                        None => warnings.push(format!("CRLを取得できませんでした: {uri}")),
+                    }
+                }
+            }
+        }
+        let signer_der = pem_block(&chain_pem[0], "CERTIFICATE")?;
+        let ocsp_uri = certificate_text(&signer_der, "-ocsp_uri");
+        if (ocsp_uri.starts_with("http://") || ocsp_uri.starts_with("https://"))
+            && chain_pem.len() > 1
+        {
+            match fetch_ocsp_response(&chain_pem[0], &chain_pem[1], &ocsp_uri) {
+                Some(resp) => {
+                    material.ocsps_der.push(resp);
+                    any_revocation = true;
+                }
+                None => warnings.push(format!("OCSP応答を取得できませんでした: {ocsp_uri}")),
+            }
+        }
+    }
+
+    if material.certificates_pem.is_empty() {
+        return Err("埋め込める証明書がありません".to_string());
+    }
+    if !any_revocation {
+        warnings.push(
+            "オンラインの失効情報（CRL/OCSP）を取得できませんでした。証明書チェーンのみの埋め込みです。".to_string(),
+        );
+    }
+    let data = append_dss_update(pdf, &material)?;
+    Ok(LtvStampResult {
+        data,
+        certificates_embedded: material.certificates_pem.len(),
+        crls_embedded: material.crls_der.len(),
+        ocsps_embedded: material.ocsps_der.len(),
+        warnings,
+    })
 }
 
 /// Add a trusted timestamp to an existing CMS signature as an unsigned

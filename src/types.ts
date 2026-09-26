@@ -59,6 +59,7 @@ export interface SignatureInfo {
   chain_details?: string
   revocation_status?: string
   revocation_details?: string
+  has_verification_dss?: boolean
   tsa_subject?: string
   imprint_matches?: boolean
 }

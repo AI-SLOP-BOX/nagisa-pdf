@@ -3962,6 +3962,43 @@ mod tests {
         let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&with_dss, 0).expect("verify after DSS");
         assert!(report.digest_matches && report.cms_signature_valid, "signature must still verify after DSS append");
         assert_eq!(&with_dss[..signed.len()], &signed[..], "DSS must be an incremental update");
+        assert!(report.has_verification_dss, "DSS must be visible to the verifier");
+    }
+
+    #[test]
+    fn test_stamp_ltv_dss_offline_chain_only() {
+        let pdf = create_test_pdf(1);
+        let request = crate::pdf_engine::cms_sign::CmsSignRequest {
+            seed: crate::pdf_engine::cms_sign::SignatureFieldSeed {
+                page_index: 0,
+                rect: [50.0, 50.0, 250.0, 100.0],
+                field_name: "Signature1".to_string(),
+                signer_name: "Nagisa Test".to_string(),
+                reason: "test".to_string(),
+                location: "test".to_string(),
+                contact_info: "test".to_string(),
+            },
+            private_key_pem: TEST_SIGNING_KEY_PEM.as_bytes().to_vec(),
+            certificate_pem: TEST_SIGNING_CERT_PEM.as_bytes().to_vec(),
+            chain_pem: Vec::new(),
+            p12_der: None,
+            p12_password: None,
+            tsa_url: None,
+        };
+        let signed = crate::pdf_engine::cms_sign::sign_pdf_cms(&request, &pdf).expect("sign for LTV");
+        assert!(!crate::pdf_engine::cms_sign::has_verification_dss(&signed));
+        let stamped = crate::pdf_engine::cms_sign::stamp_ltv_dss(&signed).expect("stamp LTV");
+        assert!(stamped.certificates_embedded >= 1, "signer cert must be embedded");
+        assert!(
+            stamped.warnings.iter().any(|w| w.contains("失効情報")),
+            "self-signed chain must warn about missing revocation info: {:?}",
+            stamped.warnings
+        );
+        assert!(crate::pdf_engine::cms_sign::has_verification_dss(&stamped.data));
+        let report = crate::pdf_engine::cms_sign::verify_pdf_cms(&stamped.data, 0).expect("verify after stamp");
+        assert!(report.has_verification_dss);
+        assert!(report.digest_matches && report.cms_signature_valid, "signature must survive DSS stamp");
+        assert_eq!(&stamped.data[..signed.len()], &signed[..], "stamp must stay incremental");
     }
 
     #[test]
