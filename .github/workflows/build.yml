@@ -1,5 +1,8 @@
 name: Build & Release
 
+permissions:
+  contents: write
+
 on:
   push:
     tags:
@@ -163,8 +166,8 @@ jobs:
             artifacts/**/*.msi
             artifacts/**/*.AppImage
             artifacts/**/*.deb
-            artifacts/**/*.apk
           draft: false
           prerelease: false
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
