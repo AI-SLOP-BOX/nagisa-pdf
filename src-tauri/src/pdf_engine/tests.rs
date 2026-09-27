@@ -4719,4 +4719,35 @@ mod tests {
         let page_annots = doc2.objects.get(&page).unwrap().as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap();
         assert!(page_annots.is_empty(), "dangling widget reference must be stripped from /Annots");
     }
+
+    #[test]
+    fn test_redact_guard_blocks_signed_documents() {
+        let pdf = create_test_pdf(1);
+        assert!(!has_active_signature(&pdf));
+        assert!(guard_not_signed(&pdf).is_ok());
+
+        let mut doc = Document::load_mem(&pdf).expect("load");
+        let sig_id = doc.add_object(Object::Dictionary({
+            let mut d = Dictionary::new();
+            d.set("Type", Object::Name(b"Annot".to_vec()));
+            d.set("Subtype", Object::Name(b"Sig".to_vec()));
+            d.set("FT", Object::Name(b"Sig".to_vec()));
+            d.set("ByteRange", Object::Array(vec![
+                Object::from(0i64), Object::from(1234i64), Object::from(5678i64), Object::from(0i64),
+            ]));
+            d.set("V", Object::String(b"MIIBFakeSignatureContents".to_vec(), lopdf::StringFormat::Literal));
+            d
+        }));
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        if let Some(Object::Dictionary(cd)) = doc.objects.get_mut(&root) {
+            cd.set("SigFlags", Object::Integer(3));
+        }
+        let _ = sig_id;
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save signed");
+
+        assert!(has_active_signature(&buf), "signature annotation must be detected");
+        let err = guard_not_signed(&buf).expect_err("redaction must be blocked on signed PDFs");
+        assert!(err.contains("署名"), "error must explain the signature conflict");
+    }
 }

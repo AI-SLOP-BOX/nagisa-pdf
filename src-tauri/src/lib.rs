@@ -235,11 +235,13 @@ fn redact_area(
     height: f64,
     color: String,
 ) -> Result<Vec<u8>, String> {
+    pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::redact_area(&data, page_index, x, y, width, height, &color)
 }
 
 #[tauri::command]
 fn redact_text(data: Vec<u8>, search_text: String, replacement: String) -> Result<Vec<u8>, String> {
+    pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::redact_text(&data, &search_text, &replacement)
 }
 
@@ -400,11 +402,13 @@ fn deep_redact(
     height: f64,
     color: String,
 ) -> Result<Vec<u8>, String> {
+    pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::deep_redact(&data, page_index, x, y, width, height, &color)
 }
 
 #[tauri::command]
 fn redact_text_deep(data: Vec<u8>, search_text: String, color: String) -> Result<Vec<u8>, String> {
+    pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::redact_text_deep(&data, &search_text, &color)
 }
 

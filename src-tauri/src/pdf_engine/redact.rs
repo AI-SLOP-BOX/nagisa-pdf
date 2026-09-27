@@ -377,6 +377,42 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
 
 // ===== DEEP REDACTION (Complete Data Purging - Permanent Removal) =====
 
+/// True when the document carries an applied digital signature
+/// (an annotation with /FT or /Subtype /Sig plus a /ByteRange).
+pub fn has_active_signature(data: &[u8]) -> bool {
+    let doc = match Document::load_mem(data) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    doc.objects.iter().any(|(_, obj)| {
+        match obj.as_dict() {
+            Ok(d) => {
+                let sig_ft = matches!(d.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
+                let sig_subtype = matches!(d.get(b"Subtype"), Ok(Object::Name(n)) if n == b"Sig");
+                (sig_ft || sig_subtype) && d.get(b"ByteRange").is_ok()
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// Redaction rewrites the whole file, so any applied signature's signed byte
+/// ranges would be destroyed and the signature permanently invalidated with
+/// no way back. Acrobat rejects applying redactions to signed documents for
+/// the same reason; we mirror that behaviour instead of silently corrupting
+/// the signature.
+pub fn guard_not_signed(data: &[u8]) -> Result<(), String> {
+    if has_active_signature(data) {
+        return Err(
+            "このPDFには適用済みのデジタル署名があります。redaction はファイル全体を書き換えるため、\
+             署名の署名済みバイト列が壊れて署名が二度と検証できなくなります。\n\
+             先に署名を除去するか、署名前にこの操作を行ってください。"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn rect_array_intersects(rect: &[Object], x: f64, y: f64, width: f64, height: f64) -> bool {
     if rect.len() < 4 {
         return false;
