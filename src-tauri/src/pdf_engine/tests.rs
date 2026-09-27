@@ -4672,4 +4672,51 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn test_deep_redact_eradicates_intersecting_form_fields() {
+        let pdf = create_test_pdf(1);
+        let mut doc = Document::load_mem(&pdf).expect("load test pdf");
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let page = get_page_ids(&doc)[0];
+        let widget_id = doc.add_object(Object::Dictionary({
+            let mut d = Dictionary::new();
+            d.set("Type", Object::Name(b"Annot".to_vec()));
+            d.set("Subtype", Object::Name(b"Widget".to_vec()));
+            d.set("Rect", Object::Array(vec![
+                Object::from(60.0), Object::from(700.0), Object::from(200.0), Object::from(720.0),
+            ]));
+            d.set("FT", Object::Name(b"Tx".to_vec()));
+            d.set("T", Object::String(b"SecretField".to_vec(), lopdf::StringFormat::Literal));
+            d.set("V", Object::String(b"SECRET-DEFAULT-VALUE".to_vec(), lopdf::StringFormat::Literal));
+            d.set("P", Object::Reference(page));
+            d
+        }));
+        if let Some(Object::Dictionary(pd)) = doc.objects.get_mut(&page) {
+            pd.set("Annots", Object::Array(vec![Object::Reference(widget_id)]));
+        }
+        let form_id = doc.add_object(Object::Dictionary({
+            let mut fd = Dictionary::new();
+            fd.set("Fields", Object::Array(vec![Object::Reference(widget_id)]));
+            fd
+        }));
+        if let Some(Object::Dictionary(cd)) = doc.objects.get_mut(&root) {
+            cd.set("AcroForm", Object::Reference(form_id));
+        }
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save crafted pdf");
+
+        let out = deep_redact(&buf, 0, 50.0, 690.0, 200.0, 40.0, "#000000").expect("deep redact");
+        let doc2 = Document::load_mem(&out).expect("load redacted");
+        assert!(doc2.objects.get(&widget_id).is_none(), "widget must be physically removed");
+        let raw = String::from_utf8_lossy(&out);
+        assert!(!raw.contains("SECRET-DEFAULT-VALUE"), "field default value must not survive in the file bytes");
+        let root2 = doc2.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let catalog2 = doc2.objects.get(&root2).unwrap().as_dict().unwrap().clone();
+        let form_ref = catalog2.get(b"AcroForm").unwrap().as_reference().unwrap();
+        let form = doc2.objects.get(&form_ref).unwrap().as_dict().unwrap();
+        assert_eq!(form.get(b"Fields").unwrap().as_array().unwrap().len(), 0, "AcroForm /Fields must be emptied");
+        let page_annots = doc2.objects.get(&page).unwrap().as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap();
+        assert!(page_annots.is_empty(), "dangling widget reference must be stripped from /Annots");
+    }
 }

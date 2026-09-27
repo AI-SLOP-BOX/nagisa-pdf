@@ -377,6 +377,57 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
 
 // ===== DEEP REDACTION (Complete Data Purging - Permanent Removal) =====
 
+fn rect_array_intersects(rect: &[Object], x: f64, y: f64, width: f64, height: f64) -> bool {
+    if rect.len() < 4 {
+        return false;
+    }
+    let num = |o: &Object| -> f64 {
+        match o {
+            Object::Real(v) => *v as f64,
+            Object::Integer(v) => *v as f64,
+            _ => 0.0,
+        }
+    };
+    let (x0, y0, x1, y1) = (num(&rect[0]), num(&rect[1]), num(&rect[2]), num(&rect[3]));
+    let (lx, hx) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
+    let (ly, hy) = if y0 <= y1 { (y0, y1) } else { (y1, y0) };
+    lx < x + width && hx > x && ly < y + height && hy > y
+}
+
+fn field_tree_intersects(doc: &Document, id: lopdf::ObjectId, x: f64, y: f64, width: f64, height: f64) -> bool {
+    if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
+        if let Ok(Object::Array(rect)) = dict.get(b"Rect") {
+            if rect_array_intersects(rect, x, y, width, height) {
+                return true;
+            }
+        }
+        if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+            for kid in kids {
+                if let Ok(kid_id) = kid.as_reference() {
+                    if field_tree_intersects(doc, kid_id, x, y, width, height) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn collect_field_tree_ids(doc: &Document, id: lopdf::ObjectId) -> Vec<lopdf::ObjectId> {
+    let mut ids = vec![id];
+    if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
+        if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+            for kid in kids {
+                if let Ok(kid_id) = kid.as_reference() {
+                    ids.extend(collect_field_tree_ids(doc, kid_id));
+                }
+            }
+        }
+    }
+    ids
+}
+
 pub fn deep_redact(
     data: &[u8],
     page_index: usize,
@@ -759,6 +810,90 @@ pub fn deep_redact(
     for cid in content_ids {
         if cid != new_content_id {
             doc.objects.remove(&cid);
+        }
+    }
+
+    // Step 5: Eradicate form fields whose widget (or inherited) Rect
+    // intersects the redacted area. Widget appearance streams live outside
+    // the page content stream, so without this pass a redaction could leave
+    // field text on screen or recoverable through /V default values.
+    let acroform_id: Option<lopdf::ObjectId> = doc
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|r| r.as_reference().ok())
+        .and_then(|root_id| doc.objects.get(&root_id))
+        .and_then(|catalog| catalog.as_dict().ok())
+        .and_then(|c| c.get(b"AcroForm").ok())
+        .and_then(|a| a.as_reference().ok());
+    if let Some(form_id) = acroform_id {
+        let fields: Vec<Object> = doc
+            .objects
+            .get(&form_id)
+            .and_then(|o| o.as_dict().ok())
+            .and_then(|d| d.get(b"Fields").ok())
+            .and_then(|f| f.as_array().ok())
+            .cloned()
+            .unwrap_or_default();
+        // Fields whose objects were already destroyed by the annotation pass
+        // (widget annotations share objects with the field tree) count as
+        // doomed too, otherwise /Fields would keep dangling references.
+        let doomed: Vec<lopdf::ObjectId> = fields
+            .iter()
+            .filter_map(|f| f.as_reference().ok())
+            .filter(|fid| match doc.objects.get(fid) {
+                None => true,
+                Some(_) => field_tree_intersects(&doc, *fid, x, y, width, height),
+            })
+            .collect();
+        if !doomed.is_empty() {
+            let mut dead_ids: Vec<lopdf::ObjectId> = Vec::new();
+            for fid in &doomed {
+                dead_ids.extend(collect_field_tree_ids(&doc, *fid));
+            }
+            // Strip widget references from every page /Annots array first so
+            // the removed objects cannot leave dangling references behind.
+            let dead_fields: Vec<Object> = fields
+                .iter()
+                .filter(|f| match f.as_reference() {
+                    Ok(id) => !doomed.contains(&id),
+                    Err(_) => true,
+                })
+                .cloned()
+                .collect();
+            for pid in &page_ids {
+                let cleaned: Option<(Vec<Object>, usize)> = doc
+                    .objects
+                    .get(pid)
+                    .and_then(|o| o.as_dict().ok())
+                    .and_then(|d| d.get(b"Annots").ok())
+                    .cloned()
+                    .and_then(|a| a.as_array().ok().cloned())
+                    .map(|arr| {
+                        let kept: Vec<Object> = arr
+                            .iter()
+                            .filter(|o| match o.as_reference() {
+                                Ok(id) => !dead_ids.contains(&id),
+                                Err(_) => true,
+                            })
+                            .cloned()
+                            .collect();
+                        (kept, arr.len())
+                    });
+                if let Some((kept, original_len)) = cleaned {
+                    if kept.len() != original_len {
+                        if let Some(Object::Dictionary(d)) = doc.objects.get_mut(pid) {
+                            d.set("Annots", Object::Array(kept));
+                        }
+                    }
+                }
+            }
+            for id in dead_ids {
+                doc.objects.remove(&id);
+            }
+            if let Some(Object::Dictionary(form_dict)) = doc.objects.get_mut(&form_id) {
+                form_dict.set("Fields", Object::Array(dead_fields));
+            }
         }
     }
 

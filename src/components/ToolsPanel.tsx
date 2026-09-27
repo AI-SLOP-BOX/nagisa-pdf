@@ -159,21 +159,18 @@ export function ToolsPanel({
         <AccentBtn onClick={() => onActivateDrawRedact?.()} style={{ background: '#ff3344', color: '#fff' }}>
           <RedactIcon size={14} /> ドラッグ黒塗り描画
         </AccentBtn>
-        <AccentBtn
-          onClick={() => exec('deep_redact', { pageIndex: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}
-          style={{ background: 'var(--red)' }}
-        >
-          即時完全消去
-        </AccentBtn>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center', lineHeight: 1.4 }}>
+          描画した範囲が即時に完全消去されます
+        </span>
       </div>
 
       <SectionTitle>テキスト黒塗り</SectionTitle>
       <Input value={redactSearchText} onChange={setRedactSearchText} placeholder="検索テキスト" />
       <Input value={redactReplacement} onChange={setRedactReplacement} placeholder="置換テキスト" />
       <ColorInput value={redactColor} onChange={setRedactColor} label="黒塗り色" />
-      <AccentBtn onClick={() => exec('redact_area', { pageIndex: 0, x: 50, y: 700, width: 200, height: 20, color: redactColor })}>
-        エリア黒塗り（現在設定値）
-      </AccentBtn>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
+        ＊エリア黒塗りは「ドラッグ黒塗り描画」経由です（固定座標デモボタンは撤去済み）
+      </div>
       <AccentBtn onClick={() => exec('redact_text', { searchText: redactSearchText, replacement: redactReplacement })}>
         テキスト検索＆黒塗り
       </AccentBtn>

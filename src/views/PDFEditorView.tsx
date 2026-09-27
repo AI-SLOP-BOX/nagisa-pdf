@@ -477,7 +477,18 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     if (!pdfData) return
     try {
       if (interactiveMode === 'draw-redact') {
-        await exec('redact_area', {
+        // True (compliance-grade) redaction: underlying text runs, image
+        // pixels, annotations and form fields in the area are physically
+        // destroyed, not merely covered by an overlay box. That is why this
+        // path uses deep_redact and asks for one explicit confirmation.
+        const confirmed = window.confirm(
+          'この範囲の内容を完全消去します（テキスト・画像ピクセル・注釈・フォームフィールドが物理削除され、元に戻せません）。よろしいですか？',
+        )
+        if (!confirmed) {
+          setInteractiveMode('view')
+          return
+        }
+        await exec('deep_redact', {
           pageIndex: rect.page,
           x: rect.x,
           y: rect.y,
