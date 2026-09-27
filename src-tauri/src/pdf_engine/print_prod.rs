@@ -360,7 +360,29 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
 
             // Try to decode and re-encode with lower quality
             if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&img_id) {
-                if let Ok(decoded) = image::load_from_memory(&stream.content) {
+                let img_bytes = stream
+                    .decompressed_content()
+                    .unwrap_or_else(|_| stream.content.clone());
+
+                let dyn_img_res = if let Ok(img) = image::load_from_memory(&img_bytes) {
+                    Ok(img)
+                } else if width > 0 && height > 0 {
+                    if img_bytes.len() == (width * height * 3) as usize {
+                        image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(width, height, img_bytes)
+                            .map(image::DynamicImage::ImageRgb8)
+                            .ok_or(())
+                    } else if img_bytes.len() == (width * height) as usize {
+                        image::ImageBuffer::<image::Luma<u8>, _>::from_raw(width, height, img_bytes)
+                            .map(image::DynamicImage::ImageLuma8)
+                            .ok_or(())
+                    } else {
+                        Err(())
+                    }
+                } else {
+                    Err(())
+                };
+
+                if let Ok(decoded) = dyn_img_res {
                     let resized = decoded.resize(
                         new_width,
                         new_height,
@@ -377,6 +399,8 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                         stream.dict.set("Width", Object::Integer(new_width as i64));
                         stream.dict.set("Height", Object::Integer(new_height as i64));
                         stream.dict.set("Filter", Object::Name("DCTDecode".into()));
+                        stream.dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+                        stream.dict.remove(b"DecodeParms");
                         stream.dict.remove(b"BitsPerComponent");
                     }
                 }

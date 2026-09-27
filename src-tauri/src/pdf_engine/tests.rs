@@ -5478,5 +5478,116 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_text_block_ops_get_edit_move_delete() {
+        let pdf = create_test_pdf(1);
+        let blocks = crate::pdf_engine::text_block_ops::get_text_blocks(&pdf, 0)
+            .expect("get_text_blocks should succeed");
+        assert_eq!(blocks.len(), 1, "create_test_pdf has exactly one text block");
+        assert!(blocks[0].text.contains("Page 1"));
+
+        // 1. edit_text_block: replace "Page 1" with "Updated Page Alpha"
+        let edited = crate::pdf_engine::text_block_ops::edit_text_block(&pdf, 0, 0, "Updated Page Alpha")
+            .expect("edit_text_block should succeed");
+        let blocks_after_edit = crate::pdf_engine::text_block_ops::get_text_blocks(&edited, 0)
+            .expect("get_text_blocks after edit");
+        assert_eq!(blocks_after_edit.len(), 1);
+        assert_eq!(blocks_after_edit[0].text, "Updated Page Alpha");
+
+        // 2. move_text_block: move block to x=120, y=600
+        let moved = crate::pdf_engine::text_block_ops::move_text_block(&edited, 0, 0, 120.0, 600.0)
+            .expect("move_text_block should succeed");
+        let blocks_after_move = crate::pdf_engine::text_block_ops::get_text_blocks(&moved, 0)
+            .expect("get_text_blocks after move");
+        assert_eq!(blocks_after_move.len(), 1);
+        assert_eq!(blocks_after_move[0].x, 120.0);
+        // Note: TextBlock y is reported as baseline - font_size (600.0 - 12.0 = 588.0)
+        assert_eq!(blocks_after_move[0].y, 588.0);
+
+        // 3. delete_text_block: remove the block completely
+        let deleted = crate::pdf_engine::text_block_ops::delete_text_block(&moved, 0, 0)
+            .expect("delete_text_block should succeed");
+        let blocks_after_delete = crate::pdf_engine::text_block_ops::get_text_blocks(&deleted, 0)
+            .expect("get_text_blocks after delete");
+        assert_eq!(blocks_after_delete.len(), 0, "deleted block must not exist");
+    }
+
+    #[test]
+    fn test_reflow_text_jis_kinsoku_and_word_wrap() {
+        let pdf = create_test_pdf(1);
+        // Test reflow with Japanese text containing kinsoku punctuation and English words
+        let sample = "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。This is an English sentence for word wrapping testing.";
+        
+        let reflowed = crate::pdf_engine::reflow::reflow_text(
+            &pdf,
+            0,
+            sample,
+            50.0,
+            750.0,
+            250.0, // Narrow max_width to force multi-line wrapping
+            11.0,
+            16.0,
+            "#112233",
+        )
+        .expect("reflow_text should succeed");
+
+        assert!(!reflowed.is_empty());
+        let doc = Document::load_mem(&reflowed).expect("load reflowed doc");
+        let page = get_page_ids(&doc)[0];
+        let content_bytes = doc.get_page_content(page).expect("get content");
+        let content_str = String::from_utf8_lossy(&content_bytes);
+
+        // Verify color operator and font operator injection
+        assert!(content_str.contains("rg"), "Color operator rg must be present");
+        assert!(content_str.contains("Tf"), "Font selector Tf must be present");
+
+        // Verify original "Page 1" was cleared by remove_text_in_rect
+        assert!(!content_str.contains("Page 1"), "Original text in rect must be wiped out");
+    }
+
+    #[test]
+    fn test_print_prod_cmyk_flatten_remove_metadata() {
+        // 1. CMYK <-> RGB conversion
+        let (r, g, b) = crate::pdf_engine::print_prod::cmyk_to_rgb(0, 100, 100, 0); // Pure Red (M=100, Y=100)
+        assert_eq!(r, 255);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
+
+        // 2. Metadata removal
+        let pdf = create_test_pdf(1);
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let mut info_dict = Dictionary::new();
+        info_dict.set("Title", Object::String(b"Secret Title".to_vec(), lopdf::StringFormat::Literal));
+        info_dict.set("Author", Object::String(b"Secret Author".to_vec(), lopdf::StringFormat::Literal));
+        let info_id = doc.add_object(Object::Dictionary(info_dict));
+        doc.trailer.set("Info", Object::Reference(info_id));
+        let mut with_info = Vec::new();
+        doc.save_to(&mut with_info).unwrap();
+
+        let stripped = crate::pdf_engine::print_prod::remove_metadata(&with_info)
+            .expect("remove_metadata must succeed");
+        let stripped_doc = Document::load_mem(&stripped).expect("load stripped");
+        assert!(stripped_doc.trailer.get(b"Info").is_err(), "Info dictionary in trailer must be removed");
+
+        // 3. flatten_content merges multiple content streams
+        let page_id = get_page_ids(&stripped_doc)[0];
+        let mut multi_doc = Document::load_mem(&stripped).unwrap();
+        let c1 = multi_doc.add_object(Object::Stream(lopdf::Stream::new(Dictionary::new(), b"q 1 0 0 1 0 0 cm Q".to_vec())));
+        let c2 = multi_doc.add_object(Object::Stream(lopdf::Stream::new(Dictionary::new(), b"BT /F1 12 Tf (Added) Tj ET".to_vec())));
+        if let Some(Object::Dictionary(p)) = multi_doc.objects.get_mut(&page_id) {
+            p.set("Contents", Object::Array(vec![Object::Reference(c1), Object::Reference(c2)]));
+        }
+        let mut multi_pdf = Vec::new();
+        multi_doc.save_to(&mut multi_pdf).unwrap();
+
+        let flattened = crate::pdf_engine::print_prod::flatten_content(&multi_pdf)
+            .expect("flatten_content must succeed");
+        let flat_doc = Document::load_mem(&flattened).expect("load flat doc");
+        let flat_page_id = get_page_ids(&flat_doc)[0];
+        let page_obj = flat_doc.objects.get(&flat_page_id).unwrap().as_dict().unwrap();
+        assert!(page_obj.get(b"Contents").unwrap().as_reference().is_ok(), "Contents must be flattened into a single stream reference");
+    }
+
 }
 

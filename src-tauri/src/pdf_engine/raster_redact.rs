@@ -92,10 +92,6 @@ fn as_num(obj: &Object) -> Option<f64> {
     }
 }
 
-fn dict_f64(dict: &lopdf::Dictionary, key: &[u8]) -> Option<f64> {
-    dict.get(key).ok().and_then(as_num)
-}
-
 // ===== image decoding (always materialized as RGB8) =====
 
 pub struct DecodedImage {
@@ -598,11 +594,11 @@ pub fn purge_unreachable_objects(doc: &mut Document) -> usize {
     let mut reachable: HashSet<ObjectId> = HashSet::new();
     let mut stack: Vec<ObjectId> = Vec::new();
 
-    let mut collect = |obj: &Object, stack: &mut Vec<ObjectId>| collect_refs(obj, stack);
+    let collect = |obj: &Object, stack: &mut Vec<ObjectId>| collect_refs(obj, stack);
     for (_key, value) in doc.trailer.iter() {
         collect(value, &mut stack);
     }
-    for id in doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok()) {
+    if let Some(id) = doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok()) {
         stack.push(id);
     }
 
