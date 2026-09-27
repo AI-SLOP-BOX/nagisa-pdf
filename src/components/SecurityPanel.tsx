@@ -36,6 +36,12 @@ export function SecurityPanel({
   const [isSigning, setIsSigning] = useState(false)
   const [isStamping, setIsStamping] = useState(false)
 
+  // PAdES B-T document timestamp (independent of signing): a real RFC 3161
+  // token from the configured TSA is embedded as /Perms/DocTimeStamp.
+  const [docTsUrl, setDocTsUrl] = useState('')
+  const [isTimestamping, setIsTimestamping] = useState(false)
+  const [docTsReport, setDocTsReport] = useState<{ valid: boolean; timestamp: string; authority: string } | null>(null)
+
   // OS keychain signing states: the private key never leaves the Secure Enclave
   // / keychain, so no file or password is ever handled.
   const [signSource, setSignSource] = useState<'keychain' | 'pkcs11' | 'p12'>('keychain')
@@ -259,6 +265,57 @@ export function SecurityPanel({
     }
   }
 
+  // Apply a genuine RFC 3161 document timestamp. No fake local-clock
+  // fallback exists: without a reachable TSA the backend refuses the
+  // operation and the error is surfaced to the user as-is.
+  const handleDocTimestamp = async () => {
+    const url = docTsUrl.trim()
+    if (!url) {
+      showToast('TSA URLが必要です（偽タイムスタンプは生成しません）')
+      return
+    }
+    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    if (!currentBytes?.length) {
+      showToast('PDFデータが見つかりません')
+      return
+    }
+    try {
+      setIsTimestamping(true)
+      const stamped = await invoke<number[]>('add_document_timestamp', { data: currentBytes, tsaUrl: url })
+      if (onPdfUpdate) {
+        onPdfUpdate(stamped)
+      } else {
+        await exec('update_pdf', { data: stamped })
+      }
+      setDocTsReport(null)
+      showToast('RFC 3161文書タイムスタンプ（PAdES B-T）を付与しました')
+    } catch (err) {
+      showToast(`タイムスタンプ付与失敗: ${err}`)
+    } finally {
+      setIsTimestamping(false)
+    }
+  }
+
+  // Recompute the ByteRange digest and compare it against the embedded
+  // token's messageImprint — cryptographic verification, not metadata.
+  const handleVerifyDocTimestamp = async () => {
+    const target = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    if (!target?.length) {
+      showToast('PDFデータが見つかりません')
+      return
+    }
+    try {
+      setIsTimestamping(true)
+      const res = await invoke<{ valid: boolean; timestamp: string; authority: string; hash: string }>('verify_document_timestamp', { data: target })
+      setDocTsReport({ valid: res.valid, timestamp: res.timestamp, authority: res.authority })
+      showToast(res.valid ? 'タイムスタンプは暗号的に有効です' : 'タイムスタンプ検証失敗: ' + (res.timestamp || 'トークンなし'))
+    } catch (err) {
+      showToast(`タイムスタンプ検証エラー: ${err}`)
+    } finally {
+      setIsTimestamping(false)
+    }
+  }
+
   const handleVerify = async () => {
     const target = docId || pdfData
     if (!target) return
@@ -462,6 +519,38 @@ export function SecurityPanel({
         >
           {isStamping ? 'DSS焼付中...' : 'LTV/DSSを書き込む（検証材料をPDFへ埋め込み）'}
         </AccentBtn>
+      </div>
+
+      {/* Card 4: PAdES B-T document timestamp (RFC 3161) */}
+      <div className="inspector-card">
+        <div className="inspector-card-header">
+          <span>文書タイムスタンプ</span>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>PAdES B-T</span>
+        </div>
+        <div className="inspector-card-desc">署名とは独立に、文書全体の存在時刻を実TSAのRFC 3161トークンで固定します</div>
+        <Input value={docTsUrl} onChange={setDocTsUrl} placeholder="TSA URL (必須・例: https://timestamp.digicert.com)" />
+        <AccentBtn
+          onClick={handleDocTimestamp}
+          disabled={!docTsUrl.trim() || isTimestamping}
+          style={{ marginTop: 6 }}
+        >
+          {isTimestamping ? '処理中...' : '文書タイムスタンプを付与'}
+        </AccentBtn>
+        <AccentBtn
+          onClick={handleVerifyDocTimestamp}
+          disabled={isTimestamping}
+          style={{ marginTop: 6, background: 'rgba(46, 160, 67, 0.15)', color: '#2ea043', border: '1px solid rgba(46, 160, 67, 0.4)' }}
+        >
+          タイムスタンプを検証（ByteRange照合）
+        </AccentBtn>
+        {docTsReport && (
+          <div style={{ marginTop: 6, fontSize: 10, lineHeight: 1.5, color: docTsReport.valid ? '#2ea043' : '#f85149' }}>
+            {docTsReport.valid ? '✓ 暗号的に有効' : '✕ 検証失敗'}{' '}
+            <span style={{ color: 'var(--text-muted)' }}>
+              {docTsReport.timestamp !== 'DocTimeStampなし' ? docTsReport.timestamp : ''} {docTsReport.authority}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
