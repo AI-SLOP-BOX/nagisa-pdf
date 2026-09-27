@@ -50,19 +50,24 @@ objc2 = { version = "0.6", features = ["relax-sign-encoding", "relax-void-encodi
 [target.'cfg(unix)'.dependencies]
 # #42: タイムアウト SIGKILL 用 (run_command_with_timeout)
 libc = "0.2"
-
-# PDF manipulation
+# PDF manipulation (unix/macOS/Linux; Windows needs the same set below)
 lopdf = "0.35"
 flate2 = "1"
-
 # Image processing
 image = "0.25"
 imageproc = "0.25"
 ab_glyph = "0.2"
-
-# OCR - using tesseract CLI
-
 # EPUB creation
+epub-builder = "0.7"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows build needs the same PDF/image/EPUB stack as unix
+lopdf = "0.35"
+flate2 = "1"
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
 epub-builder = "0.7"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
