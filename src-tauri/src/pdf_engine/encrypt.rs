@@ -447,6 +447,11 @@ pub fn encrypt_pdf_with_permissions(
     Ok(out)
 }
 
+/// Cheap password-protection probe (parse + trailer check, no decryption).
+pub fn is_encrypted(data: &[u8]) -> bool {
+    Document::load_mem(data).map(|doc| doc.is_encrypted()).unwrap_or(false)
+}
+
 /// Decrypt a password-protected PDF. Supports R=5/R=6 (native) and
 /// R=2..=4 (RC4 / AESV2, delegated to lopdf). Already-plaintext input is
 /// returned unchanged.

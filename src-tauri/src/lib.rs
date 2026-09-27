@@ -547,6 +547,7 @@ pub fn run() {
             add_document_timestamp,
             verify_document_timestamp,
             decrypt_pdf,
+            is_pdf_encrypted,
             inspect_compatibility,
             get_engine_health,
             embed_font,

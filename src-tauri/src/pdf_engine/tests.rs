@@ -1359,6 +1359,16 @@ mod tests {
     }
 
     #[test]
+    fn test_is_encrypted_probe() {
+        let plain = create_test_pdf(1);
+        assert!(!encrypt::is_encrypted(&plain), "plain PDF must report unencrypted");
+        let enc = encrypt::encrypt_pdf(&plain, "pw", "").expect("encrypt");
+        assert!(encrypt::is_encrypted(&enc), "encrypted PDF must be detected");
+        // Garbage must not panic or claim encryption.
+        assert!(!encrypt::is_encrypted(b"not a pdf at all"));
+    }
+
+    #[test]
     fn test_batch_protect_real_encryption() {
         let plain = create_test_pdf(1);
         let dir = std::env::temp_dir().join(format!("nagisa_batchpw_{}", std::process::id()));

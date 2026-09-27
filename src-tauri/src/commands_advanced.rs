@@ -128,6 +128,12 @@ pub fn decrypt_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, String> {
     pdf_engine::encrypt::decrypt_pdf(&data, &password)
 }
 
+/// Detect password protection without decrypting anything (cheap parse).
+#[tauri::command]
+pub fn is_pdf_encrypted(data: Vec<u8>) -> bool {
+    pdf_engine::encrypt::is_encrypted(&data)
+}
+
 #[tauri::command]
 pub fn inspect_compatibility(
     data: Vec<u8>,

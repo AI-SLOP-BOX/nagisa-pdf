@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import PDFViewer, { InteractiveMode, TextBlock } from '../components/PDFViewer'
 import { CommandPalette } from '../components/CommandPalette'
+import { InputDialog } from '../components/AppDialog'
 import { EditorTopBar } from '../components/EditorTopBar'
 import { EditorThumbnailSidebar } from '../components/EditorThumbnailSidebar'
 import { EditorRightInspector } from '../components/EditorRightInspector'
@@ -66,6 +67,14 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   const [pageCount, setPageCount] = useState(0)
   const [currentPage, setCurrentPage] = useState(0)
   const [activeTab, setActiveTab] = useState<Tab | null>(initialTab || 'edit')
+
+  // Password-protected (Standard Security Handler) open flow: bytes held
+  // until the user unlocks them. attempts forces an InputDialog remount so
+  // the cleared input starts fresh after a failed try.
+  const [pwPending, setPwPending] = useState<{ bytes: number[]; name: string; attempts: number } | null>(null)
+  // True when the current session was unlocked from an encrypted file —
+  // saving then writes plaintext, so a notice is shown at save time.
+  const [wasEncryptedSource, setWasEncryptedSource] = useState(false)
 
   // Light Mode Layout State
   const [editorMode, setEditorMode] = useState<'inspect' | 'edit'>('inspect')
@@ -164,8 +173,19 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     }
   }, [showSuccess, showToast])
 
-  const loadPdfFromBytes = useCallback(async (bytes: number[], name: string) => {
+  const loadPdfFromBytes = useCallback(async (bytes: number[], name: string, opts?: { fromEncrypted?: boolean }) => {
     try {
+      setWasEncryptedSource(opts?.fromEncrypted ?? false)
+      // Encrypted documents: never feed ciphertext to the renderer or the
+      // session — pause here and ask for the password instead.
+      try {
+        if (await DocumentService.isEncrypted(bytes)) {
+          setPwPending({ bytes, name, attempts: 0 })
+          return
+        }
+      } catch {
+        // Backend unavailable (browser preview): keep the old behavior.
+      }
       if (docIdRef.current) {
         await DocumentService.closeSession(docIdRef.current).catch((err) => console.debug('セッションのクローズに失敗:', err))
       }
@@ -194,7 +214,26 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     } catch (err) {
       showError(formatError(err, 'PDFの読み込みに失敗しました'))
     }
-  }, [pushHistory, resetHistory, resetAnnotations, refreshHistoryStatus, setPdfData, showError, showSuccess])
+  }, [pushHistory, resetHistory, resetAnnotations, refreshHistoryStatus, setPdfData, setWasEncryptedSource, showError, showSuccess])
+
+  // Unlock a password-protected document and continue loading the plaintext.
+  const handlePasswordSubmit = useCallback(async (password: string) => {
+    if (!pwPending) return
+    if (!password) {
+      showToast('パスワードを入力してください')
+      return
+    }
+    try {
+      const plain = await DocumentService.decryptPdf(pwPending.bytes, password)
+      const { name } = pwPending
+      setPwPending(null)
+      await loadPdfFromBytes(plain, name, { fromEncrypted: true })
+      showSuccess('パスワードを解除して開きました')
+    } catch (err) {
+      setPwPending(p => (p ? { ...p, attempts: p.attempts + 1 } : p))
+      showError(formatError(err, 'パスワードが正しくありません'))
+    }
+  }, [pwPending, loadPdfFromBytes, showToast, showError, showSuccess])
 
   // Load initialFile if provided from HomeView or caller
   useEffect(() => {
@@ -263,10 +302,13 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         AnnotationService.downloadPdf(new Uint8Array(bytesToSave), fileName || 'edited_document.pdf')
       }
       showSuccess('PDFを保存しました（編集内容を反映）')
+      if (wasEncryptedSource) {
+        showToast('⚠️ 元ファイルはパスワード保護されています。保存されるPDFは保護が解除された平文です')
+      }
     } catch (err) {
       showError(formatError(err, 'PDFの保存に失敗しました'))
     }
-  }, [pdfData, annotations, fileName, showToast, showError, showSuccess, setPdfData, pushHistory, resetAnnotations, docId, refreshHistoryStatus])
+  }, [pdfData, annotations, fileName, wasEncryptedSource, showToast, showError, showSuccess, setPdfData, pushHistory, resetAnnotations, docId, refreshHistoryStatus])
 
   const handleUndo = useCallback(async () => {
     // 1. If there is an in-flight annotation history step, undo that first
@@ -623,6 +665,25 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         <SignatureVerificationModal
           signatures={verifiedSignatures}
           onClose={() => setVerifiedSignatures(null)}
+        />
+      )}
+
+      {/* Password prompt for encrypted documents */}
+      {pwPending && (
+        <InputDialog
+          key={`doc-pw-${pwPending.attempts}`}
+          isOpen
+          title="パスワードで開く"
+          message={`${pwPending.name} はパスワードで保護されています。${pwPending.attempts > 0 ? `\n⚠️ パスワードが正しくありません（失敗 ${pwPending.attempts} 回）` : '開くためのパスワードを入力してください。'}`}
+          inputType="password"
+          placeholder="パスワード"
+          confirmLabel="解錠して開く"
+          cancelLabel="キャンセル"
+          onSubmit={(v) => { void handlePasswordSubmit(v) }}
+          onCancel={() => {
+            setPwPending(null)
+            showToast('パスワード認証をキャンセルしました')
+          }}
         />
       )}
 

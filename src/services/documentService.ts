@@ -73,6 +73,22 @@ export class DocumentService {
   }
 
   /**
+   * Detect Standard Security Handler password protection without exposing
+   * any content. False when the backend is unavailable (browser preview).
+   */
+  static async isEncrypted(data: number[]): Promise<boolean> {
+    return invoke<boolean>('is_pdf_encrypted', { data })
+  }
+
+  /**
+   * Remove password protection. Throws the backend's honest error on a
+   * wrong password ("パスワードが正しくありません").
+   */
+  static async decryptPdf(data: number[], password: string): Promise<number[]> {
+    return invoke<number[]>('decrypt_pdf', { data, password })
+  }
+
+  /**
    * Save bytes to native file path picked by user.
    */
   static async saveFileDialog(defaultName: string, data: number[]): Promise<string | null> {
