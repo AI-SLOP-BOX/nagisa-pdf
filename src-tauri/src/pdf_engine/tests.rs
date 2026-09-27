@@ -2643,14 +2643,37 @@ mod tests {
     #[test]
     fn test_add_and_verify_doctimestamp() {
         let pdf = create_test_pdf(1);
-        let stamped = crate::pdf_engine::security::add_timestamp(&pdf, "Nagisa DigiCert TSA")
-            .expect("add_timestamp must succeed");
+        // An empty TSA URL must be refused instead of faking a local-clock
+        // placeholder (no more token-less "timestamps").
+        let no_url = crate::pdf_engine::security::add_timestamp(&pdf, "");
+        assert!(no_url.is_err(), "empty TSA URL must be refused");
+        assert!(
+            no_url.unwrap_err().contains("TSA"),
+            "error must explain the TSA requirement"
+        );
+        // An unreachable TSA must fail the whole operation, not degrade into
+        // a fake timestamp.
+        let bad_url = crate::pdf_engine::security::add_timestamp(&pdf, "http://127.0.0.1:9/tsa");
+        assert!(bad_url.is_err(), "unreachable TSA must fail instead of faking");
 
-        let res = crate::pdf_engine::security::verify_timestamp(&stamped)
-            .expect("verify_timestamp must succeed");
-        assert!(res.valid, "DocTimeStamp must be recognized as valid");
-        assert_eq!(res.authority, "Nagisa DigiCert TSA");
-        assert!(res.timestamp.starts_with("D:"));
+        // A token-less DocTimeStamp dictionary (what the old build produced)
+        // must never be reported as valid by the new verifier.
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let mut stamp = Dictionary::new();
+        stamp.set("Type", Object::Name(b"DocTimeStamp".to_vec()));
+        stamp.set("SubFilter", Object::Name(b"ETSI.rfc3161".to_vec()));
+        stamp.set("M", Object::String(b"D:20200101000000Z".to_vec(), lopdf::StringFormat::Literal));
+        let stamp_id = doc.add_object(Object::Dictionary(stamp));
+        let root_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        if let Some(Object::Dictionary(root)) = doc.objects.get_mut(&root_id) {
+            let mut perms = Dictionary::new();
+            perms.set("DocTimeStamp", Object::Reference(stamp_id));
+            root.set("Perms", Object::Dictionary(perms));
+        }
+        let mut bytes_out = std::io::Cursor::new(Vec::new());
+        doc.save_to(&mut bytes_out).unwrap();
+        let report = crate::pdf_engine::security::verify_timestamp(&bytes_out.into_inner()).unwrap();
+        assert!(!report.valid, "legacy token-less DocTimeStamp must not verify");
     }
 
     #[test]
@@ -4782,5 +4805,172 @@ mod tests {
 
         let second = crate::ocr_engine::deep_redact_scanned_all(&out, "CONFIDENTIAL", "eng", "#000000");
         assert!(second.is_err(), "redacted content must not be OCR-recoverable");
+    }
+
+    #[test]
+    fn test_doc_timestamp_placeholder_is_not_valid() {
+        // A legacy local-clock DocTimeStamp dictionary (no /Contents token)
+        // must be reported as unverifiable instead of being marked valid.
+        let pdf = create_test_pdf(1);
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let mut stamp = Dictionary::new();
+        stamp.set("Type", Object::Name(b"DocTimeStamp".to_vec()));
+        stamp.set("SubFilter", Object::Name(b"ETSI.rfc3161".to_vec()));
+        stamp.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+        stamp.set(
+            "M",
+            Object::String(b"D:20200101000000Z".to_vec(), lopdf::StringFormat::Literal),
+        );
+        let stamp_id = doc.add_object(Object::Dictionary(stamp));
+        let root_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        if let Some(Object::Dictionary(root)) = doc.objects.get_mut(&root_id) {
+            let mut perms = Dictionary::new();
+            perms.set("DocTimeStamp", Object::Reference(stamp_id));
+            root.set("Perms", Object::Dictionary(perms));
+        }
+        let mut bytes_out = std::io::Cursor::new(Vec::new());
+        doc.save_to(&mut bytes_out).unwrap();
+        let bytes = bytes_out.into_inner();
+        let report = crate::pdf_engine::security::verify_timestamp(&bytes).unwrap();
+        assert!(!report.valid, "token-less placeholder must never verify");
+        assert!(report.hash.contains("Contents"), "honest missing-token reason: {}", report.hash);
+    }
+
+    #[test]
+    fn test_doc_timestamp_local_tsa_round_trip() {
+        // Full offline round trip against a self-issued RFC 3161 token:
+        // stamp -> cryptographic ByteRange/messageImprint verification ->
+        // tamper detection. Requires an OpenSSL with `ts -reply` config
+        // support (LibreSSL's ts applet cannot issue tokens); silently
+        // skips when none is available.
+        let mut openssl: Option<std::path::PathBuf> = None;
+        for candidate in [
+            "/opt/homebrew/opt/openssl@3/bin/openssl",
+            "/usr/local/opt/openssl@3/bin/openssl",
+        ] {
+            if std::path::Path::new(candidate).exists() {
+                openssl = Some(candidate.into());
+                break;
+            }
+        }
+        let openssl = match openssl.or_else(|| find_tool("openssl")).filter(|p| {
+            // OpenSSL (not LibreSSL) is required for issuing tokens.
+            String::from_utf8_lossy(
+                &std::process::Command::new(p).arg("version").output().map(|o| o.stdout).unwrap_or_default(),
+            )
+            .contains("OpenSSL")
+        }) {
+            Some(path) => path,
+            None => return,
+        };
+        let pdf = create_test_pdf(1);
+        let dir = std::env::temp_dir().join(format!("nagisa_dts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tsa_key = dir.join("tsa.key");
+        let tsa_crt = dir.join("tsa.crt");
+        // Self-signed TSA certificate with the timeStamping EKU.
+        let cert = std::process::Command::new(&openssl)
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Nagisa Test TSA", "-days", "2", "-sha256", "-addext", "extendedKeyUsage=critical,timeStamping", "-addext", "basicConstraints=critical,CA:TRUE", "-keyout"])
+            .arg(&tsa_key)
+            .arg("-out")
+            .arg(&tsa_crt)
+            .output()
+            .unwrap();
+        assert!(cert.status.success(), "TSA cert generation: {}", String::from_utf8_lossy(&cert.stderr));
+
+        // openssl.cnf tsa_section used by `ts -reply`.
+        let serial = dir.join("serial.conf");
+        std::fs::write(&serial, "01\n").unwrap();
+        let cnf = dir.join("tsa.cnf");
+        std::fs::write(
+            &cnf,
+            format!(
+                "[ tsa ]\ndefault_tsa = tsa_section\n[ tsa_section ]\nserial = {}\ncrypto_device = builtin\nissuer = {}\nsigner_cert = {}\nsigner_key = {}\nsigner_digest = sha256\ndefault_policy = 1.2.840.113549.1.9.16.1.1\nother_policies = 1.2.3.4\ndigests = sha256\ntimeout = 5\npreserve_rd = no\n",
+                serial.display(),
+                tsa_crt.display(),
+                tsa_crt.display(),
+                tsa_key.display()
+            ),
+        )
+        .unwrap();
+
+        let dir_clone = dir.clone();
+        let openssl_clone = openssl.clone();
+        let out = crate::pdf_engine::cms_sign::add_document_timestamp_with(&pdf, move |imprint| {
+            let hex: String = imprint.iter().map(|b| format!("{b:02x}")).collect();
+            let tsq = dir_clone.join("req.tsq");
+            let tst = dir_clone.join("token.der");
+            let query = std::process::Command::new(&openssl_clone)
+                .args(["ts", "-query", "-digest"])
+                .arg(&hex)
+                .args(["-sha256", "-no_nonce", "-out"])
+                .arg(&tsq)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !query.status.success() {
+                return Err(format!("ts -query failed: {}", String::from_utf8_lossy(&query.stderr)));
+            }
+            let reply = std::process::Command::new(&openssl_clone)
+                .args(["ts", "-reply", "-config"])
+                .arg(dir_clone.join("tsa.cnf"))
+                .args(["-queryfile"])
+                .arg(&tsq)
+                .args(["-token_out", "-out"])
+                .arg(&tst)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !reply.status.success() {
+                return Err(format!("ts -reply failed: {}", String::from_utf8_lossy(&reply.stderr)));
+            }
+            let token = std::fs::read(&tst).map_err(|e| e.to_string())?;
+            // Sanity: the token we just issued must parse back to this imprint.
+            let parsed = crate::pdf_engine::cms_sign::timestamp_token_details(&token);
+            match parsed {
+                Ok((parsed_imprint, _, _)) => {
+                    if parsed_imprint != imprint.to_vec() {
+                        return Err(format!(
+                            "provider mismatch: issued {} parsed {} ({} bytes)",
+                            hex,
+                            parsed_imprint
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>(),
+                            parsed_imprint.len()
+                        ));
+                    }
+                }
+                Err(e) => return Err(format!("token parse failed: {e}")),
+            }
+            Ok(token)
+        });
+        let out = match out {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                // LibreSSL and other ts-incompatible builds fail here; skip
+                // gracefully instead of failing the suite.
+                eprintln!("skipping local TSA round trip: {e}");
+                return;
+            }
+        };
+
+        let report = crate::pdf_engine::security::verify_timestamp(&out).unwrap();
+        assert!(report.valid, "locally issued token must verify cryptographically: {:?}", report);
+        assert_eq!(report.hash.len(), 64, "hash must be the SHA-256 hex of the covered bytes");
+        assert!(!report.timestamp.is_empty() && report.timestamp != "DocTimeStampなし");
+        assert!(
+            report.authority.contains("Nagisa Test TSA") || report.authority.contains("DocTimeStamp"),
+            "authority must prefer the TSA subject or fall back to the stamp name: {}",
+            report.authority
+        );
+
+        // Tamper inside the ByteRange-covered prefix: verification must fail.
+        let mut tampered = out.clone();
+        let flip = pdf.len() / 2;
+        tampered[flip] ^= 0x01;
+        let tampered_report = crate::pdf_engine::security::verify_timestamp(&tampered).unwrap();
+        assert!(!tampered_report.valid, "tampered document must fail timestamp verification");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

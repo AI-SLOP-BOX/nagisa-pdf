@@ -104,6 +104,23 @@ pub fn stamp_pdf_ltv(
     pdf_engine::cms_sign::stamp_ltv_dss(&data)
 }
 
+/// Apply a PAdES B-T style document timestamp: hashes the whole covered
+/// byte range, obtains a real RFC 3161 token from the given TSA and embeds
+/// it as /Perms/DocTimeStamp with a matching /ByteRange.
+#[tauri::command]
+pub fn add_document_timestamp(data: Vec<u8>, tsa_url: String) -> Result<Vec<u8>, String> {
+    pdf_engine::cms_sign::add_document_timestamp(&data, &tsa_url)
+}
+
+/// Cryptographically verify the document timestamp: recomputes the ByteRange
+/// digest and compares it against the RFC 3161 token's messageImprint.
+#[tauri::command]
+pub fn verify_document_timestamp(
+    data: Vec<u8>,
+) -> Result<pdf_engine::security::TimestampResult, String> {
+    pdf_engine::security::verify_timestamp(&data)
+}
+
 #[tauri::command]
 pub fn inspect_compatibility(
     data: Vec<u8>,

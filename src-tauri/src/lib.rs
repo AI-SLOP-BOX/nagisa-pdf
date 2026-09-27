@@ -544,6 +544,8 @@ pub fn run() {
             sign_pdf_cms,
             verify_pdf_cms,
             stamp_pdf_ltv,
+            add_document_timestamp,
+            verify_document_timestamp,
             inspect_compatibility,
             get_engine_health,
             embed_font,

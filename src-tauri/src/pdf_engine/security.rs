@@ -566,7 +566,7 @@ pub fn list_digital_ids() -> Result<Vec<DigitalID>, String> {
 
 // ===== TIMESTAMP & VALIDATION =====
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub struct TimestampResult {
     pub timestamp: String,
     pub authority: String,
@@ -574,93 +574,158 @@ pub struct TimestampResult {
     pub hash: String,
 }
 
-// Add timestamp to PDF (PAdES / PDF Document Timestamp - local clock only)
-// NOTE: This function records the current system time in the /DocTimeStamp dictionary.
-// It does NOT contact an RFC 3161 TSA, does NOT obtain a cryptographic timestamp token,
-// and does NOT produce PAdES-LTV / ISO 32000-2 compliant signatures.
-// The /Contents field (required DER-encoded CMS token) is intentionally omitted.
+/// Add a cryptographic document timestamp (PAdES B-T profile).
+///
+/// Requires a reachable RFC 3161 TSA URL: the document's bytes up to the
+/// timestamp dictionary are hashed and sent to the TSA, and the returned
+/// RFC 3161 token is embedded in /Contents with a matching /ByteRange, so
+/// `verify_timestamp` can later recompute and cryptographically confirm the
+/// binding. Refuses to pretend a local-clock placeholder is a timestamp.
 pub fn add_timestamp(data: &[u8], timestamp_authority: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
-
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let (year, month, day, hours, minutes, seconds) = unix_timestamp_to_utc(duration);
-    let pdf_date = format!("D:{year:04}{month:02}{day:02}{hours:02}{minutes:02}{seconds:02}Z");
-
-    let tsa_name = if timestamp_authority.is_empty() {
-        "RFC 3161 Time-Stamp Authority"
-    } else {
-        timestamp_authority
-    };
-
-    // Construct standard DocTimeStamp dictionary (ISO 32000-1 / PAdES Part 4 / RFC 3161)
-    // PAdES standard requires /Type /Sig or /Type /DocTimeStamp with /SubFilter /ETSI.rfc3161
-    let mut ts_dict = Dictionary::new();
-    ts_dict.set("Type", Object::Name("DocTimeStamp".into()));
-    ts_dict.set("SubFilter", Object::Name("ETSI.rfc3161".into()));
-    ts_dict.set("Filter", Object::Name("Adobe.PPKLite".into()));
-    ts_dict.set("Name", Object::String(encode_pdf_text_string(tsa_name), lopdf::StringFormat::Literal));
-    ts_dict.set("M", Object::String(pdf_date.as_bytes().to_vec(), lopdf::StringFormat::Literal));
-
-    let ts_id = doc.add_object(Object::Dictionary(ts_dict));
-
-    // Register DocTimeStamp in document Root Catalog /Perms or /V dictionary
-    let (root_id, _) = super::page_tree::ensure_catalog_and_pages_root(&mut doc);
-    if let Some(Object::Dictionary(ref mut root_dict)) = doc.objects.get_mut(&root_id) {
-        let mut perms_dict = match root_dict.get(b"Perms") {
-            Ok(Object::Dictionary(p)) => p.clone(),
-            _ => Dictionary::new(),
-        };
-        perms_dict.set("DocTimeStamp", Object::Reference(ts_id));
-        root_dict.set("Perms", Object::Dictionary(perms_dict));
+    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if signature_entries_present(&doc) {
+        return Err("このPDFには既に電子署名があります。既存署名を無効化しないよう、DocTimeStampは追加できません。".into());
     }
-
-    save_doc(&mut doc)
+    super::cms_sign::add_document_timestamp(data, timestamp_authority)
 }
 
-// Verify timestamp - structural check only
-// NOTE: This function checks whether a /DocTimeStamp dictionary or /Type /Sig with
-// /SubFilter /ETSI.rfc3161 exists.
-// It does NOT verify the RFC 3161 TSTInfo messageImprint hash, does NOT validate TSA
-// certificates, and does NOT perform OCSP / CRL revocation checks.
-// valid=true here means "a timestamp entry was found", NOT "cryptographically verified".
+fn signature_entries_present(doc: &Document) -> bool {
+    doc.objects.iter().any(|(_, obj)| {
+        obj.as_dict().map(|d| {
+            d.get(b"V").ok().and_then(|o| o.as_reference().ok()).is_some()
+        }).unwrap_or(false)
+    })
+}
+
+/// Verify a document timestamp.
+///
+/// A real ETSI.rfc3161 document timestamp carries a DER RFC 3161 token in
+/// /Contents plus a /ByteRange describing the bytes the token is supposed to
+/// bind. True verification therefore recomputes SHA-256 over those covered
+/// bytes and compares against the token's messageImprint, surfacing the
+/// TSA-asserted genTime and TSA subject. Entries without /Contents (e.g. the
+/// legacy local-clock placeholder produced by older builds) are honestly
+/// reported as unverifiable instead of being marked valid.
 pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, String> {
     let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
-
-    // Look for timestamp in document
-    let mut timestamp = None;
-    let mut authority = String::from("未指定のTSA");
-    // Structural presence only — no crypto validation
-    let mut found = false;
+    let mut result = TimestampResult {
+        timestamp: "DocTimeStampなし".into(),
+        authority: "未指定のTSA".into(),
+        valid: false,
+        hash: String::new(),
+    };
 
     for (_, obj) in &doc.objects {
-        if let Object::Dictionary(dict) = obj {
-            let is_doctimestamp = dict.get(b"Type").ok().and_then(|o| o.as_name().ok()) == Some(b"DocTimeStamp");
-            let is_rfc3161_sig = dict.get(b"SubFilter").ok().and_then(|o| o.as_name().ok()) == Some(b"ETSI.rfc3161");
+        let dict = match obj.as_dict().ok() {
+            Some(d) => d,
+            None => continue,
+        };
+        let subfilter = dict
+            .get(b"SubFilter")
+            .ok()
+            .and_then(|o| o.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).to_lowercase());
+        let type_name = dict
+            .get(b"Type")
+            .ok()
+            .and_then(|o| o.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).to_string());
+        let is_rfc3161 = subfilter
+            .as_deref()
+            .map(|sf| sf.contains("rfc3161"))
+            .unwrap_or(false);
+        let is_doctimestamp = type_name.as_deref() == Some("DocTimeStamp");
+        if !is_rfc3161 && !is_doctimestamp {
+            continue;
+        }
 
-            if is_doctimestamp || is_rfc3161_sig {
-                if let Ok(Object::String(ts, _)) = dict.get(b"M") {
-                    timestamp = Some(decode_pdf_text_string(ts));
-                    found = true;
-                }
-                if let Ok(Object::String(auth, _)) = dict.get(b"Name") {
-                    authority = decode_pdf_text_string(auth);
+        if let Ok(Object::String(auth, _)) = dict.get(b"Name") {
+            result.authority = decode_pdf_text_string(auth);
+        }
+
+        let contents: Vec<u8> = match dict.get(b"Contents") {
+            Ok(Object::String(bytes, _)) => bytes.clone(),
+            _ => Vec::new(),
+        };
+        if contents.is_empty() {
+            // Legacy local-clock placeholder: structurally present but carries
+            // no cryptographic token at all. Never report it as valid.
+            let local_date = match dict.get(b"M") {
+                Ok(Object::String(m, _)) => decode_pdf_text_string(m),
+                _ => "不明".into(),
+            };
+            result.timestamp = format!("{local_date}（構造プレースホルダのみ: 暗号トークン欠落）");
+            result.hash = "検証不能: /Contentsトークン欠落".into();
+            result.valid = false;
+            continue;
+        }
+
+        let expected = match dict
+            .get(b"ByteRange")
+            .ok()
+            .and_then(|o| o.as_array().ok())
+            .filter(|a| a.len() >= 4)
+        {
+            Some(br) => {
+                let num = |o: &Object| -> Option<usize> {
+                    match o {
+                        Object::Integer(v) => Some(*v as usize),
+                        Object::Real(v) => Some(*v as usize),
+                        _ => None,
+                    }
+                };
+                let parsed = (|| Some((num(&br[0])?, num(&br[1])?, num(&br[2])?, num(&br[3])?)))();
+                let (a, b, c, d) = match parsed {
+                    Some(coords) => coords,
+                    None => {
+                        result.timestamp = "ByteRangeが解釈不能（検証不能）".into();
+                        result.hash = "検証不能: ByteRange不正".into();
+                        result.valid = false;
+                        continue;
+                    }
+                };
+                if a + b <= data.len() && c + d <= data.len() && c >= a + b {
+                    let mut signed = Vec::with_capacity(b + d);
+                    signed.extend_from_slice(&data[a..a + b]);
+                    signed.extend_from_slice(&data[c..c + d]);
+                    super::cms_sign::sha256_digest(&signed).to_vec()
+                } else {
+                    result.timestamp = "ByteRangeがファイル範囲外（検証不能）".into();
+                    result.hash = "検証不能: ByteRange不正".into();
+                    result.valid = false;
+                    continue;
                 }
             }
+            None => {
+                result.timestamp = "ByteRange欠落（検証不能）".into();
+                result.hash = "検証不能: /ByteRange欠落".into();
+                result.valid = false;
+                continue;
+            }
+        };
+
+        match super::cms_sign::timestamp_token_details(&contents) {
+            Ok((imprint, gen_time, tsa_subject)) => {
+                result.valid = imprint == expected;
+                result.timestamp = gen_time;
+                if !tsa_subject.is_empty() {
+                    result.authority = tsa_subject;
+                }
+                result.hash = expected
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+            }
+            Err(e) => {
+                result.valid = false;
+                result.timestamp = format!("トークン解析失敗: {e}");
+                result.hash = "検証失敗".into();
+            }
         }
+        break;
     }
 
-    Ok(TimestampResult {
-        timestamp: timestamp.unwrap_or_else(|| "DocTimeStampなし".into()),
-        authority,
-        // false: structural presence ≠ cryptographic validity
-        // RFC 3161 TSTInfo verification not implemented
-        valid: found,
-        hash: String::from("(RFC 3161暗号検証未実装)"),
-    })
+    Ok(result)
 }
 
 // ===== CERTIFICATE STORE INTEGRATION =====

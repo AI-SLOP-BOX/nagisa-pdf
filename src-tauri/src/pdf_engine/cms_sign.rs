@@ -376,7 +376,7 @@ fn certificate_public_parts(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Strin
     rsa_public_parts(&bits.value[1..])
 }
 
-fn sha256_digest(message: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256_digest(message: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(message);
@@ -2244,7 +2244,7 @@ fn extract_timestamp_token(cms_der: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Parse imprint, generation time and TSA subject from a timestamp token.
-fn timestamp_token_details(token_der: &[u8]) -> Result<(Vec<u8>, String, String), String> {
+pub(crate) fn timestamp_token_details(token_der: &[u8]) -> Result<(Vec<u8>, String, String), String> {
     let work = temp_workdir("nagisa_tsdetail")?;
     let result = (|| {
         let token_path = work.join("token.der");
@@ -2281,10 +2281,21 @@ fn timestamp_token_details(token_der: &[u8]) -> Result<(Vec<u8>, String, String)
                     continue;
                 }
                 if let Some((_, hex_part)) = trimmed.split_once(" - ") {
-                    for pair in hex_part.split_whitespace() {
-                        if pair.len() == 2 {
-                            if let Ok(byte) = u8::from_str_radix(pair, 16) {
-                                imprint.push(byte);
+                    // OpenSSL/LibreSSL hex dumps join byte pairs with '-'
+                    // every 8 bytes (e.g. "32-95") and may append an ASCII
+                    // gutter; split each whitespace token on '-' so no byte
+                    // is silently dropped, and cap a line at its 16 bytes.
+                    let mut line_bytes = 0usize;
+                    for token in hex_part.split_whitespace() {
+                        if line_bytes >= 16 {
+                            break;
+                        }
+                        for part in token.split('-') {
+                            if part.len() == 2 {
+                                if let Ok(byte) = u8::from_str_radix(part, 16) {
+                                    imprint.push(byte);
+                                    line_bytes += 1;
+                                }
                             }
                         }
                     }
@@ -2450,6 +2461,128 @@ pub fn has_verification_dss(pdf: &[u8]) -> bool {
             Some(catalog.get(b"DSS").is_ok())
         })
         .unwrap_or(false)
+}
+
+/// Add a PAdES B-T style document timestamp (ISO 32000-2 DocTimeStamp).
+///
+/// Creates a Sig dictionary with SubFilter ETSI.RFC3161 and a reserved
+/// Contents placeholder, registers it under Perms/DocTimeStamp in the catalog
+/// via an incremental update, hashes every byte covered by the resulting
+/// ByteRange, requests an RFC 3161 token from the TSA, and embeds the token.
+/// `verify_timestamp` can later recompute the ByteRange digest and compare it
+/// against the token's messageImprint.
+pub fn add_document_timestamp(pdf: &[u8], tsa_url: &str) -> Result<Vec<u8>, String> {
+    if tsa_url.trim().is_empty() {
+        return Err(
+            "RFC 3161 TSA URLが必要です（ローカル時刻のプレースホルダは作成しません）".to_string(),
+        );
+    }
+    add_document_timestamp_with(pdf, |imprint| fetch_timestamp_token(tsa_url, imprint))
+}
+
+/// Core of `add_document_timestamp` with an injectable token provider so
+/// tests can bind a locally issued RFC 3161 token without network access.
+pub(crate) fn add_document_timestamp_with(
+    pdf: &[u8],
+    token_provider: impl Fn(&[u8; 32]) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let original = Document::load_mem(pdf).map_err(|e| format!("PDFの解析に失敗しました: {e}"))?;
+    let root_id = original
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|value| value.as_reference().ok())
+        .ok_or_else(|| "カタログが見つかりません".to_string())?;
+    let catalog = original
+        .objects
+        .get(&root_id)
+        .and_then(|value| value.as_dict().ok())
+        .ok_or_else(|| "カタログ辞書が見つかりません".to_string())?
+        .clone();
+
+    let mut overlay = Document::new();
+    overlay.version = original.version.clone();
+    overlay.trailer = original.trailer.clone();
+    overlay.max_id = original.max_id;
+
+    let mut stamp = Dictionary::new();
+    stamp.set("Type", Object::Name(b"Sig".to_vec()));
+    stamp.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+    stamp.set("SubFilter", Object::Name(b"ETSI.RFC3161".to_vec()));
+    stamp.set(
+        "Name",
+        Object::String(
+            crate::pdf_engine::common::encode_pdf_text_string("Nagisa DocTimeStamp"),
+            lopdf::StringFormat::Literal,
+        ),
+    );
+    stamp.set(
+        "M",
+        Object::String(current_pdf_date().into_bytes(), lopdf::StringFormat::Literal),
+    );
+    stamp.set(
+        "ByteRange",
+        Object::Array(vec![
+            Object::Integer(0),
+            Object::Integer(BYTERANGE_FIELD_PLACEHOLDER),
+            Object::Integer(BYTERANGE_FIELD_PLACEHOLDER),
+            Object::Integer(BYTERANGE_FIELD_PLACEHOLDER),
+        ]),
+    );
+    stamp.set(
+        "Contents",
+        Object::String(vec![0u8; CMS_PLACEHOLDER_LEN], lopdf::StringFormat::Hexadecimal),
+    );
+    let stamp_id = overlay.add_object(Object::Dictionary(stamp));
+
+    let mut perms = match catalog.get(b"Perms").ok().and_then(|o| o.as_dict().ok()) {
+        Some(existing) => existing.clone(),
+        None => Dictionary::new(),
+    };
+    perms.set("DocTimeStamp", Object::Reference(stamp_id));
+    let mut updated_catalog = catalog;
+    updated_catalog.set("Perms", Object::Dictionary(perms));
+    overlay
+        .objects
+        .insert(root_id, Object::Dictionary(updated_catalog));
+
+    let mut unsigned = append_incremental_update(pdf, overlay)?;
+    let (placeholder_start, placeholder_len) = locate_placeholder(&unsigned)?;
+    let second_offset = placeholder_start + placeholder_len;
+    let second_len = unsigned
+        .len()
+        .checked_sub(second_offset)
+        .ok_or_else(|| "プレースホルダーがファイル末尾を超過しています".to_string())?;
+    patch_byterange(&mut unsigned, placeholder_start, second_offset, second_len)?;
+    let mut signed_ranges = unsigned[..placeholder_start].to_vec();
+    signed_ranges.extend_from_slice(&unsigned[placeholder_start + placeholder_len..]);
+
+    let imprint = sha256_digest(&signed_ranges);
+    let token = token_provider(&imprint)?;
+    if token.len() > CMS_PLACEHOLDER_LEN {
+        return Err(format!(
+            "タイムスタンプトークンがプレースホルダーを超過しました（{} > {}）",
+            token.len(),
+            CMS_PLACEHOLDER_LEN
+        ));
+    }
+    let mut hex = String::with_capacity(CMS_PLACEHOLDER_LEN * 2);
+    for byte in &token {
+        hex.push_str(&format!("{byte:02X}"));
+    }
+    while hex.len() < CMS_PLACEHOLDER_LEN * 2 {
+        hex.push('0');
+    }
+    unsigned[placeholder_start..placeholder_start + placeholder_len]
+        .copy_from_slice(hex.as_bytes());
+
+    // Self-verify: the embedded token must parse and its messageImprint must
+    // match the recomputed ByteRange digest before we hand the file back.
+    let (token_imprint, _, _) = timestamp_token_details(&token)?;
+    if token_imprint != imprint.to_vec() {
+        return Err("生成したDocTimeStampのmessageImprintがByteRangeダイジェストと一致しません".to_string());
+    }
+    Ok(unsigned)
 }
 
 /// First http(s) URI listed under "CRL Distribution Points" in the dump.
