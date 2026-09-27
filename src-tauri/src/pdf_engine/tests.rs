@@ -4750,4 +4750,37 @@ mod tests {
         let err = guard_not_signed(&buf).expect_err("redaction must be blocked on signed PDFs");
         assert!(err.contains("署名"), "error must explain the signature conflict");
     }
+
+    #[test]
+    fn test_deep_redact_scanned_all_ocr_roundtrip() {
+        if find_tool("tesseract").is_none() || find_tool("pdftoppm").is_none() {
+            eprintln!("tesseract/pdftoppm unavailable; skipping OCR roundtrip");
+            return;
+        }
+        let pdf = create_test_pdf(1);
+        let mut doc = Document::load_mem(&pdf).expect("load");
+        let page = get_page_ids(&doc)[0];
+        let cid = doc
+            .objects
+            .get(&page)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        if let Some(Object::Stream(st)) = doc.objects.get_mut(&cid) {
+            st.set_content(b"BT /F1 36 Tf 60 700 Td (CONFIDENTIAL ORDER NUMBER 12345) Tj ET".to_vec());
+        }
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save");
+
+        let (out, hits) = crate::ocr_engine::deep_redact_scanned_all(&buf, "CONFIDENTIAL", "eng", "#000000")
+            .expect("OCR redaction should find and remove the word");
+        assert!(hits >= 1);
+
+        let second = crate::ocr_engine::deep_redact_scanned_all(&out, "CONFIDENTIAL", "eng", "#000000");
+        assert!(second.is_err(), "redacted content must not be OCR-recoverable");
+    }
 }

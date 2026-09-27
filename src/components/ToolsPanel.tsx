@@ -177,6 +177,9 @@ export function ToolsPanel({
       <AccentBtn onClick={() => exec('redact_text_deep', { searchText: redactSearchText, color: redactColor })} style={{ background: 'var(--red)' }}>
         テキスト完全消去（データ削除）
       </AccentBtn>
+      <AccentBtn onClick={() => exec('deep_redact_scanned_pdf', { searchText: redactSearchText, language: 'jpn+eng', color: redactColor })} style={{ background: 'var(--red)' }}>
+        スキャン書式OCR完全消去（全ページ・要時間）
+      </AccentBtn>
 
       <ToolsBatchAndColorSection
         exec={exec}

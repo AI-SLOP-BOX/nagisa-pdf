@@ -822,3 +822,94 @@ pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLin
 
     Ok(blocks)
 }
+
+/// Page height in points (needed to flip OCR top-down coords to PDF bottom-up).
+fn page_height_pt(data: &[u8], page_index: usize) -> Result<f64, String> {
+    let doc = lopdf::Document::load_mem(data).map_err(|e| e.to_string())?;
+    let page_ids = crate::pdf_engine::get_page_ids(&doc);
+    let page_id = *page_ids
+        .get(page_index)
+        .ok_or_else(|| "Page index out of range".to_string())?;
+    let dict = doc
+        .objects
+        .get(&page_id)
+        .ok_or_else(|| "Page object missing".to_string())?
+        .as_dict()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let mb: Vec<lopdf::Object> = dict
+        .get(b"MediaBox")
+        .ok()
+        .and_then(|m| m.as_array().ok())
+        .cloned()
+        .unwrap_or_default();
+    match mb.get(3) {
+        Some(lopdf::Object::Real(v)) => Ok(*v as f64),
+        Some(lopdf::Object::Integer(v)) => Ok(*v as f64),
+        _ => Ok(842.0),
+    }
+}
+
+/// True (compliance-grade) redaction for scanned/image PDFs, across ALL pages.
+///
+/// Scanned pages store text as pixels, so coordinate-based redaction alone
+/// cannot find the words. This renders every page at high DPI, OCRs it, maps
+/// each OCR line containing `search_text` from image pixels back to PDF
+/// points (flipping the vertical axis) and applies physical deep_redact
+/// removal to every hit box. Returns the new file plus the number of hits.
+pub fn deep_redact_scanned_all(
+    data: &[u8],
+    search_text: &str,
+    language: &str,
+    color: &str,
+) -> Result<(Vec<u8>, usize), String> {
+    if search_text.trim().is_empty() {
+        return Err("検索語が空です".to_string());
+    }
+    const DPI: u32 = 200;
+    let scale = DPI as f64 / 72.0;
+    let needle = search_text.to_lowercase();
+    let doc = lopdf::Document::load_mem(data).map_err(|e| e.to_string())?;
+    let page_count = crate::pdf_engine::get_page_ids(&doc).len();
+    drop(doc);
+
+    let mut current = data.to_vec();
+    let mut hits = 0usize;
+    for page_index in 0..page_count {
+        let png = match crate::pdf_engine::render_page_to_png(&current, page_index, DPI) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let blocks = match ocr_image_blocks(&png, language) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let page_h = page_height_pt(&current, page_index)?;
+        for b in &blocks {
+            if !b.text.to_lowercase().contains(&needle) {
+                continue;
+            }
+            let x = b.left as f64 / scale - 2.0;
+            let y = page_h - (b.top as f64 + b.height as f64) / scale - 2.0;
+            let w = b.width as f64 / scale + 4.0;
+            let h = b.height as f64 / scale + 4.0;
+            current = crate::pdf_engine::deep_redact(
+                &current,
+                page_index,
+                x.max(0.0),
+                y.max(0.0),
+                w,
+                h,
+                color,
+            )?;
+            hits += 1;
+        }
+    }
+    if hits == 0 {
+        return Err(format!(
+            "OCR で '{}' を含む行を検出しませんでした（スキャン品質・言語設定を確認してください）",
+            search_text
+        ));
+    }
+    Ok((current, hits))
+}

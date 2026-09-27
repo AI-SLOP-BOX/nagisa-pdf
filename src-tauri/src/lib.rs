@@ -407,6 +407,18 @@ fn deep_redact(
 }
 
 #[tauri::command]
+fn deep_redact_scanned_pdf(
+    data: Vec<u8>,
+    search_text: String,
+    language: String,
+    color: String,
+) -> Result<Vec<u8>, String> {
+    pdf_engine::redact::guard_not_signed(&data)?;
+    let (bytes, _hits) = ocr_engine::deep_redact_scanned_all(&data, &search_text, &language, &color)?;
+    Ok(bytes)
+}
+
+#[tauri::command]
 fn redact_text_deep(data: Vec<u8>, search_text: String, color: String) -> Result<Vec<u8>, String> {
     pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::redact_text_deep(&data, &search_text, &color)
@@ -592,6 +604,7 @@ pub fn run() {
             change_font_size,
             process_scanned_images,
             ocr_files,
+            deep_redact_scanned_pdf,
             ocr_image_blocks,
             create_epub,
             create_searchable_pdf,
