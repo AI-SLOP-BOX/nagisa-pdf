@@ -1,5 +1,5 @@
-use lopdf::Document;
 use super::common::get_page_ids;
+use lopdf::Document;
 
 fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack[from..]
@@ -13,7 +13,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize
 /// All fields are derived from a best-effort structural inspection. When the
 /// document cannot be parsed at all, [`inspect_pdf`] returns `Err` rather than a
 /// degraded report so callers must explicitly opt-in to salvage.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
 pub struct CompatibilityReport {
     /// Header version string, e.g. "1.7" or "2.0".
     pub pdf_version: String,
@@ -37,24 +37,6 @@ pub struct CompatibilityReport {
     pub has_attachments: bool,
     /// True when `Document::load_mem` succeeded.
     pub parseable: bool,
-}
-
-impl Default for CompatibilityReport {
-    fn default() -> Self {
-        CompatibilityReport {
-            pdf_version: String::new(),
-            page_count: 0,
-            signed_signature_count: 0,
-            certified: false,
-            has_xref_stream: false,
-            linearized: false,
-            encrypted: false,
-            has_object_stream: false,
-            has_portfolio: false,
-            has_attachments: false,
-            parseable: false,
-        }
-    }
 }
 
 fn count(haystack: &[u8], needle: &[u8]) -> usize {
@@ -133,6 +115,6 @@ pub fn inspect_pdf(data: &[u8]) -> Result<CompatibilityReport, String> {
         .and_then(|value| value.as_reference().ok())
         .and_then(|root_id| doc.objects.get(&root_id))
         .and_then(|object| object.as_dict().ok())
-        .map_or(false, |catalog| catalog.get(b"Perms").is_ok());
+        .is_some_and(|catalog| catalog.get(b"Perms").is_ok());
     Ok(report)
 }

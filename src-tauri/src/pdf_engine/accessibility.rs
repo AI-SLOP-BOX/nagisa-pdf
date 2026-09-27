@@ -14,10 +14,8 @@ pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, String> {
         if let Some(Object::Dictionary(ref root_dict)) = doc.objects.get(&root_id) {
             let marked = root_dict
                 .get(b"MarkInfo")
-                .and_then(|m| match m {
-                    Object::Dictionary(d) => {
-                        Ok(d.get(b"Marked").ok() == Some(&Object::Boolean(true)))
-                    }
+                .map(|m| match m {
+                    Object::Dictionary(d) => d.get(b"Marked").ok() == Some(&Object::Boolean(true)),
                     Object::Reference(id) => {
                         let is_m = doc
                             .objects
@@ -25,9 +23,9 @@ pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, String> {
                             .and_then(|o| o.as_dict().ok())
                             .map(|d| d.get(b"Marked").ok() == Some(&Object::Boolean(true)))
                             .unwrap_or(false);
-                        Ok(is_m)
+                        is_m
                     }
-                    _ => Ok(false),
+                    _ => false,
                 })
                 .unwrap_or(false);
             let has_struct_tree = root_dict.get(b"StructTreeRoot").is_ok();
@@ -179,7 +177,7 @@ pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, String> {
     };
 
     Ok(serde_json::json!({
-        "score": score.max(0),
+        "score": score,
         "issues": issues,
         "page_count": page_ids.len(),
         "has_tags": has_tags,
@@ -213,11 +211,15 @@ pub fn fix_accessibility_issues(
     };
 
     // 1. Ensure StructTreeRoot exists, or construct a conforming logical structure tree
-    let struct_tree_root_id = if let Some(Object::Dictionary(ref root_dict)) = doc.objects.get(&root_id) {
-        root_dict.get(b"StructTreeRoot").ok().and_then(|o| o.as_reference().ok())
-    } else {
-        None
-    };
+    let struct_tree_root_id =
+        if let Some(Object::Dictionary(ref root_dict)) = doc.objects.get(&root_id) {
+            root_dict
+                .get(b"StructTreeRoot")
+                .ok()
+                .and_then(|o| o.as_reference().ok())
+        } else {
+            None
+        };
 
     let struct_tree_id = match struct_tree_root_id {
         Some(id) => id,
@@ -243,7 +245,9 @@ pub fn fix_accessibility_issues(
                 let content_ids = super::common::resolve_page_content_stream_ids(&doc, pid);
                 for cid in content_ids {
                     if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&cid) {
-                        let orig_bytes = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+                        let orig_bytes = stream
+                            .decompressed_content()
+                            .unwrap_or_else(|_| stream.content.clone());
                         if let Ok(mut content) = lopdf::content::Content::decode(&orig_bytes) {
                             let mut mc_dict = Dictionary::new();
                             mc_dict.set("MCID", Object::Integer(0));
@@ -306,18 +310,20 @@ pub fn fix_accessibility_issues(
     let mut to_fix_alts = Vec::new();
     for (&oid, obj) in doc.objects.iter() {
         if let Ok(dict) = obj.as_dict() {
-            if dict.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"StructElem") {
-                if dict.get(b"S").ok().and_then(|s| s.as_name().ok()) == Some(b"Figure") {
-                    if dict.get(b"Alt").is_err() {
-                        to_fix_alts.push(oid);
-                    }
-                }
+            if dict.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"StructElem")
+                && dict.get(b"S").ok().and_then(|s| s.as_name().ok()) == Some(b"Figure")
+                && dict.get(b"Alt").is_err()
+            {
+                to_fix_alts.push(oid);
             }
         }
     }
     for fid in to_fix_alts {
         if let Some(Object::Dictionary(ref mut fdict)) = doc.objects.get_mut(&fid) {
-            fdict.set("Alt", Object::String(b"Image illustration".to_vec(), lopdf::StringFormat::Literal));
+            fdict.set(
+                "Alt",
+                Object::String(b"Image illustration".to_vec(), lopdf::StringFormat::Literal),
+            );
         }
     }
 
@@ -365,9 +371,7 @@ pub fn fix_accessibility_issues(
                             .get(b"T")
                             .ok()
                             .and_then(|o| match o {
-                                Object::String(b, _) => {
-                                    Some(decode_pdf_text_string(b))
-                                }
+                                Object::String(b, _) => Some(decode_pdf_text_string(b)),
                                 _ => None,
                             })
                             .unwrap_or_else(|| "Form Input Field".to_string());

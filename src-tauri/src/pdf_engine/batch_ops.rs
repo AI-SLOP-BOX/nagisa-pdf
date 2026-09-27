@@ -195,8 +195,9 @@ pub fn batch_merge_pdfs_with_options(
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("");
-            doc.decrypt(pw)
-                .map_err(|e| format!("パスワード保護されたPDFを復号できませんでした: {name}: {e}"))?;
+            doc.decrypt(pw).map_err(|e| {
+                format!("パスワード保護されたPDFを復号できませんでした: {name}: {e}")
+            })?;
             // lopdf's decrypt() removes /Encrypt from the trailer on success.
         }
 
@@ -291,7 +292,7 @@ pub fn convert_to_pdfa(data: &[u8]) -> Result<Vec<u8>, String> {
 
     // PDF/A-1 requirement: All fonts MUST be embedded
     let mut uncompressed_non_embedded = Vec::new();
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(font_type)) = dict.get(b"Type") {
                 if font_type == b"Font" {
@@ -367,8 +368,8 @@ pub fn convert_to_pdfa(data: &[u8]) -> Result<Vec<u8>, String> {
         .ok()
         .ok_or("No root catalog found in PDF")?;
 
-        // Valid ISO 19005-1 XMP Metadata packet
-        let xmp_metadata = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+    // Valid ISO 19005-1 XMP Metadata packet
+    let xmp_metadata = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">
@@ -484,7 +485,10 @@ pub fn validate_pdfa_compliance(
         _ => false,
     };
     if version_ok {
-        passed.push(format!("Header version {} is PDF/A-1 compatible (>= 1.4)", doc.version));
+        passed.push(format!(
+            "Header version {} is PDF/A-1 compatible (>= 1.4)",
+            doc.version
+        ));
     } else {
         violations.push(format!(
             "Header version {} must be 1.4 or newer for PDF/A-1",
@@ -495,7 +499,7 @@ pub fn validate_pdfa_compliance(
     // 2. All fonts must be embedded (hard ISO 19005-1 requirement).
     let mut total_fonts = 0usize;
     let mut non_embedded: Vec<String> = Vec::new();
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             let is_font = dict
                 .get(b"Type")
@@ -517,21 +521,20 @@ pub fn validate_pdfa_compliance(
                 })
                 .unwrap_or_else(|| "Unknown".to_string());
 
-            let has_font_file = if let Ok(desc_ref) =
-                dict.get(b"FontDescriptor").and_then(|o| o.as_reference())
-            {
-                if let Some(Object::Dictionary(desc)) = doc.objects.get(&desc_ref) {
-                    desc.get(b"FontFile").is_ok()
-                        || desc.get(b"FontFile2").is_ok()
-                        || desc.get(b"FontFile3").is_ok()
+            let has_font_file =
+                if let Ok(desc_ref) = dict.get(b"FontDescriptor").and_then(|o| o.as_reference()) {
+                    if let Some(Object::Dictionary(desc)) = doc.objects.get(&desc_ref) {
+                        desc.get(b"FontFile").is_ok()
+                            || desc.get(b"FontFile2").is_ok()
+                            || desc.get(b"FontFile3").is_ok()
+                    } else {
+                        false
+                    }
                 } else {
-                    false
-                }
-            } else {
-                dict.get(b"FontFile").is_ok()
-                    || dict.get(b"FontFile2").is_ok()
-                    || dict.get(b"FontFile3").is_ok()
-            };
+                    dict.get(b"FontFile").is_ok()
+                        || dict.get(b"FontFile2").is_ok()
+                        || dict.get(b"FontFile3").is_ok()
+                };
 
             if !has_font_file && !non_embedded.contains(&font_name) {
                 non_embedded.push(font_name);
@@ -550,11 +553,7 @@ pub fn validate_pdfa_compliance(
     }
 
     // 3. OutputIntent with GTS_PDFA1 subtype and an embedded ICC profile.
-    let root_id = match doc
-        .trailer
-        .get(b"Root")
-        .and_then(|o| o.as_reference())
-    {
+    let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         Ok(id) => id,
         Err(e) => return Err(format!("PDF Root Catalog not found: {}", e)),
     };
@@ -589,8 +588,9 @@ pub fn validate_pdfa_compliance(
                         };
                     }
                     // DestOutputProfile must be an embedded ICC stream (N = 1/3/4).
-                    if let Ok(prof_ref) =
-                        dict.get(b"DestOutputProfile").and_then(|o| o.as_reference())
+                    if let Ok(prof_ref) = dict
+                        .get(b"DestOutputProfile")
+                        .and_then(|o| o.as_reference())
                     {
                         if let Some(Object::Stream(prof)) = doc.objects.get(&prof_ref) {
                             let n = prof.dict.get(b"N").and_then(|o| o.as_i64()).unwrap_or(0);
@@ -636,8 +636,9 @@ pub fn validate_pdfa_compliance(
         }
     }
     if has_xmp && xmp_declared_part {
-        passed
-            .push("XMP metadata packet declares the PDF/A identification (pdfaid:part)".to_string());
+        passed.push(
+            "XMP metadata packet declares the PDF/A identification (pdfaid:part)".to_string(),
+        );
     } else if has_xmp {
         passed.push("XMP metadata packet is present".to_string());
         violations.push(
@@ -645,8 +646,9 @@ pub fn validate_pdfa_compliance(
                 .to_string(),
         );
     } else {
-        violations
-            .push("XMP metadata stream is missing (ISO 19005-1 requires a valid XMP packet)".to_string());
+        violations.push(
+            "XMP metadata stream is missing (ISO 19005-1 requires a valid XMP packet)".to_string(),
+        );
     }
 
     // 5. MarkInfo /Marked — mandatory for conformance level A, optional (not a
@@ -672,13 +674,13 @@ pub fn validate_pdfa_compliance(
                 .to_string(),
         );
     } else {
-        passed
-            .push("MarkInfo /Marked is not declared (optional for PDF/A-1b level B)".to_string());
+        passed.push("MarkInfo /Marked is not declared (optional for PDF/A-1b level B)".to_string());
     }
 
     // 6. Encryption is forbidden in every PDF/A conformance level.
     if doc.trailer.get(b"Encrypt").is_ok() {
-        violations.push("Document is encrypted (PDF/A forbids encryption in all parts)".to_string());
+        violations
+            .push("Document is encrypted (PDF/A forbids encryption in all parts)".to_string());
     } else {
         passed.push("Document is not encrypted (PDF/A requirement)".to_string());
     }
@@ -702,7 +704,7 @@ pub fn validate_pdfa_compliance(
     let mut has_embedded_files = false;
     let mut has_external_reference = false;
 
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         let dict = match obj {
             Object::Dictionary(d) => d,
             Object::Stream(s) => &s.dict,
@@ -835,8 +837,6 @@ pub fn validate_pdfa_compliance(
     })
 }
 
-
-
 // ===== HEADERS & FOOTERS =====
 
 pub fn add_header_footer(
@@ -850,13 +850,13 @@ pub fn add_header_footer(
     let page_ids = get_page_ids(&doc).clone();
 
     // Check if CJK characters are present
-    let has_cjk = header_text.chars().any(|c| !c.is_ascii())
-        || footer_text.chars().any(|c| !c.is_ascii());
+    let has_cjk = !header_text.is_ascii() || !footer_text.is_ascii();
 
     let (font_id, cjk_font_opt) = if has_cjk {
         // Embed unified Type0 TrueType CJK font for Header/Footer
         let combined_text = format!("{} {} 0123456789/", header_text, footer_text);
-        let encoder = crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, &combined_text)?;
+        let encoder =
+            crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, &combined_text)?;
         (encoder.font_id, Some(encoder))
     } else {
         // Standard /Helvetica font for pure ASCII
@@ -939,10 +939,7 @@ pub fn add_header_footer(
                     Object::Real(font_size),
                 ],
             ),
-            lopdf::content::Operation::new(
-                "Td",
-                vec![Object::Real(margin), Object::Real(margin)],
-            ),
+            lopdf::content::Operation::new("Td", vec![Object::Real(margin), Object::Real(margin)]),
             footer_tj,
             lopdf::content::Operation::new("ET", vec![]),
             lopdf::content::Operation::new("Q", vec![]),
@@ -1092,11 +1089,12 @@ pub fn add_bates_number(
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
     let page_ids = get_page_ids(&doc).clone();
 
-    let has_cjk = prefix.chars().any(|c| !c.is_ascii());
+    let has_cjk = !prefix.is_ascii();
 
     let (font_id, cjk_font_opt) = if has_cjk {
         let combined_text = format!("{} 0123456789", prefix);
-        let encoder = crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, &combined_text)?;
+        let encoder =
+            crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, &combined_text)?;
         (encoder.font_id, Some(encoder))
     } else {
         let mut font_dict = Dictionary::new();

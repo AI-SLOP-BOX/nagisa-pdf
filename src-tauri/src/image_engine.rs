@@ -204,10 +204,12 @@ fn find_document_corners(
     // Top-Right: maximizes (x - y)
     // Bottom-Left: minimizes (x - y)
     // We compute the 5% extremal percentiles to avoid single outlier noise pixels.
-    let mut sum_xy: Vec<(f64, (f64, f64))> = edge_points.iter().map(|&(x, y)| (x + y, (x, y))).collect();
+    let mut sum_xy: Vec<(f64, (f64, f64))> =
+        edge_points.iter().map(|&(x, y)| (x + y, (x, y))).collect();
     sum_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    let mut diff_xy: Vec<(f64, (f64, f64))> = edge_points.iter().map(|&(x, y)| (x - y, (x, y))).collect();
+    let mut diff_xy: Vec<(f64, (f64, f64))> =
+        edge_points.iter().map(|&(x, y)| (x - y, (x, y))).collect();
     diff_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
     let n = edge_points.len();
@@ -250,10 +252,14 @@ fn get_destination_to_source_homography(
     // x1=tr.0, y1=tr.1
     // x2=br.0, y2=br.1
     // x3=bl.0, y3=bl.1
-    let x0 = tl.0; let y0 = tl.1;
-    let x1 = tr.0; let y1 = tr.1;
-    let x2 = br.0; let y2 = br.1;
-    let x3 = bl.0; let y3 = bl.1;
+    let x0 = tl.0;
+    let y0 = tl.1;
+    let x1 = tr.0;
+    let y1 = tr.1;
+    let x2 = br.0;
+    let y2 = br.1;
+    let x3 = bl.0;
+    let y3 = bl.1;
 
     let dx1 = x1 - x2;
     let dx2 = x3 - x2;
@@ -295,9 +301,15 @@ fn get_destination_to_source_homography(
     let inv_h = 1.0 / h;
 
     Some([
-        h0 * inv_w, h1 * inv_h, h2,
-        h3 * inv_w, h4 * inv_h, h5,
-        h6 * inv_w, h7 * inv_h, 1.0,
+        h0 * inv_w,
+        h1 * inv_h,
+        h2,
+        h3 * inv_w,
+        h4 * inv_h,
+        h5,
+        h6 * inv_w,
+        h7 * inv_h,
+        1.0,
     ])
 }
 
@@ -324,10 +336,11 @@ fn perspective_transform(
         return img.clone();
     }
 
-    let h_mat = match get_destination_to_source_homography(dst_w as f64, dst_h as f64, tl, tr, br, bl) {
-        Some(m) => m,
-        None => return img.clone(),
-    };
+    let h_mat =
+        match get_destination_to_source_homography(dst_w as f64, dst_h as f64, tl, tr, br, bl) {
+            Some(m) => m,
+            None => return img.clone(),
+        };
 
     let mut dst: RgbImage = ImageBuffer::new(dst_w, dst_h);
 

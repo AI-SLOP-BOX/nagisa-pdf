@@ -49,12 +49,22 @@ pub fn add_digital_signature(
 
     let sig_params = super::form_creator::FormFieldConfig {
         field_type: "Sig".to_string(),
-        name: format!("Signature_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()),
+        name: format!(
+            "Signature_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ),
         x: x as f32,
         y: y as f32,
         width: width as f32,
         height: height as f32,
-        value: if signer_name.is_empty() { None } else { Some(signer_name.to_string()) },
+        value: if signer_name.is_empty() {
+            None
+        } else {
+            Some(signer_name.to_string())
+        },
         options: None,
         required: false,
         read_only: false,
@@ -66,7 +76,7 @@ pub fn add_digital_signature(
     // Enrich the created signature dictionary with detailed metadata and embedded certificate if provided
     if let Ok(mut doc) = Document::load_mem(&signed_data) {
         let mut v_refs = Vec::new();
-        for (_, obj) in doc.objects.iter() {
+        for obj in doc.objects.values() {
             if let Object::Dictionary(dict) = obj {
                 if let Ok(Object::Name(ft)) = dict.get(b"FT") {
                     if ft == b"Sig" {
@@ -87,12 +97,27 @@ pub fn add_digital_signature(
         let mut modified = false;
         for v_ref in v_refs {
             if let Some(Object::Dictionary(sig_dict)) = doc.objects.get_mut(&v_ref) {
-                sig_dict.set("M", Object::String(pdf_date.clone().into_bytes(), lopdf::StringFormat::Literal));
+                sig_dict.set(
+                    "M",
+                    Object::String(pdf_date.clone().into_bytes(), lopdf::StringFormat::Literal),
+                );
                 if !signer_name.is_empty() {
-                    sig_dict.set("Name", Object::String(encode_pdf_text_string(signer_name), lopdf::StringFormat::Literal));
+                    sig_dict.set(
+                        "Name",
+                        Object::String(
+                            encode_pdf_text_string(signer_name),
+                            lopdf::StringFormat::Literal,
+                        ),
+                    );
                 }
                 if !reason.is_empty() {
-                    sig_dict.set("Reason", Object::String(encode_pdf_text_string(reason), lopdf::StringFormat::Literal));
+                    sig_dict.set(
+                        "Reason",
+                        Object::String(
+                            encode_pdf_text_string(reason),
+                            lopdf::StringFormat::Literal,
+                        ),
+                    );
                 }
                 if let Some(c_id) = cert_stream_id {
                     // ISO 32000-1 §12.8.1: /Cert entry stores the X.509 certificate or certificate chain
@@ -124,7 +149,8 @@ fn unix_timestamp_to_utc(duration_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let mut year = 1970u32;
     let mut rem_days = days;
     loop {
-        let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let leap =
+            (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
         let days_in_year = if leap { 366 } else { 365 };
         if rem_days >= days_in_year {
             rem_days -= days_in_year;
@@ -133,9 +159,20 @@ fn unix_timestamp_to_utc(duration_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
             break;
         }
     }
-    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
     let days_in_months = [
-        31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month = 1u32;
     for &dim in &days_in_months {
@@ -171,21 +208,21 @@ pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, Strin
 /// ドキュメントオブジェクトから暗号署名の有無を検査する内部ヘルパー。
 /// ByteRange エントリ（PAdES/PKCS#7）を持つ /Sig フィールドを探す。
 pub(crate) fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             // /FT /Sig かつ /ByteRange を持つ → 暗号的に署名されたフィールド
-            let is_sig_field = dict
-                .get(b"FT")
-                .ok()
-                .and_then(|o| o.as_name().ok())
-                == Some(b"Sig");
+            let is_sig_field = dict.get(b"FT").ok().and_then(|o| o.as_name().ok()) == Some(b"Sig");
             if is_sig_field {
-                let has_byte_range = dict.get(b"V").ok().and_then(|v| match v {
-                    Object::Reference(r) => doc.objects.get(r).and_then(|o| o.as_dict().ok()),
-                    Object::Dictionary(d) => Some(d),
-                    _ => None,
-                }).map(|sig_dict| sig_dict.get(b"ByteRange").is_ok())
-                .unwrap_or(false);
+                let has_byte_range = dict
+                    .get(b"V")
+                    .ok()
+                    .and_then(|v| match v {
+                        Object::Reference(r) => doc.objects.get(r).and_then(|o| o.as_dict().ok()),
+                        Object::Dictionary(d) => Some(d),
+                        _ => None,
+                    })
+                    .map(|sig_dict| sig_dict.get(b"ByteRange").is_ok())
+                    .unwrap_or(false);
                 if has_byte_range {
                     return true;
                 }
@@ -197,8 +234,7 @@ pub(crate) fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
 
 /// 署名済みPDFに対する破壊的操作をブロックするエラーメッセージ。
 /// 各編集コマンドで `doc_has_cryptographic_signatures` が true を返したときに使用する。
-pub const SIGNED_PDF_MUTATION_ERROR: &str =
-    "このPDFには有効なデジタル署名が含まれています。\
+pub const SIGNED_PDF_MUTATION_ERROR: &str = "このPDFには有効なデジタル署名が含まれています。\
      テキスト編集・ページ操作・回転などの標準編集を行うと、\
      署名のハッシュ（ByteRange）が無効化され、受信者のPDFビューアで\
      「改ざんされた署名」として警告されます。\
@@ -206,11 +242,10 @@ pub const SIGNED_PDF_MUTATION_ERROR: &str =
      署名者に署名前の原本ファイルへの編集を依頼してください。";
 
 pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, String> {
-
     // Find signature fields and extract actual dictionary metadata
     let mut signatures = Vec::new();
 
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(ft)) = dict.get(b"FT") {
                 if ft == b"Sig" {
@@ -218,9 +253,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .get(b"T")
                         .ok()
                         .and_then(|o| match o {
-                            Object::String(bytes, _) => {
-                                Some(decode_pdf_text_string(bytes))
-                            }
+                            Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -238,9 +271,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .and_then(|d| d.get(b"Name").ok())
                         .or_else(|| dict.get(b"Name").ok())
                         .and_then(|o| match o {
-                            Object::String(bytes, _) => {
-                                Some(decode_pdf_text_string(bytes))
-                            }
+                            Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -249,9 +280,7 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
                         .and_then(|d| d.get(b"Reason").ok())
                         .or_else(|| dict.get(b"Reason").ok())
                         .and_then(|o| match o {
-                            Object::String(bytes, _) => {
-                                Some(decode_pdf_text_string(bytes))
-                            }
+                            Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -515,7 +544,9 @@ pub fn sanitize_document(data: &[u8]) -> Result<(Vec<u8>, SanitizeSummary), Stri
     }
     // Second pass: count and remove indirect annotation array objects
     for ref_id in indirect_annot_refs {
-        let count = doc.objects.get(&ref_id)
+        let count = doc
+            .objects
+            .get(&ref_id)
             .and_then(|o| o.as_array().ok())
             .map(|a| a.len())
             .unwrap_or(0);
@@ -591,9 +622,14 @@ pub fn add_timestamp(data: &[u8], timestamp_authority: &str) -> Result<Vec<u8>, 
 
 fn signature_entries_present(doc: &Document) -> bool {
     doc.objects.iter().any(|(_, obj)| {
-        obj.as_dict().map(|d| {
-            d.get(b"V").ok().and_then(|o| o.as_reference().ok()).is_some()
-        }).unwrap_or(false)
+        obj.as_dict()
+            .map(|d| {
+                d.get(b"V")
+                    .ok()
+                    .and_then(|o| o.as_reference().ok())
+                    .is_some()
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -615,7 +651,7 @@ pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, String> {
         hash: String::new(),
     };
 
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         let dict = match obj.as_dict().ok() {
             Some(d) => d,
             None => continue,

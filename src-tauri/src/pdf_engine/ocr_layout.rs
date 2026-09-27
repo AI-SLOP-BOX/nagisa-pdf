@@ -6,7 +6,7 @@ use super::text_block_ops::get_text_blocks_from_doc;
 use lopdf::Document;
 fn base64_encode(data: &[u8]) -> String {
     const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0];
         let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
@@ -46,8 +46,10 @@ pub fn visual_diff(data1: &[u8], data2: &[u8], output_path: &str) -> Result<(), 
     let tmp_dir = std::env::temp_dir().join(format!("nagisa_vdiff_{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
 
-    let imgs1 = pdf_to_images(data1, &tmp_dir.join("orig").to_string_lossy(), "png", 100).unwrap_or_default();
-    let imgs2 = pdf_to_images(data2, &tmp_dir.join("rev").to_string_lossy(), "png", 100).unwrap_or_default();
+    let imgs1 = pdf_to_images(data1, &tmp_dir.join("orig").to_string_lossy(), "png", 100)
+        .unwrap_or_default();
+    let imgs2 = pdf_to_images(data2, &tmp_dir.join("rev").to_string_lossy(), "png", 100)
+        .unwrap_or_default();
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
@@ -128,7 +130,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         html.push_str("</div>");
 
         // Diff summary for this page
-        let page_diffs: Vec<&crate::pdf_engine::compare::DiffItem> = report.diffs.iter().filter(|d| d.page == p).collect();
+        let page_diffs: Vec<&crate::pdf_engine::compare::DiffItem> =
+            report.diffs.iter().filter(|d| d.page == p).collect();
         if !page_diffs.is_empty() {
             html.push_str("<div class='diff-list' style='grid-column: span 2;'><b>差分一覧:</b>");
             for d in page_diffs {
@@ -173,7 +176,11 @@ pub fn ocr_with_layout(
 ) -> Result<serde_json::Value, String> {
     let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
     let page_ids = get_page_ids(&doc);
-    let lang = if language.is_empty() { "jpn+eng" } else { language };
+    let lang = if language.is_empty() {
+        "jpn+eng"
+    } else {
+        language
+    };
     let mut pages = Vec::new();
 
     // Prepare temporary image cache if any scanned pages need OCR fallback
@@ -183,18 +190,21 @@ pub fn ocr_with_layout(
     for (page_idx, &page_id) in page_ids.iter().enumerate() {
         let (w, h) = get_page_dimensions(&doc, page_id);
 
-        let mut extracted_blocks = if let Ok(blocks) = get_text_blocks_from_doc(&doc, page_idx) {
-            blocks
-        } else {
-            Vec::new()
-        };
+        let mut extracted_blocks = get_text_blocks_from_doc(&doc, page_idx).unwrap_or_default();
 
         let mut text = get_page_text(data, page_idx).unwrap_or_default();
 
         // If page has no stream text (e.g. scanned image / fax), run true Tesseract OCR on rendered page image
         if extracted_blocks.is_empty() && text.trim().is_empty() {
             if scanned_images.is_none() {
-                let unique = format!("nagisa_layout_ocr_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+                let unique = format!(
+                    "nagisa_layout_ocr_{}_{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
                 let dir = std::env::temp_dir().join(unique);
                 if let Ok(imgs) = pdf_to_images(data, &dir.to_string_lossy(), "png", 150) {
                     scanned_images = Some(imgs);
@@ -205,7 +215,9 @@ pub fn ocr_with_layout(
             if let Some(ref imgs) = scanned_images {
                 if page_idx < imgs.len() {
                     let img_path = &imgs[page_idx];
-                    if let Ok((ocr_str, _, _, words)) = crate::ocr_engine::run_tesseract(img_path, lang) {
+                    if let Ok((ocr_str, _, _, words)) =
+                        crate::ocr_engine::run_tesseract(img_path, lang)
+                    {
                         text = ocr_str;
                         // Convert OCR word bounding boxes to TextBlock structure
                         if let Ok(img) = image::open(img_path) {
@@ -301,7 +313,11 @@ pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result
 
     // Extract text per page, separated by FormFeed (\x0C) to preserve page boundaries
     let mut page_texts = Vec::new();
-    let lang = if language.is_empty() { "jpn+eng" } else { language };
+    let lang = if language.is_empty() {
+        "jpn+eng"
+    } else {
+        language
+    };
 
     for img_path in &images {
         let text = match crate::ocr_engine::run_tesseract(img_path, lang) {
@@ -323,4 +339,3 @@ pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result
     let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(result_bytes)
 }
-

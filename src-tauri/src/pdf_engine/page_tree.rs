@@ -303,7 +303,8 @@ fn remap_and_copy_children(
             }
         }
         Object::Stream(stream) => {
-            let is_page = stream.dict.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"Page");
+            let is_page =
+                stream.dict.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"Page");
             for (key, val) in stream.dict.iter_mut() {
                 if is_page && key == b"Parent" {
                     continue;

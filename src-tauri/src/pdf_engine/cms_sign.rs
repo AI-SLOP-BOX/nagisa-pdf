@@ -1226,7 +1226,7 @@ fn signer_certificate_der(cms_der: &[u8]) -> Result<Vec<u8>, String> {
         Err(strict_error) => signer_certificates_der(cms_der)?
             .into_iter()
             .next()
-            .ok_or_else(|| strict_error),
+            .ok_or(strict_error),
     }
 }
 
@@ -2244,7 +2244,9 @@ fn extract_timestamp_token(cms_der: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Parse imprint, generation time and TSA subject from a timestamp token.
-pub(crate) fn timestamp_token_details(token_der: &[u8]) -> Result<(Vec<u8>, String, String), String> {
+pub(crate) fn timestamp_token_details(
+    token_der: &[u8],
+) -> Result<(Vec<u8>, String, String), String> {
     let work = temp_workdir("nagisa_tsdetail")?;
     let result = (|| {
         let token_path = work.join("token.der");
@@ -2518,7 +2520,10 @@ pub(crate) fn add_document_timestamp_with(
     );
     stamp.set(
         "M",
-        Object::String(current_pdf_date().into_bytes(), lopdf::StringFormat::Literal),
+        Object::String(
+            current_pdf_date().into_bytes(),
+            lopdf::StringFormat::Literal,
+        ),
     );
     stamp.set(
         "ByteRange",
@@ -2531,7 +2536,10 @@ pub(crate) fn add_document_timestamp_with(
     );
     stamp.set(
         "Contents",
-        Object::String(vec![0u8; CMS_PLACEHOLDER_LEN], lopdf::StringFormat::Hexadecimal),
+        Object::String(
+            vec![0u8; CMS_PLACEHOLDER_LEN],
+            lopdf::StringFormat::Hexadecimal,
+        ),
     );
     let stamp_id = overlay.add_object(Object::Dictionary(stamp));
 
@@ -2580,7 +2588,9 @@ pub(crate) fn add_document_timestamp_with(
     // match the recomputed ByteRange digest before we hand the file back.
     let (token_imprint, _, _) = timestamp_token_details(&token)?;
     if token_imprint != imprint.to_vec() {
-        return Err("生成したDocTimeStampのmessageImprintがByteRangeダイジェストと一致しません".to_string());
+        return Err(
+            "生成したDocTimeStampのmessageImprintがByteRangeダイジェストと一致しません".to_string(),
+        );
     }
     Ok(unsigned)
 }

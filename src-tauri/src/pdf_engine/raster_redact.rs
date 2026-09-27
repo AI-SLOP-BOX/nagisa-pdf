@@ -103,7 +103,10 @@ pub struct DecodedImage {
 fn color_space_name(dict: &lopdf::Dictionary) -> Option<Vec<u8>> {
     match dict.get(b"ColorSpace").ok() {
         Some(Object::Name(n)) => Some(n.clone()),
-        Some(Object::Array(arr)) => arr.first().and_then(|o| o.as_name().ok()).map(|n| n.to_vec()),
+        Some(Object::Array(arr)) => arr
+            .first()
+            .and_then(|o| o.as_name().ok())
+            .map(|n| n.to_vec()),
         _ => None,
     }
 }
@@ -120,12 +123,27 @@ fn gray_to_rgb(gray: &[u8]) -> Vec<u8> {
 /// formats that cannot be safely rewritten (JPX, CCITT, JBIG2, sub-8-bit
 /// components, exotic colour spaces).
 pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> {
-    let width = stream.dict.get(b"Width").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
-    let height = stream.dict.get(b"Height").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
+    let width = stream
+        .dict
+        .get(b"Width")
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(0) as u32;
+    let height = stream
+        .dict
+        .get(b"Height")
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(0) as u32;
     if width == 0 || height == 0 {
         return Err("画像のWidth/Heightが不正です".into());
     }
-    let bpc = stream.dict.get(b"BitsPerComponent").ok().and_then(|o| o.as_i64().ok()).unwrap_or(8);
+    let bpc = stream
+        .dict
+        .get(b"BitsPerComponent")
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(8);
     if bpc != 8 {
         return Err(format!("BitsPerComponent={bpc} は未対応です（8のみ対応）"));
     }
@@ -149,10 +167,16 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
 
     if has(b"DCTDecode") {
         let img = image::load_from_memory(&stream.content)
-            .or_else(|_| image::load_from_memory(&stream.decompressed_content().unwrap_or_default()))
+            .or_else(|_| {
+                image::load_from_memory(&stream.decompressed_content().unwrap_or_default())
+            })
             .map_err(|e| format!("JPEG画像のデコードに失敗しました: {e}"))?;
         let rgb = img.to_rgb8();
-        return Ok(DecodedImage { width: rgb.width(), height: rgb.height(), rgb: rgb.into_raw() });
+        return Ok(DecodedImage {
+            width: rgb.width(),
+            height: rgb.height(),
+            rgb: rgb.into_raw(),
+        });
     }
     if has(b"JPXDecode") || has(b"CCITTFaxDecode") || has(b"JBIG2Decode") {
         let f = filters.first().cloned().unwrap_or_default();
@@ -163,7 +187,10 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
     }
     if !filters.is_empty() && !has(b"FlateDecode") {
         let f = filters.first().cloned().unwrap_or_default();
-        return Err(format!("フィルタ /{} は未対応です", String::from_utf8_lossy(&f)));
+        return Err(format!(
+            "フィルタ /{} は未対応です",
+            String::from_utf8_lossy(&f)
+        ));
     }
 
     let raw = stream
@@ -176,14 +203,22 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
             if raw.len() < need {
                 return Err("RGB画像のデータ長が不足しています".into());
             }
-            Ok(DecodedImage { width, height, rgb: raw[..need].to_vec() })
+            Ok(DecodedImage {
+                width,
+                height,
+                rgb: raw[..need].to_vec(),
+            })
         }
         Some(b"DeviceGray") | Some(b"G") => {
             let need = (width as usize) * (height as usize);
             if raw.len() < need {
                 return Err("グレースケール画像のデータ長が不足しています".into());
             }
-            Ok(DecodedImage { width, height, rgb: gray_to_rgb(&raw[..need]) })
+            Ok(DecodedImage {
+                width,
+                height,
+                rgb: gray_to_rgb(&raw[..need]),
+            })
         }
         Some(b"Indexed") | Some(b"I") => decode_indexed(&stream.dict, width, height, &raw),
         Some(other) => Err(format!(
@@ -207,10 +242,15 @@ fn decode_indexed(
     let hival = arr.get(2).and_then(|o| o.as_i64().ok()).unwrap_or(255) as usize;
     let lookup: Vec<u8> = match arr.get(3) {
         Some(Object::String(bytes, _)) => bytes.clone(),
-        Some(Object::Stream(s)) => s.decompressed_content().unwrap_or_else(|_| s.content.clone()),
+        Some(Object::Stream(s)) => s
+            .decompressed_content()
+            .unwrap_or_else(|_| s.content.clone()),
         _ => return Err("Indexedカラースペースの参照テーブルが不正です".into()),
     };
-    let base = arr.first().and_then(|o| o.as_name().ok()).unwrap_or(b"DeviceRGB");
+    let base = arr
+        .first()
+        .and_then(|o| o.as_name().ok())
+        .unwrap_or(b"DeviceRGB");
     let comps = if base == b"DeviceGray" { 1 } else { 3 };
     let need = (width as usize) * (height as usize);
     if raw.len() < need || lookup.len() < (hival + 1) * comps {
@@ -238,7 +278,9 @@ fn resolve_dict(doc: &Document, obj: Option<&Object>) -> Option<lopdf::Dictionar
 }
 
 fn stream_bytes(stream: &lopdf::Stream) -> Vec<u8> {
-    stream.decompressed_content().unwrap_or_else(|_| stream.content.clone())
+    stream
+        .decompressed_content()
+        .unwrap_or_else(|_| stream.content.clone())
 }
 
 fn mat_from_ops(op: &lopdf::content::Operation) -> Option<Mat> {
@@ -293,7 +335,15 @@ pub fn collect_page_image_placements(doc: &Document, page_id: ObjectId) -> Vec<I
 
     let mut out = Vec::new();
     let mut path: HashSet<ObjectId> = HashSet::new();
-    walk_content(doc, &bytes, resources.as_ref(), IDENTITY, &mut out, &mut path, 0);
+    walk_content(
+        doc,
+        &bytes,
+        resources.as_ref(),
+        IDENTITY,
+        &mut out,
+        &mut path,
+        0,
+    );
     out
 }
 
@@ -310,7 +360,9 @@ fn walk_content(
     if depth > 8 {
         return;
     }
-    let Ok(content) = lopdf::content::Content::decode(bytes) else { return };
+    let Ok(content) = lopdf::content::Content::decode(bytes) else {
+        return;
+    };
 
     let xobjects = resources
         .and_then(|r| r.get(b"XObject").ok())
@@ -337,7 +389,9 @@ fn walk_content(
                 }
             }
             "Do" => {
-                let Some(Object::Name(name)) = op.operands.first() else { continue };
+                let Some(Object::Name(name)) = op.operands.first() else {
+                    continue;
+                };
                 let Some(xobjects) = xobjects else { continue };
                 let entry = xobjects.get(name.as_slice()).ok();
                 let (oid, stream) = match entry {
@@ -348,11 +402,19 @@ fn walk_content(
                     Some(Object::Stream(s)) => (None, s.clone()),
                     _ => continue,
                 };
-                let subtype = stream.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok());
+                let subtype = stream
+                    .dict
+                    .get(b"Subtype")
+                    .ok()
+                    .and_then(|o| o.as_name().ok());
                 match subtype {
                     Some(b"Image") => {
                         if let Some(oid) = oid {
-                            out.push(ImagePlacement { name: name.clone(), oid, ctm });
+                            out.push(ImagePlacement {
+                                name: name.clone(),
+                                oid,
+                                ctm,
+                            });
                         }
                     }
                     Some(b"Form") => {
@@ -367,7 +429,15 @@ fn walk_content(
                         let form_res = resolve_dict(doc, stream.dict.get(b"Resources").ok())
                             .or_else(|| resources.cloned());
                         let form_bytes = stream_bytes(&stream);
-                        walk_content(doc, &form_bytes, form_res.as_ref(), nested_ctm, out, path, depth + 1);
+                        walk_content(
+                            doc,
+                            &form_bytes,
+                            form_res.as_ref(),
+                            nested_ctm,
+                            out,
+                            path,
+                            depth + 1,
+                        );
                         path.remove(&oid);
                     }
                     _ => {}
@@ -462,7 +532,9 @@ fn rewrite_image_stream(
         return Ok(());
     }
     let payload: Vec<u8> = if keep_gray {
-        data.chunks_exact(3)
+        data.as_chunks::<3>()
+            .0
+            .iter()
             .map(|c| ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000) as u8)
             .collect()
     } else {
@@ -471,7 +543,11 @@ fn rewrite_image_stream(
     stream.dict.set("BitsPerComponent", Object::Integer(8));
     stream.dict.set(
         "ColorSpace",
-        Object::Name(if keep_gray { b"DeviceGray".to_vec() } else { b"DeviceRGB".to_vec() }),
+        Object::Name(if keep_gray {
+            b"DeviceGray".to_vec()
+        } else {
+            b"DeviceRGB".to_vec()
+        }),
     );
     // lopdf's compress() is a no-op while /Filter is present, so clear any
     // stale filter first and let it decide (Flate when it actually shrinks,
@@ -479,7 +555,9 @@ fn rewrite_image_stream(
     stream.dict.remove(b"Filter");
     stream.dict.remove(b"DecodeParms");
     stream.set_content(payload);
-    stream.compress().map_err(|e| format!("画像の再圧縮に失敗しました: {e}"))?;
+    stream
+        .compress()
+        .map_err(|e| format!("画像の再圧縮に失敗しました: {e}"))?;
     let len = stream.content.len() as i64;
     stream.dict.set("Length", Object::Integer(len));
     Ok(())
@@ -488,13 +566,34 @@ fn rewrite_image_stream(
 /// Decode a mask stream that may omit /ColorSpace (implicit DeviceGray).
 fn decode_mask_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> {
     if stream.dict.get(b"ColorSpace").is_err() {
-        let w = stream.dict.get(b"Width").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
-        let h = stream.dict.get(b"Height").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
-        let bpc = stream.dict.get(b"BitsPerComponent").ok().and_then(|o| o.as_i64().ok()).unwrap_or(8);
-        let raw = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+        let w = stream
+            .dict
+            .get(b"Width")
+            .ok()
+            .and_then(|o| o.as_i64().ok())
+            .unwrap_or(0) as u32;
+        let h = stream
+            .dict
+            .get(b"Height")
+            .ok()
+            .and_then(|o| o.as_i64().ok())
+            .unwrap_or(0) as u32;
+        let bpc = stream
+            .dict
+            .get(b"BitsPerComponent")
+            .ok()
+            .and_then(|o| o.as_i64().ok())
+            .unwrap_or(8);
+        let raw = stream
+            .decompressed_content()
+            .unwrap_or_else(|_| stream.content.clone());
         let need = (w as usize) * (h as usize);
         if w > 0 && h > 0 && bpc == 8 && raw.len() >= need {
-            return Ok(DecodedImage { width: w, height: h, rgb: gray_to_rgb(&raw[..need]) });
+            return Ok(DecodedImage {
+                width: w,
+                height: h,
+                rgb: gray_to_rgb(&raw[..need]),
+            });
         }
     }
     decode_image_rgb(stream)
@@ -511,10 +610,15 @@ pub fn redact_placement(
     margin: u32,
 ) -> Result<usize, String> {
     let (snapshot, smask_id, mask_id) = {
-        let Some(Object::Stream(s)) = doc.objects.get(&placement.oid) else { return Ok(0) };
+        let Some(Object::Stream(s)) = doc.objects.get(&placement.oid) else {
+            return Ok(0);
+        };
         (
             s.clone(),
-            s.dict.get(b"SMask").ok().and_then(|o| o.as_reference().ok()),
+            s.dict
+                .get(b"SMask")
+                .ok()
+                .and_then(|o| o.as_reference().ok()),
             s.dict.get(b"Mask").ok().and_then(|o| o.as_reference().ok()),
         )
     };
@@ -551,8 +655,12 @@ pub fn redact_placement(
         let scaled = (
             ((bounds.0 as f64) * mw as f64 / w as f64).floor().max(0.0) as u32,
             ((bounds.1 as f64) * mh as f64 / h as f64).floor().max(0.0) as u32,
-            ((bounds.2 as f64) * mw as f64 / w as f64).ceil().min(mw as f64) as u32,
-            ((bounds.3 as f64) * mh as f64 / h as f64).ceil().min(mh as f64) as u32,
+            ((bounds.2 as f64) * mw as f64 / w as f64)
+                .ceil()
+                .min(mw as f64) as u32,
+            ((bounds.3 as f64) * mh as f64 / h as f64)
+                .ceil()
+                .min(mh as f64) as u32,
         );
         if let Some(Object::Stream(s)) = doc.objects.get_mut(&mask_oid) {
             rewrite_image_stream(s, (mw, mh, mask_decoded.rgb), scaled, (255, 255, 255), true)?;
@@ -581,7 +689,10 @@ pub fn pixel_redact_page(
     margin: u32,
 ) -> Result<RasterRedactReport, String> {
     let placements = collect_page_image_placements(doc, page_id);
-    let mut report = RasterRedactReport { placements: placements.len(), streams_rewritten: 0 };
+    let mut report = RasterRedactReport {
+        placements: placements.len(),
+        streams_rewritten: 0,
+    };
     for placement in &placements {
         report.streams_rewritten += redact_placement(doc, placement, rect, fill, margin)?;
     }
@@ -598,7 +709,12 @@ pub fn purge_unreachable_objects(doc: &mut Document) -> usize {
     for (_key, value) in doc.trailer.iter() {
         collect(value, &mut stack);
     }
-    if let Some(id) = doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok()) {
+    if let Some(id) = doc
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|o| o.as_reference().ok())
+    {
         stack.push(id);
     }
 
@@ -638,4 +754,3 @@ fn collect_refs(obj: &Object, out: &mut Vec<ObjectId>) {
         _ => {}
     }
 }
-

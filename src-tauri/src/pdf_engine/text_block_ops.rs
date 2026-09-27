@@ -134,9 +134,7 @@ pub fn get_text_blocks_from_doc(
                 }
             }
             "Td" | "TD" => {
-                if let (Some(dx_obj), Some(dy_obj)) =
-                    (op.operands.first(), op.operands.get(1))
-                {
+                if let (Some(dx_obj), Some(dy_obj)) = (op.operands.first(), op.operands.get(1)) {
                     let dx = match dx_obj {
                         Object::Real(v) => *v,
                         Object::Integer(v) => *v as f32,
@@ -186,16 +184,14 @@ pub fn get_text_blocks_from_doc(
                     }
                 }
             }
-            "TJ" => {
-                if in_text {
-                    if let Some(Object::Array(arr)) = op.operands.first() {
-                        for item in arr {
-                            if let Object::String(bytes, _) = item {
-                                let decoded = decode_pdf_text_string(bytes);
-                                text_buffer.push_str(&decoded);
-                                if !decoded.is_empty() {
-                                    has_text_in_block = true;
-                                }
+            "TJ" if in_text => {
+                if let Some(Object::Array(arr)) = op.operands.first() {
+                    for item in arr {
+                        if let Object::String(bytes, _) = item {
+                            let decoded = decode_pdf_text_string(bytes);
+                            text_buffer.push_str(&decoded);
+                            if !decoded.is_empty() {
+                                has_text_in_block = true;
                             }
                         }
                     }
@@ -252,7 +248,7 @@ pub fn edit_text_block(
     }
 
     // #34 解消: 非ASCII文字を含む場合は Unicode フォントエンコーダーを用意
-    let has_non_ascii = new_text.chars().any(|c| !c.is_ascii());
+    let has_non_ascii = !new_text.is_ascii();
 
     let unicode_encoder = if has_non_ascii {
         Some(
@@ -429,10 +425,7 @@ fn push_replacement(
         // font_size は元ブロックの Tf から伝播した値を使用 (#40 是正)
         ops.push(lopdf::content::Operation::new(
             "Tf",
-            vec![
-                Object::Name(font_res_name.into()),
-                Object::Real(font_size),
-            ],
+            vec![Object::Name(font_res_name.into()), Object::Real(font_size)],
         ));
         let cid_bytes = encoder.encode_text(new_text);
         ops.push(lopdf::content::Operation::new(

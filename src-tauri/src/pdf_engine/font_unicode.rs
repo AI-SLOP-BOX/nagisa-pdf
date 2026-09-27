@@ -517,10 +517,10 @@ pub fn create_unicode_font_encoder(
 
     let mut next_cid: u16 = 1;
     for ch in all_text.chars() {
-        if !char_to_cid.contains_key(&ch) {
+        if let std::collections::hash_map::Entry::Vacant(e) = char_to_cid.entry(ch) {
             let cid = next_cid;
             next_cid += 1;
-            char_to_cid.insert(ch, cid);
+            e.insert(cid);
             cid_to_char.insert(cid, ch);
 
             let gid = font.get_gid(ch);
@@ -752,7 +752,7 @@ pub fn parse_tounicode_cmap(cmap_bytes: &[u8]) -> HashMap<u16, String> {
 fn parse_hex_to_unicode_string(hex: &str) -> Option<String> {
     // Hex contains 4-digit UTF-16 code units (or 2-digit ASCII bytes)
     let mut clean_hex = hex.to_string();
-    if clean_hex.len() % 2 != 0 {
+    if !clean_hex.len().is_multiple_of(2) {
         clean_hex.insert(0, '0');
     }
     let mut bytes = Vec::new();
@@ -766,7 +766,9 @@ fn parse_hex_to_unicode_string(hex: &str) -> Option<String> {
 
     if bytes.len() % 2 == 0 && !bytes.is_empty() {
         let u16s: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect();
         String::from_utf16(&u16s).ok()
@@ -841,19 +843,18 @@ pub fn decode_text_with_font_dict(
 
     // Fallback if no CMap or decoding produced empty text
     // 1. Try UTF-16BE if bytes start with BOM or look like 2-byte text
-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
-        if bytes.starts_with(&[0xFE, 0xFF]) {
-            let u16s: Vec<u16> = bytes[2..]
-                .chunks_exact(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            if let Ok(s) = String::from_utf16(&u16s) {
-                return s;
-            }
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) && bytes.starts_with(&[0xFE, 0xFF]) {
+        let u16s: Vec<u16> = bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        if let Ok(s) = String::from_utf16(&u16s) {
+            return s;
         }
     }
 
     // 2. Standard UTF-8 lossy fallback
     String::from_utf8_lossy(bytes).to_string()
 }
-

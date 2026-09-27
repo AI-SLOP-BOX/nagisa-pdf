@@ -10,7 +10,7 @@ pub fn get_fonts(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
     let mut fonts = Vec::new();
 
     // Search all objects for font dictionaries
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(font_type)) = dict.get(b"Type") {
                 if font_type == b"Font" {
@@ -65,7 +65,7 @@ pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u
 
     let mut replaced_count = 0;
     // Update matching BaseFont references in standard Type1/TrueType font dictionaries
-    for (_, obj) in doc.objects.iter_mut() {
+    for obj in doc.objects.values_mut() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(base_font)) = dict.get(b"BaseFont") {
                 let current_name = String::from_utf8_lossy(base_font);
@@ -97,7 +97,9 @@ pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u
     }
 
     if replaced_count == 0 {
-        return Err(format!("指定されたフォント '{old_font}' はドキュメント内で見つかりませんでした。"));
+        return Err(format!(
+            "指定されたフォント '{old_font}' はドキュメント内で見つかりませんでした。"
+        ));
     }
 
     save_doc(&mut doc)
@@ -203,7 +205,9 @@ pub fn change_text_color(
                             let r = op.operands[0].as_float().unwrap_or(0.0);
                             let g = op.operands[1].as_float().unwrap_or(0.0);
                             let b = op.operands[2].as_float().unwrap_or(0.0);
-                            (r - old_r).abs() < 0.05 && (g - old_g).abs() < 0.05 && (b - old_b).abs() < 0.05
+                            (r - old_r).abs() < 0.05
+                                && (g - old_g).abs() < 0.05
+                                && (b - old_b).abs() < 0.05
                         } else {
                             false
                         }
@@ -214,7 +218,11 @@ pub fn change_text_color(
                     if should_replace {
                         new_operations.push(lopdf::content::Operation::new(
                             "rg",
-                            vec![Object::Real(new_r), Object::Real(new_g), Object::Real(new_b)],
+                            vec![
+                                Object::Real(new_r),
+                                Object::Real(new_g),
+                                Object::Real(new_b),
+                            ],
                         ));
                         stream_modified = true;
                     } else {
@@ -225,7 +233,9 @@ pub fn change_text_color(
                     // Grayscale fill inside text block
                     let should_replace = if has_old_filter {
                         if let Some(gray) = op.operands.first().and_then(|o| o.as_float().ok()) {
-                            (gray - old_r).abs() < 0.05 && (gray - old_g).abs() < 0.05 && (gray - old_b).abs() < 0.05
+                            (gray - old_r).abs() < 0.05
+                                && (gray - old_g).abs() < 0.05
+                                && (gray - old_b).abs() < 0.05
                         } else {
                             false
                         }
@@ -236,7 +246,11 @@ pub fn change_text_color(
                     if should_replace {
                         new_operations.push(lopdf::content::Operation::new(
                             "rg",
-                            vec![Object::Real(new_r), Object::Real(new_g), Object::Real(new_b)],
+                            vec![
+                                Object::Real(new_r),
+                                Object::Real(new_g),
+                                Object::Real(new_b),
+                            ],
                         ));
                         stream_modified = true;
                     } else {

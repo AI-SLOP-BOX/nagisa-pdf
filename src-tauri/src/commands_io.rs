@@ -21,14 +21,16 @@ fn validate_safe_path(path_str: &str, for_write: bool) -> Result<std::path::Path
         // 親ディレクトリが空文字（カレントを表す相対パス）のときは現在の作業ディレクトリを使用
         let parent_resolved = if parent.as_os_str().is_empty() {
             std::env::current_dir()
-                .map_err(|e| format!("Failed to determine current directory: {e}"))?  
+                .map_err(|e| format!("Failed to determine current directory: {e}"))?
         } else {
             parent
                 .canonicalize()
-                .map_err(|e| format!("Invalid target directory: {e}"))?  
+                .map_err(|e| format!("Invalid target directory: {e}"))?
         };
 
-        let file_name = path.file_name().ok_or("Invalid filename: path ends with ..")?;
+        let file_name = path
+            .file_name()
+            .ok_or("Invalid filename: path ends with ..")?;
         let resolved = parent_resolved.join(file_name);
 
         // 解決済みパスが絶対パスであることを保証する（シンボリックリンク解決は書き込み前でもOK）

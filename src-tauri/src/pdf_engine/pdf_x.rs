@@ -158,9 +158,7 @@ pub fn validate_pdfx_compliance(
             if let Some(r) = res_dict {
                 if let Ok(egs) = r.get(b"ExtGState") {
                     let egs_dict = match egs {
-                        Object::Reference(id) => {
-                            doc.objects.get(id).and_then(|o| o.as_dict().ok())
-                        }
+                        Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
                         Object::Dictionary(d) => Some(d),
                         _ => None,
                     };
@@ -214,7 +212,8 @@ pub fn validate_pdfx_compliance(
                                     _ => None,
                                 };
                                 if let Some(st) = xstream {
-                                    let subtype = st.dict.get(b"Subtype").ok().and_then(|s| s.as_name().ok());
+                                    let subtype =
+                                        st.dict.get(b"Subtype").ok().and_then(|s| s.as_name().ok());
                                     if subtype == Some(b"Image") {
                                         if let Ok(cs) = st.dict.get(b"ColorSpace") {
                                             let is_rgb = match cs {
@@ -242,9 +241,7 @@ pub fn validate_pdfx_compliance(
         if let Ok(contents) = pdict.get(b"Contents") {
             let content_ids: Vec<OID> = match contents {
                 Object::Reference(id) => vec![*id],
-                Object::Array(arr) => {
-                    arr.iter().filter_map(|o| o.as_reference().ok()).collect()
-                }
+                Object::Array(arr) => arr.iter().filter_map(|o| o.as_reference().ok()).collect(),
                 _ => vec![],
             };
             for cid in content_ids {
@@ -266,7 +263,7 @@ pub fn validate_pdfx_compliance(
     }
 
     // 5. Font embedding check
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(font_type)) = dict.get(b"Type") {
                 if font_type == b"Font" {
@@ -663,7 +660,7 @@ pub fn generate_valid_icc(condition_name: &str, is_rgb: bool) -> Vec<u8> {
     for blob in &data_blobs {
         let pad = (4 - (blob.len() % 4)) % 4;
         let mut padded = blob.clone();
-        padded.extend(std::iter::repeat(0u8).take(pad));
+        padded.extend(std::iter::repeat_n(0u8, pad));
         offsets.push((cur_offset, blob.len() as u32));
         cur_offset += padded.len() as u32;
         aligned_blobs.push(padded);

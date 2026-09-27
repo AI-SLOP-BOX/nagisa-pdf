@@ -49,7 +49,9 @@ pub fn run_command_with_timeout(
             #[cfg(unix)]
             {
                 // safety: kill(2) はスレッドセーフな POSIX syscall
-                unsafe { libc::kill(child_id as i32, libc::SIGKILL); }
+                unsafe {
+                    libc::kill(child_id as i32, libc::SIGKILL);
+                }
             }
             #[cfg(windows)]
             {
@@ -71,8 +73,6 @@ pub fn run_command_with_timeout(
 /// 外部コマンドのデフォルトタイムアウト（秒）。
 /// 悪意のあるPDFによる外部プロセスのハング（DoS）を防ぐ。
 pub const EXTERNAL_CMD_TIMEOUT_SECS: u64 = 120;
-
-
 
 /// Encode text string according to ISO 32000-1 §7.9.2.2.
 /// If all characters are ASCII (<= 0x7F), returns raw bytes.
@@ -99,7 +99,9 @@ pub fn encode_pdf_text_string(text: &str) -> Vec<u8> {
 pub fn decode_pdf_text_string(bytes: &[u8]) -> String {
     if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
         let u16_codes: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
             .collect();
         String::from_utf16_lossy(&u16_codes)
@@ -230,12 +232,12 @@ pub(crate) fn get_page_dimensions(doc: &Document, page_id: OID) -> (f32, f32) {
             if let Ok(Object::Array(arr)) = d.get(b"MediaBox") {
                 if arr.len() >= 4 {
                     let w = match &arr[2] {
-                        Object::Real(r) => *r as f32,
+                        Object::Real(r) => *r,
                         Object::Integer(i) => *i as f32,
                         _ => 595.0,
                     };
                     let h = match &arr[3] {
-                        Object::Real(r) => *r as f32,
+                        Object::Real(r) => *r,
                         Object::Integer(i) => *i as f32,
                         _ => 842.0,
                     };
@@ -440,7 +442,11 @@ pub fn add_text(
             .iter()
             .map(|l| Object::String(l.as_bytes().to_vec(), lopdf::StringFormat::Literal))
             .collect();
-        (format!("NagisaTextHelv_{}_{}", fid.0, fid.1), fid, line_objs)
+        (
+            format!("NagisaTextHelv_{}_{}", fid.0, fid.1),
+            fid,
+            line_objs,
+        )
     } else {
         // True embedded Type0/CIDFontType2 with real TTF cmap, dynamic widths, and ToUnicode
         let encoder = super::font_unicode::create_unicode_font_encoder(&mut doc, text)?;
@@ -450,7 +456,11 @@ pub fn add_text(
             let line_cids = encoder.encode_text(line);
             line_objs.push(Object::String(line_cids, lopdf::StringFormat::Hexadecimal));
         }
-        (format!("NagisaUniFont_{}_{}", font_id.0, font_id.1), font_id, line_objs)
+        (
+            format!("NagisaUniFont_{}_{}", font_id.0, font_id.1),
+            font_id,
+            line_objs,
+        )
     };
 
     let mut resources_dict = resolve_page_resources(&doc, page_id);

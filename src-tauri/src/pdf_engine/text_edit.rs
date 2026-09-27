@@ -4,7 +4,7 @@ use lopdf::{Dictionary, Document, Object, Stream};
 // ===== TEXT EDITING & REFLOW =====
 
 /// PDFページ内のテキストをインプレースで検索・置換します。
-/// 
+///
 /// 【PDFグラフィックス状態とフォント・カラー仕様】
 /// - `search_text` と一致するテキスト要素（Tj/TJ）を `replacement` に置換します。
 /// - `color` が指定されている場合（空文字以外）、置換対象のテキストオペレータ直前に `rg` (fill color) オペレータを挿入して文字色を適用します。

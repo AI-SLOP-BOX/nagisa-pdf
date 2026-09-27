@@ -33,7 +33,6 @@ pub fn validate_pdfa_compliance(
     pdf_engine::validate_pdfa_compliance(&data, &target_conformance)
 }
 
-
 #[tauri::command]
 pub fn check_accessibility(data: Vec<u8>) -> Result<serde_json::Value, String> {
     pdf_engine::check_accessibility(&data)
@@ -48,10 +47,7 @@ pub fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightRe
 
 /// 指定ページのCMYKインク被覆率(%)を実測する。
 #[tauri::command]
-pub fn check_ink_coverage(
-    data: Vec<u8>,
-    page_index: usize,
-) -> Result<serde_json::Value, String> {
+pub fn check_ink_coverage(data: Vec<u8>, page_index: usize) -> Result<serde_json::Value, String> {
     pdf_engine::preflight::check_ink_coverage(&data, page_index)
 }
 

@@ -11,7 +11,7 @@ pub fn optimize_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
 
     // Safe and standard PDF optimization:
     // 1. Recompress FlateDecode streams with maximum compression where beneficial
-    for (_, obj) in doc.objects.iter_mut() {
+    for obj in doc.objects.values_mut() {
         if let Object::Stream(ref mut stream) = obj {
             let should_recompress = if let Ok(filter) = stream.dict.get(b"Filter") {
                 if let Ok(filter_name) = filter.as_name() {
@@ -38,9 +38,13 @@ pub fn optimize_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
                     flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
                 if std::io::Write::write_all(&mut encoder, &raw_data).is_ok() {
                     if let Ok(compressed) = encoder.finish() {
-                        if compressed.len() < stream.content.len() || stream.dict.get(b"Filter").is_err() {
+                        if compressed.len() < stream.content.len()
+                            || stream.dict.get(b"Filter").is_err()
+                        {
                             stream.set_content(compressed);
-                            stream.dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+                            stream
+                                .dict
+                                .set("Filter", Object::Name(b"FlateDecode".to_vec()));
                         }
                     }
                 }
@@ -102,7 +106,9 @@ pub fn compare_pdfs(data1: &[u8], data2: &[u8]) -> Result<CompareResult, String>
 
 /// Resolve all content streams of a page into a single concatenated byte sequence for comparison.
 fn resolve_page_content_bytes(doc: &Document, page_id: OID) -> Vec<u8> {
-    let content_ids: Vec<OID> = if let Some(Object::Dictionary(ref dict)) = doc.objects.get(&page_id) {
+    let content_ids: Vec<OID> = if let Some(Object::Dictionary(ref dict)) =
+        doc.objects.get(&page_id)
+    {
         match dict.get(b"Contents") {
             Ok(Object::Reference(id)) => vec![*id],
             Ok(Object::Array(arr)) => arr.iter().filter_map(|o| o.as_reference().ok()).collect(),
@@ -116,7 +122,9 @@ fn resolve_page_content_bytes(doc: &Document, page_id: OID) -> Vec<u8> {
     for cid in content_ids {
         if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
             // Use raw content bytes (after decode) for comparison
-            let bytes = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+            let bytes = stream
+                .decompressed_content()
+                .unwrap_or_else(|_| stream.content.clone());
             all_bytes.extend_from_slice(&bytes);
         }
     }
@@ -242,7 +250,9 @@ pub fn page_text_from_doc(doc: &Document, page_id: lopdf::ObjectId) -> String {
     let content_ids = resolve_page_content_stream_ids(doc, page_id);
     for cid in content_ids {
         if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
-            let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+            let decomp = stream
+                .decompressed_content()
+                .unwrap_or_else(|_| stream.content.clone());
             if !may_contain_text_ops(&decomp) {
                 continue;
             }
@@ -353,9 +363,7 @@ pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, 
                                 .get(b"Title")
                                 .ok()
                                 .and_then(|o| match o {
-                                    Object::String(bytes, _) => {
-                                        Some(decode_pdf_text_string(bytes))
-                                    }
+                                    Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                                     _ => None,
                                 })
                                 .unwrap_or_else(|| "Untitled".to_string());
@@ -366,13 +374,17 @@ pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, 
                                 match dest_obj {
                                     Object::Array(arr) if !arr.is_empty() => {
                                         if let Ok(target_p_ref) = arr[0].as_reference() {
-                                            if let Some(idx) = page_ids.iter().position(|&pid| pid == target_p_ref) {
+                                            if let Some(idx) =
+                                                page_ids.iter().position(|&pid| pid == target_p_ref)
+                                            {
                                                 page_num = idx;
                                             }
                                         }
                                     }
                                     Object::Reference(target_p_ref) => {
-                                        if let Some(idx) = page_ids.iter().position(|&pid| pid == *target_p_ref) {
+                                        if let Some(idx) =
+                                            page_ids.iter().position(|&pid| pid == *target_p_ref)
+                                        {
                                             page_num = idx;
                                         }
                                     }
@@ -420,9 +432,11 @@ pub fn get_form_fields_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>
     if let Some(root) = doc.objects.get(&root_id) {
         if let Ok(root_dict) = root.as_dict() {
             let acroform_dict = match root_dict.get(b"AcroForm") {
-                Ok(Object::Reference(acroform_id)) => {
-                    doc.objects.get(acroform_id).and_then(|o| o.as_dict().ok()).cloned()
-                }
+                Ok(Object::Reference(acroform_id)) => doc
+                    .objects
+                    .get(acroform_id)
+                    .and_then(|o| o.as_dict().ok())
+                    .cloned(),
                 Ok(Object::Dictionary(d)) => Some(d.clone()),
                 _ => None,
             };
@@ -431,7 +445,7 @@ pub fn get_form_fields_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>
                 if let Ok(Object::Array(field_refs)) = acroform.get(b"Fields") {
                     for field_ref in field_refs {
                         if let Object::Reference(field_id) = field_ref {
-                            if let Some(Object::Dictionary(field)) = doc.objects.get(&field_id) {
+                            if let Some(Object::Dictionary(field)) = doc.objects.get(field_id) {
                                 let name = field
                                     .get(b"T")
                                     .ok()
@@ -501,12 +515,11 @@ pub fn set_form_field(data: &[u8], field_name: &str, value: &str) -> Result<Vec<
     if let Some(root) = doc.objects.get(&root_id) {
         if let Ok(root_dict) = root.as_dict() {
             if let Ok(Object::Reference(acroform_id)) = root_dict.get(b"AcroForm") {
-                if let Some(Object::Dictionary(acroform)) = doc.objects.get(&acroform_id) {
+                if let Some(Object::Dictionary(acroform)) = doc.objects.get(acroform_id) {
                     if let Ok(Object::Array(field_refs)) = acroform.get(b"Fields") {
                         for field_ref in field_refs {
                             if let Object::Reference(field_id) = field_ref {
-                                if let Some(Object::Dictionary(field)) = doc.objects.get(&field_id)
-                                {
+                                if let Some(Object::Dictionary(field)) = doc.objects.get(field_id) {
                                     if let Ok(Object::String(bytes, _)) = field.get(b"T") {
                                         let name = String::from_utf8_lossy(bytes);
                                         if name == field_name {
@@ -549,13 +562,12 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
             if let Some(Object::Dictionary(ref dict)) = doc.objects.get(&page_id) {
                 let arr = match dict.get(b"Annots") {
                     Ok(Object::Array(a)) => a.clone(),
-                    Ok(Object::Reference(rid)) => {
-                        doc.objects
-                            .get(rid)
-                            .and_then(|o| o.as_array().ok())
-                            .cloned()
-                            .unwrap_or_default()
-                    }
+                    Ok(Object::Reference(rid)) => doc
+                        .objects
+                        .get(rid)
+                        .and_then(|o| o.as_array().ok())
+                        .cloned()
+                        .unwrap_or_default(),
                     _ => Vec::new(),
                 };
                 arr.iter().filter_map(|o| o.as_reference().ok()).collect()
@@ -566,7 +578,9 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
 
         for annot_id in &annot_ids {
             // Only process Widget annotations (form fields)
-            let is_widget = doc.objects.get(annot_id)
+            let is_widget = doc
+                .objects
+                .get(annot_id)
                 .and_then(|o| o.as_dict().ok())
                 .and_then(|d| d.get(b"Subtype").ok())
                 .map(|o| matches!(o, Object::Name(n) if n == b"Widget"))
@@ -577,27 +591,35 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
             }
 
             // Locate /AP /N appearance stream
-            let ap_stream_id: Option<OID> = doc.objects.get(annot_id)
+            let ap_stream_id: Option<OID> = doc
+                .objects
+                .get(annot_id)
                 .and_then(|o| o.as_dict().ok())
                 .and_then(|d| d.get(b"AP").ok())
-                .and_then(|ap| {
-                    match ap {
-                        Object::Dictionary(ap_dict) => ap_dict.get(b"N").ok().and_then(|n| n.as_reference().ok()),
-                        _ => None,
+                .and_then(|ap| match ap {
+                    Object::Dictionary(ap_dict) => {
+                        ap_dict.get(b"N").ok().and_then(|n| n.as_reference().ok())
                     }
+                    _ => None,
                 });
 
             if let Some(ap_id) = ap_stream_id {
                 // Read the appearance stream bbox and matrix to place content
                 let (bbox, matrix, ap_bytes) = {
                     if let Some(Object::Stream(ref ap_stream)) = doc.objects.get(&ap_id) {
-                        let raw = ap_stream.decompressed_content().unwrap_or_else(|_| ap_stream.content.clone());
-                        let bbox_arr = ap_stream.dict.get(b"BBox")
+                        let raw = ap_stream
+                            .decompressed_content()
+                            .unwrap_or_else(|_| ap_stream.content.clone());
+                        let bbox_arr = ap_stream
+                            .dict
+                            .get(b"BBox")
                             .ok()
                             .and_then(|o| o.as_array().ok())
                             .cloned()
                             .unwrap_or_default();
-                        let matrix_arr = ap_stream.dict.get(b"Matrix")
+                        let matrix_arr = ap_stream
+                            .dict
+                            .get(b"Matrix")
                             .ok()
                             .and_then(|o| o.as_array().ok())
                             .cloned()
@@ -609,7 +631,9 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
                 };
 
                 // Get widget Rect to position the appearance stream on the page
-                let rect: Vec<Object> = doc.objects.get(annot_id)
+                let rect: Vec<Object> = doc
+                    .objects
+                    .get(annot_id)
                     .and_then(|o| o.as_dict().ok())
                     .and_then(|d| d.get(b"Rect").ok())
                     .and_then(|o| o.as_array().ok())
@@ -623,7 +647,7 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
 
                 // Build a wrapping content stream: q + cm (translate to rect position) + Do
                 // Place appearance stream content directly using Do operator via a Form XObject.
-                let xobj_res_name = format!("FlatWgt_{}_{}" , ap_id.0, ap_id.1);
+                let xobj_res_name = format!("FlatWgt_{}_{}", ap_id.0, ap_id.1);
 
                 // Register the appearance stream as a Form XObject on the page resources
                 let resources = resolve_page_resources(&doc, page_id);
@@ -640,7 +664,10 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
                 }
 
                 // Matrix default is [1 0 0 1 0 0]
-                let ma = matrix.first().and_then(|v| v.as_float().ok()).unwrap_or(1.0);
+                let ma = matrix
+                    .first()
+                    .and_then(|v| v.as_float().ok())
+                    .unwrap_or(1.0);
                 let mb = matrix.get(1).and_then(|v| v.as_float().ok()).unwrap_or(0.0);
                 let mc = matrix.get(2).and_then(|v| v.as_float().ok()).unwrap_or(0.0);
                 let md = matrix.get(3).and_then(|v| v.as_float().ok()).unwrap_or(1.0);
@@ -651,19 +678,30 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
 
                 let flat_ops = vec![
                     lopdf::content::Operation::new("q", vec![]),
-                    lopdf::content::Operation::new("cm", vec![
-                        Object::Real(1.0), Object::Real(0.0),
-                        Object::Real(0.0), Object::Real(1.0),
-                        Object::Real(tx - bx1), Object::Real(ty - by1),
-                    ]),
-                    lopdf::content::Operation::new("Do", vec![
-                        Object::Name(xobj_res_name.into_bytes()),
-                    ]),
+                    lopdf::content::Operation::new(
+                        "cm",
+                        vec![
+                            Object::Real(1.0),
+                            Object::Real(0.0),
+                            Object::Real(0.0),
+                            Object::Real(1.0),
+                            Object::Real(tx - bx1),
+                            Object::Real(ty - by1),
+                        ],
+                    ),
+                    lopdf::content::Operation::new(
+                        "Do",
+                        vec![Object::Name(xobj_res_name.into_bytes())],
+                    ),
                     lopdf::content::Operation::new("Q", vec![]),
                 ];
 
-                let flat_content = lopdf::content::Content { operations: flat_ops };
-                let flat_bytes = flat_content.encode().map_err(|e| format!("Flatten encode error: {e}"))?;
+                let flat_content = lopdf::content::Content {
+                    operations: flat_ops,
+                };
+                let flat_bytes = flat_content
+                    .encode()
+                    .map_err(|e| format!("Flatten encode error: {e}"))?;
                 let flat_stream = Stream::new(Dictionary::new(), flat_bytes);
                 let flat_id = doc.add_object(flat_stream);
                 append_page_content(&mut doc, page_id, flat_id)?;
@@ -732,10 +770,7 @@ pub fn add_stamp(
         lopdf::content::Operation::new("BT", vec![]),
         lopdf::content::Operation::new(
             "Tf",
-            vec![
-                Object::Name(font_res_name.into()),
-                Object::Real(font_size),
-            ],
+            vec![Object::Name(font_res_name.into()), Object::Real(font_size)],
         ),
         lopdf::content::Operation::new(
             "rg",
@@ -767,13 +802,12 @@ pub fn add_stamp(
     let mut resources_dict = resolve_page_resources(&doc, page_id);
     let mut fonts_dict = match resources_dict.get(b"Font") {
         Ok(Object::Dictionary(fd)) => fd.clone(),
-        Ok(Object::Reference(f_ref)) => {
-            doc.objects
-                .get(f_ref)
-                .and_then(|o| o.as_dict().ok())
-                .cloned()
-                .unwrap_or_default()
-        }
+        Ok(Object::Reference(f_ref)) => doc
+            .objects
+            .get(f_ref)
+            .and_then(|o| o.as_dict().ok())
+            .cloned()
+            .unwrap_or_default(),
         _ => Dictionary::new(),
     };
 
@@ -844,7 +878,7 @@ pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, St
     let mut producer = String::new();
 
     if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
-        if let Some(Object::Dictionary(info)) = doc.objects.get(&info_id) {
+        if let Some(Object::Dictionary(info)) = doc.objects.get(info_id) {
             if let Ok(Object::String(bytes, _)) = info.get(b"Title") {
                 title = String::from_utf8_lossy(bytes).to_string();
             }
@@ -883,11 +917,16 @@ pub fn get_pdf_metadata(data: &[u8]) -> Result<serde_json::Value, String> {
     Ok(val)
 }
 
-
 /// Release-readiness / engine health matrix, suitable for a `nagisa-cli health`
 /// smoke command and offline assertion in tests.
 fn binary_available(name: &str) -> bool {
-    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"];
+    let candidates = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/snap/bin",
+    ];
     for dir in &candidates {
         if std::path::Path::new(&format!("{dir}/{name}")).exists() {
             return true;
@@ -895,7 +934,11 @@ fn binary_available(name: &str) -> bool {
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
-            let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+            let exe = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            };
             if dir.join(exe).exists() {
                 return true;
             }

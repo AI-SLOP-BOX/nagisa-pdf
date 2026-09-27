@@ -121,7 +121,11 @@ fn collect_page_images(doc: &Document, page_id: OID) -> Vec<(Vec<u8>, u32, u32)>
             .decompressed_content()
             .unwrap_or_else(|_| stream.content.clone());
         let dyn_res = image::load_from_memory(&raw).or_else(|_| {
-            let w = stream.dict.get(b"Width").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+            let w = stream
+                .dict
+                .get(b"Width")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as u32;
             let h = stream
                 .dict
                 .get(b"Height")
@@ -255,7 +259,6 @@ fn build_docx_table(blocks: &[crate::pdf_engine::text_block_ops::TextBlock]) -> 
     Some(xml)
 }
 
-
 pub fn pdf_to_word(data: &[u8], output_path: &str) -> Result<(), String> {
     pdf_to_word_ex(data, output_path, None, false, false, false)
 }
@@ -304,14 +307,16 @@ pub fn pdf_to_word_ex(
     let mut docpr_next: u32 = 1;
 
     // Build genuine Office Open XML (.docx) ZIP structure
-    let file = std::fs::File::create(output_path).map_err(|e| format!("Failed to create output file: {e}"))?;
+    let file = std::fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
     // 1. [Content_Types].xml
-    zip.start_file("[Content_Types].xml", options).map_err(|e| e.to_string())?;
+    zip.start_file("[Content_Types].xml", options)
+        .map_err(|e| e.to_string())?;
     let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -319,10 +324,12 @@ pub fn pdf_to_word_ex(
   <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>"#;
-    zip.write_all(content_types.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(content_types.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 2. _rels/.rels
-    zip.start_file("_rels/.rels", options).map_err(|e| e.to_string())?;
+    zip.start_file("_rels/.rels", options)
+        .map_err(|e| e.to_string())?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
@@ -330,11 +337,14 @@ pub fn pdf_to_word_ex(
     zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
 
     // 3. word/document.xml with intelligent paragraph flow reconstruction
-    zip.start_file("word/document.xml", options).map_err(|e| e.to_string())?;
-    let mut doc_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    zip.start_file("word/document.xml", options)
+        .map_err(|e| e.to_string())?;
+    let mut doc_xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>
-"#);
+"#,
+    );
 
     for (out_pos, &i) in selected.iter().enumerate() {
         // Page header paragraph
@@ -353,7 +363,8 @@ pub fn pdf_to_word_ex(
         ));
 
         // Attempt coordinate-based layout paragraph reconstruction
-        let blocks = crate::pdf_engine::text_block_ops::get_text_blocks_from_doc(&doc, i).unwrap_or_default();
+        let blocks = crate::pdf_engine::text_block_ops::get_text_blocks_from_doc(&doc, i)
+            .unwrap_or_default();
         // Editable-table mode: emit a real OOXML grid when ≥2 columns align.
         let table_xml = if editable_tables {
             build_docx_table(&blocks)
@@ -396,7 +407,8 @@ pub fn pdf_to_word_ex(
                         || prev_text.starts_with('*');
 
                     // If within normal line leading (e.g. 1.0 to 1.7x font size) and not explicit sentence end
-                    let is_continuation = line_pitch > 0.0 && line_pitch <= font_size * 1.8 && !ends_sentence;
+                    let is_continuation =
+                        line_pitch > 0.0 && line_pitch <= font_size * 1.8 && !ends_sentence;
 
                     if is_continuation {
                         last_para.push(block);
@@ -407,8 +419,10 @@ pub fn pdf_to_word_ex(
             }
 
             for para in paragraphs {
-                doc_xml.push_str(r#"    <w:p>
-"#);
+                doc_xml.push_str(
+                    r#"    <w:p>
+"#,
+                );
                 for (b_idx, b) in para.iter().enumerate() {
                     let trimmed = b.text.trim();
                     if trimmed.is_empty() {
@@ -443,7 +457,8 @@ pub fn pdf_to_word_ex(
                         r_pr.push_str(&format!("        <w:sz w:val=\"{half_pts}\"/>\n"));
                     }
                     let clean_color = b.color.trim_start_matches('#');
-                    if clean_color.len() == 6 && clean_color.chars().all(|c| c.is_ascii_hexdigit()) {
+                    if clean_color.len() == 6 && clean_color.chars().all(|c| c.is_ascii_hexdigit())
+                    {
                         r_pr.push_str(&format!("        <w:color w:val=\"{clean_color}\"/>\n"));
                     }
 
@@ -460,8 +475,10 @@ pub fn pdf_to_word_ex(
                         prefix_space, escaped
                     ));
                 }
-                doc_xml.push_str(r#"    </w:p>
-"#);
+                doc_xml.push_str(
+                    r#"    </w:p>
+"#,
+                );
             }
         } else {
             // Text-stream fallback with heuristic line unbreaking; when the page
@@ -473,70 +490,78 @@ pub fn pdf_to_word_ex(
                 }
             }
             if !page_text.trim().is_empty() {
-            let mut current_para = String::new();
-            for line in page_text.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    if !current_para.is_empty() {
-                        let escaped = xml_sanitize(&current_para);
-                        doc_xml.push_str(&format!(
-                            r#"    <w:p>
+                let mut current_para = String::new();
+                for line in page_text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        if !current_para.is_empty() {
+                            let escaped = xml_sanitize(&current_para);
+                            doc_xml.push_str(&format!(
+                                r#"    <w:p>
       <w:r>
         <w:t xml:space="preserve">{}</w:t>
       </w:r>
     </w:p>
 "#,
-                            escaped
-                        ));
-                        current_para.clear();
-                    }
-                    continue;
-                }
-
-                if current_para.is_empty() {
-                    current_para.push_str(trimmed);
-                } else {
-                    let ends_sentence = current_para.ends_with('。')
-                        || current_para.ends_with('.')
-                        || current_para.ends_with('!')
-                        || current_para.ends_with('?')
-                        || current_para.ends_with(':');
-
-                    if ends_sentence {
-                        let escaped = xml_sanitize(&current_para);
-                        doc_xml.push_str(&format!(
-                            r#"    <w:p>
-      <w:r>
-        <w:t xml:space="preserve">{}</w:t>
-      </w:r>
-    </w:p>
-"#,
-                            escaped
-                        ));
-                        current_para = trimmed.to_string();
-                    } else {
-                        if current_para.chars().last().map(|c| c.is_ascii()).unwrap_or(false)
-                            && trimmed.chars().next().map(|c| c.is_ascii()).unwrap_or(false)
-                        {
-                            current_para.push(' ');
+                                escaped
+                            ));
+                            current_para.clear();
                         }
-                        current_para.push_str(trimmed);
+                        continue;
                     }
-                }
-            }
 
-            if !current_para.is_empty() {
-                let escaped = xml_sanitize(&current_para);
-                doc_xml.push_str(&format!(
-                    r#"    <w:p>
+                    if current_para.is_empty() {
+                        current_para.push_str(trimmed);
+                    } else {
+                        let ends_sentence = current_para.ends_with('。')
+                            || current_para.ends_with('.')
+                            || current_para.ends_with('!')
+                            || current_para.ends_with('?')
+                            || current_para.ends_with(':');
+
+                        if ends_sentence {
+                            let escaped = xml_sanitize(&current_para);
+                            doc_xml.push_str(&format!(
+                                r#"    <w:p>
       <w:r>
         <w:t xml:space="preserve">{}</w:t>
       </w:r>
     </w:p>
 "#,
-                    escaped
-                ));
-            }
+                                escaped
+                            ));
+                            current_para = trimmed.to_string();
+                        } else {
+                            if current_para
+                                .chars()
+                                .last()
+                                .map(|c| c.is_ascii())
+                                .unwrap_or(false)
+                                && trimmed
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.is_ascii())
+                                    .unwrap_or(false)
+                            {
+                                current_para.push(' ');
+                            }
+                            current_para.push_str(trimmed);
+                        }
+                    }
+                }
+
+                if !current_para.is_empty() {
+                    let escaped = xml_sanitize(&current_para);
+                    doc_xml.push_str(&format!(
+                        r#"    <w:p>
+      <w:r>
+        <w:t xml:space="preserve">{}</w:t>
+      </w:r>
+    </w:p>
+"#,
+                        escaped
+                    ));
+                }
             }
         }
 
@@ -556,19 +581,24 @@ pub fn pdf_to_word_ex(
 
         // Add page break between pages
         if out_pos + 1 < selected.len() {
-            doc_xml.push_str(r#"    <w:p><w:r><w:br w:type="page"/></w:r></w:p>
-"#);
+            doc_xml.push_str(
+                r#"    <w:p><w:r><w:br w:type="page"/></w:r></w:p>
+"#,
+            );
         }
     }
 
-    doc_xml.push_str(r#"    <w:sectPr>
+    doc_xml.push_str(
+        r#"    <w:sectPr>
       <w:pgSz w:w="11906" w:h="16838"/>
       <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
     </w:sectPr>
   </w:body>
-</w:document>"#);
+</w:document>"#,
+    );
 
-    zip.write_all(doc_xml.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(doc_xml.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 4. word/_rels/document.xml.rels + word/media/* (only when images exist)
     if !image_rels.is_empty() {
@@ -596,7 +626,8 @@ pub fn pdf_to_word_ex(
         }
     }
 
-    zip.finish().map_err(|e| format!("Failed to finalize docx zip archive: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("Failed to finalize docx zip archive: {e}"))?;
     Ok(())
 }
 
@@ -641,14 +672,16 @@ pub fn pdf_to_excel_ex(
     };
 
     // Build genuine Office Open XML (.xlsx) ZIP structure
-    let file = std::fs::File::create(output_path).map_err(|e| format!("Failed to create output file: {e}"))?;
+    let file = std::fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
     // 1. [Content_Types].xml
-    zip.start_file("[Content_Types].xml", options).map_err(|e| e.to_string())?;
+    zip.start_file("[Content_Types].xml", options)
+        .map_err(|e| e.to_string())?;
     let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -656,10 +689,12 @@ pub fn pdf_to_excel_ex(
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 </Types>"#;
-    zip.write_all(content_types.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(content_types.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 2. _rels/.rels
-    zip.start_file("_rels/.rels", options).map_err(|e| e.to_string())?;
+    zip.start_file("_rels/.rels", options)
+        .map_err(|e| e.to_string())?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
@@ -667,15 +702,18 @@ pub fn pdf_to_excel_ex(
     zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
 
     // 3. xl/_rels/workbook.xml.rels
-    zip.start_file("xl/_rels/workbook.xml.rels", options).map_err(|e| e.to_string())?;
+    zip.start_file("xl/_rels/workbook.xml.rels", options)
+        .map_err(|e| e.to_string())?;
     let wb_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>"#;
-    zip.write_all(wb_rels.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(wb_rels.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 4. xl/workbook.xml
-    zip.start_file("xl/workbook.xml", options).map_err(|e| e.to_string())?;
+    zip.start_file("xl/workbook.xml", options)
+        .map_err(|e| e.to_string())?;
     let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
           xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -683,19 +721,24 @@ pub fn pdf_to_excel_ex(
     <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>"#;
-    zip.write_all(workbook.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(workbook.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 5. xl/worksheets/sheet1.xml
-    zip.start_file("xl/worksheets/sheet1.xml", options).map_err(|e| e.to_string())?;
-    let mut sheet_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    zip.start_file("xl/worksheets/sheet1.xml", options)
+        .map_err(|e| e.to_string())?;
+    let mut sheet_xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
-"#);
+"#,
+    );
 
     let mut current_row_idx = 1;
 
     for &i in &selected {
-        let blocks = crate::pdf_engine::text_block_ops::get_text_blocks_from_doc(&doc, i).unwrap_or_default();
+        let blocks = crate::pdf_engine::text_block_ops::get_text_blocks_from_doc(&doc, i)
+            .unwrap_or_default();
         if editable_tables && !blocks.is_empty() {
             // Cluster text blocks into rows by Y coordinate with threshold
             let mut sorted = blocks;
@@ -709,7 +752,8 @@ pub fn pdf_to_excel_ex(
             });
 
             // Group into visual rows
-            let mut visual_rows: Vec<Vec<crate::pdf_engine::text_block_ops::TextBlock>> = Vec::new();
+            let mut visual_rows: Vec<Vec<crate::pdf_engine::text_block_ops::TextBlock>> =
+                Vec::new();
             for block in sorted {
                 if let Some(last_row) = visual_rows.last_mut() {
                     let first_in_row = &last_row[0];
@@ -722,9 +766,12 @@ pub fn pdf_to_excel_ex(
             }
 
             // Detect column alignment gutters across rows
-            let mut x_coords: Vec<f32> = visual_rows.iter().flat_map(|r| r.iter().map(|b| b.x)).collect();
+            let mut x_coords: Vec<f32> = visual_rows
+                .iter()
+                .flat_map(|r| r.iter().map(|b| b.x))
+                .collect();
             x_coords.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            
+
             // Cluster X coordinates into distinct columns
             let mut column_anchors: Vec<f32> = Vec::new();
             for &x in &x_coords {
@@ -740,13 +787,17 @@ pub fn pdf_to_excel_ex(
                 sheet_xml.push_str(&format!(r#"    <row r="{}">"#, current_row_idx));
 
                 // Map blocks in this row to column indices
-                let mut col_map: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+                let mut col_map: std::collections::BTreeMap<usize, String> =
+                    std::collections::BTreeMap::new();
                 for b in row {
                     let col_idx = column_anchors
                         .iter()
                         .enumerate()
                         .min_by(|(_, &a), (_, &c)| {
-                            (b.x - a).abs().partial_cmp(&(b.x - c).abs()).unwrap_or(std::cmp::Ordering::Equal)
+                            (b.x - a)
+                                .abs()
+                                .partial_cmp(&(b.x - c).abs())
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         })
                         .map(|(idx, _)| idx)
                         .unwrap_or(0);
@@ -790,7 +841,8 @@ pub fn pdf_to_excel_ex(
                 }
             }
             if page_text.trim().is_empty() && !blocks.is_empty() {
-                let mut sorted: Vec<&crate::pdf_engine::text_block_ops::TextBlock> = blocks.iter().collect();
+                let mut sorted: Vec<&crate::pdf_engine::text_block_ops::TextBlock> =
+                    blocks.iter().collect();
                 // No stream text at all: fall back to block texts in reading order.
                 sorted.sort_by(|a, b| {
                     let dy = b.y - a.y;
@@ -817,11 +869,19 @@ pub fn pdf_to_excel_ex(
                 let cols: Vec<&str> = if !editable_tables {
                     vec![trimmed]
                 } else if trimmed.contains('\t') {
-                    trimmed.split('\t').map(|s| s.trim()).filter(|s| !s.is_empty()).collect()
+                    trimmed
+                        .split('\t')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect()
                 } else if trimmed.contains("  ") {
                     trimmed.split_whitespace().collect()
                 } else if trimmed.contains(',') {
-                    trimmed.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect()
+                    trimmed
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect()
                 } else {
                     vec![trimmed]
                 };
@@ -849,11 +909,15 @@ pub fn pdf_to_excel_ex(
         }
     }
 
-    sheet_xml.push_str(r#"  </sheetData>
-</worksheet>"#);
+    sheet_xml.push_str(
+        r#"  </sheetData>
+</worksheet>"#,
+    );
 
-    zip.write_all(sheet_xml.as_bytes()).map_err(|e| e.to_string())?;
-    zip.finish().map_err(|e| format!("Failed to finalize xlsx zip archive: {e}"))?;
+    zip.write_all(sheet_xml.as_bytes())
+        .map_err(|e| e.to_string())?;
+    zip.finish()
+        .map_err(|e| format!("Failed to finalize xlsx zip archive: {e}"))?;
     Ok(())
 }
 
@@ -919,14 +983,17 @@ pub fn pdf_to_powerpoint_ex(
     let num_slides = selected.len();
 
     // 1. [Content_Types].xml
-    zip.start_file("[Content_Types].xml", options).map_err(|e| e.to_string())?;
-    let mut content_types = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    zip.start_file("[Content_Types].xml", options)
+        .map_err(|e| e.to_string())?;
+    let mut content_types = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
-"#);
+"#,
+    );
     for i in 1..=num_slides {
         content_types.push_str(&format!(
             r#"  <Override PartName="/ppt/slides/slide{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
@@ -934,10 +1001,12 @@ pub fn pdf_to_powerpoint_ex(
         ));
     }
     content_types.push_str("</Types>");
-    zip.write_all(content_types.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(content_types.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 2. _rels/.rels
-    zip.start_file("_rels/.rels", options).map_err(|e| e.to_string())?;
+    zip.start_file("_rels/.rels", options)
+        .map_err(|e| e.to_string())?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
@@ -945,10 +1014,13 @@ pub fn pdf_to_powerpoint_ex(
     zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
 
     // 3. ppt/_rels/presentation.xml.rels
-    zip.start_file("ppt/_rels/presentation.xml.rels", options).map_err(|e| e.to_string())?;
-    let mut pres_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    zip.start_file("ppt/_rels/presentation.xml.rels", options)
+        .map_err(|e| e.to_string())?;
+    let mut pres_rels = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-"#);
+"#,
+    );
     for i in 1..=num_slides {
         pres_rels.push_str(&format!(
             r#"  <Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>
@@ -956,17 +1028,21 @@ pub fn pdf_to_powerpoint_ex(
         ));
     }
     pres_rels.push_str("</Relationships>");
-    zip.write_all(pres_rels.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(pres_rels.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 4. ppt/presentation.xml (Standard 16:9 widescreen 12192000 x 6858000 EMUs)
-    zip.start_file("ppt/presentation.xml", options).map_err(|e| e.to_string())?;
-    let mut pres_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    zip.start_file("ppt/presentation.xml", options)
+        .map_err(|e| e.to_string())?;
+    let mut pres_xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
                 xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:sldMasterIdLst/>
   <p:sldIdLst>
-"#);
+"#,
+    );
     for i in 1..=num_slides {
         let sld_id = 255 + i;
         pres_xml.push_str(&format!(
@@ -974,11 +1050,14 @@ pub fn pdf_to_powerpoint_ex(
 "#
         ));
     }
-    pres_xml.push_str(r#"  </p:sldIdLst>
+    pres_xml.push_str(
+        r#"  </p:sldIdLst>
   <p:sldSz cx="12192000" cy="6858000" type="screen16x9"/>
   <p:notesSz cx="6858000" cy="12192000"/>
-</p:presentation>"#);
-    zip.write_all(pres_xml.as_bytes()).map_err(|e| e.to_string())?;
+</p:presentation>"#,
+    );
+    zip.write_all(pres_xml.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     // 5. Slides and media
     for (slide_idx, &orig_page) in selected.iter().enumerate() {
@@ -988,16 +1067,23 @@ pub fn pdf_to_powerpoint_ex(
 
         if let Some(img_path) = rendered_images.get(slide_idx) {
             if let Ok(img_bytes) = std::fs::read(img_path) {
-                zip.start_file(format!("ppt/media/{img_filename}"), options).map_err(|e| e.to_string())?;
+                zip.start_file(format!("ppt/media/{img_filename}"), options)
+                    .map_err(|e| e.to_string())?;
                 zip.write_all(&img_bytes).map_err(|e| e.to_string())?;
             }
         }
 
         // slide relationships
-        zip.start_file(format!("ppt/slides/_rels/slide{slide_num}.xml.rels"), options).map_err(|e| e.to_string())?;
-        let mut slide_rel = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        zip.start_file(
+            format!("ppt/slides/_rels/slide{slide_num}.xml.rels"),
+            options,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut slide_rel = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-"#);
+"#,
+        );
         if has_image {
             slide_rel.push_str(&format!(
                 r#"  <Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{img_filename}"/>
@@ -1005,7 +1091,8 @@ pub fn pdf_to_powerpoint_ex(
             ));
         }
         slide_rel.push_str("</Relationships>");
-        zip.write_all(slide_rel.as_bytes()).map_err(|e| e.to_string())?;
+        zip.write_all(slide_rel.as_bytes())
+            .map_err(|e| e.to_string())?;
 
         // Extract text for notes/searchable overlay
         let mut page_text = get_page_text(data, orig_page).unwrap_or_default();
@@ -1033,8 +1120,9 @@ pub fn pdf_to_powerpoint_ex(
         }
 
         // slide{N}.xml
-        zip.start_file(format!("ppt/slides/slide{slide_num}.xml"), options).map_err(|e| e.to_string())?;
-        let mut slide_xml = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        zip.start_file(format!("ppt/slides/slide{slide_num}.xml"), options)
+            .map_err(|e| e.to_string())?;
+        let mut slide_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
        xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
@@ -1046,11 +1134,13 @@ pub fn pdf_to_powerpoint_ex(
         <p:nvPr/>
       </p:nvGrpSpPr>
       <p:grpSpPr/>
-"#);
+"#
+        .to_string();
 
         // Backdrop picture shape if rendered image is present
         if has_image {
-            slide_xml.push_str(r#"      <p:pic>
+            slide_xml.push_str(
+                r#"      <p:pic>
         <p:nvPicPr>
           <p:cNvPr id="2" name="Page Visual"/>
           <p:cNvPicPr>
@@ -1074,7 +1164,8 @@ pub fn pdf_to_powerpoint_ex(
           </a:prstGeom>
         </p:spPr>
       </p:pic>
-"#);
+"#,
+            );
         }
 
         // Text shape
@@ -1107,14 +1198,18 @@ pub fn pdf_to_powerpoint_ex(
             ));
         }
 
-        slide_xml.push_str(r#"    </p:spTree>
+        slide_xml.push_str(
+            r#"    </p:spTree>
   </p:cSld>
-</p:sld>"#);
-        zip.write_all(slide_xml.as_bytes()).map_err(|e| e.to_string())?;
+</p:sld>"#,
+        );
+        zip.write_all(slide_xml.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
 
     let _ = std::fs::remove_dir_all(&tmp);
-    zip.finish().map_err(|e| format!("Failed to finalize pptx zip archive: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("Failed to finalize pptx zip archive: {e}"))?;
     Ok(())
 }
 

@@ -36,7 +36,12 @@ pub struct PermissionFlags {
 
 impl Default for PermissionFlags {
     fn default() -> Self {
-        PermissionFlags { print: true, modify: true, copy: true, annotate: true }
+        PermissionFlags {
+            print: true,
+            modify: true,
+            copy: true,
+            annotate: true,
+        }
     }
 }
 
@@ -71,8 +76,10 @@ impl PermissionFlags {
 
 fn encrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
     match key.len() {
-        16 => Aes128::new(GenericArray::from_slice(key)).encrypt_block(GenericArray::from_mut_slice(block)),
-        32 => Aes256::new(GenericArray::from_slice(key)).encrypt_block(GenericArray::from_mut_slice(block)),
+        16 => Aes128::new(GenericArray::from_slice(key))
+            .encrypt_block(GenericArray::from_mut_slice(block)),
+        32 => Aes256::new(GenericArray::from_slice(key))
+            .encrypt_block(GenericArray::from_mut_slice(block)),
         n => return Err(format!("AES key length {n} is not 128 or 256 bits")),
     }
     Ok(())
@@ -80,8 +87,10 @@ fn encrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
 
 fn decrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
     match key.len() {
-        16 => Aes128::new(GenericArray::from_slice(key)).decrypt_block(GenericArray::from_mut_slice(block)),
-        32 => Aes256::new(GenericArray::from_slice(key)).decrypt_block(GenericArray::from_mut_slice(block)),
+        16 => Aes128::new(GenericArray::from_slice(key))
+            .decrypt_block(GenericArray::from_mut_slice(block)),
+        32 => Aes256::new(GenericArray::from_slice(key))
+            .decrypt_block(GenericArray::from_mut_slice(block)),
         n => return Err(format!("AES key length {n} is not 128 or 256 bits")),
     }
     Ok(())
@@ -89,12 +98,12 @@ fn decrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
 
 /// AES-CBC without padding; `data` must be a multiple of 16 bytes.
 fn cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
-    if data.len() % 16 != 0 {
+    if !data.len().is_multiple_of(16) {
         return Err("CBC input length must be a multiple of 16".into());
     }
     let mut prev = *iv;
     let mut out = Vec::with_capacity(data.len());
-    for chunk in data.chunks_exact(16) {
+    for chunk in data.as_chunks::<16>().0 {
         let mut block = [0u8; 16];
         for (i, b) in chunk.iter().enumerate() {
             block[i] = *b ^ prev[i];
@@ -108,13 +117,13 @@ fn cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String
 
 /// AES-CBC without padding.
 fn cbc_decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
-    if data.len() % 16 != 0 {
+    if !data.len().is_multiple_of(16) {
         return Err("CBC input length must be a multiple of 16".into());
     }
     let mut prev = *iv;
     let mut out = Vec::with_capacity(data.len());
-    for chunk in data.chunks_exact(16) {
-        let mut block: [u8; 16] = chunk.try_into().expect("chunks_exact(16)");
+    for chunk in data.as_chunks::<16>().0 {
+        let mut block: [u8; 16] = *chunk;
         let cipher_block = block;
         decrypt_block(key, &mut block)?;
         for (i, b) in block.iter().enumerate() {
@@ -135,12 +144,12 @@ fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     let pad = 16 - (data.len() % 16);
     let mut out = Vec::with_capacity(data.len() + pad);
     out.extend_from_slice(data);
-    out.extend(std::iter::repeat(pad as u8).take(pad));
+    out.extend(std::iter::repeat_n(pad as u8, pad));
     out
 }
 
 fn pkcs7_unpad(data: &[u8]) -> Result<Vec<u8>, String> {
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         return Err("AES暗号ブロックが壊れています".into());
     }
     let pad = *data.last().unwrap() as usize;
@@ -220,7 +229,12 @@ fn build_u(revision: i64, password: &[u8], file_key: &[u8]) -> Result<(Vec<u8>, 
 }
 
 /// Algorithm 3.9: O (48 bytes) and OE. `u` is the 48-byte U string.
-fn build_o(revision: i64, password: &[u8], file_key: &[u8], u: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn build_o(
+    revision: i64,
+    password: &[u8],
+    file_key: &[u8],
+    u: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     let salts = random_bytes::<16>()?;
     let (val_salt, key_salt) = (&salts[0..8], &salts[8..16]);
     let h = calculate_hash(revision, password, val_salt, u);
@@ -286,7 +300,7 @@ fn aes_object_encrypt(key: &[u8], plain: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn aes_object_decrypt(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
-    if payload.len() < 32 || (payload.len() - 16) % 16 != 0 {
+    if payload.len() < 32 || !(payload.len() - 16).is_multiple_of(16) {
         return Err("AES暗号ペイロード長が不正です".into());
     }
     let (iv, ct) = payload.split_at(16);
@@ -297,7 +311,12 @@ fn aes_object_decrypt(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
 
 // ===== object graph walk (V=5 uses the file key directly, no per-object KDF) =====
 
-fn walk_crypt(obj: &mut Object, key: &[u8], encrypt: bool, encrypt_metadata: bool) -> Result<(), String> {
+fn walk_crypt(
+    obj: &mut Object,
+    key: &[u8],
+    encrypt: bool,
+    encrypt_metadata: bool,
+) -> Result<(), String> {
     match obj {
         Object::String(data, format) => {
             if encrypt {
@@ -369,8 +388,17 @@ fn dict_str(dict: &lopdf::Dictionary, key: &[u8]) -> Result<Vec<u8>, String> {
 /// (may be empty → equals the user password) unlocks permission changes.
 /// All permissions are granted by default — the point is open-with-password,
 /// not print restrictions. Use [`encrypt_pdf_with_permissions`] for /P flags.
-pub fn encrypt_pdf(data: &[u8], user_password: &str, owner_password: &str) -> Result<Vec<u8>, String> {
-    encrypt_pdf_with_permissions(data, user_password, owner_password, PermissionFlags::default())
+pub fn encrypt_pdf(
+    data: &[u8],
+    user_password: &str,
+    owner_password: &str,
+) -> Result<Vec<u8>, String> {
+    encrypt_pdf_with_permissions(
+        data,
+        user_password,
+        owner_password,
+        PermissionFlags::default(),
+    )
 }
 
 pub fn encrypt_pdf_with_permissions(
@@ -380,7 +408,10 @@ pub fn encrypt_pdf_with_permissions(
     permissions: PermissionFlags,
 ) -> Result<Vec<u8>, String> {
     if user_password.is_empty() {
-        return Err("開くためのユーザーパスワードを指定してください（空パスワードでは暗号化できません）".into());
+        return Err(
+            "開くためのユーザーパスワードを指定してください（空パスワードでは暗号化できません）"
+                .into(),
+        );
     }
     let mut doc = Document::load_mem(data).map_err(|e| format!("PDF解析に失敗しました: {e}"))?;
     if doc.is_encrypted() {
@@ -389,7 +420,11 @@ pub fn encrypt_pdf_with_permissions(
 
     let file_key = random_bytes::<32>()?;
     let user_pw = encode_password(user_password);
-    let owner_pw = if owner_password.is_empty() { user_pw.clone() } else { encode_password(owner_password) };
+    let owner_pw = if owner_password.is_empty() {
+        user_pw.clone()
+    } else {
+        encode_password(owner_password)
+    };
     let p = permissions.to_p();
 
     let (u, ue) = build_u(6, &user_pw, &file_key)?;
@@ -406,7 +441,10 @@ pub fn encrypt_pdf_with_permissions(
     encrypt_dict.set("U", Object::String(u, StringFormat::Hexadecimal));
     encrypt_dict.set("OE", Object::String(oe, StringFormat::Hexadecimal));
     encrypt_dict.set("UE", Object::String(ue, StringFormat::Hexadecimal));
-    encrypt_dict.set("Perms", Object::String(perms_blob, StringFormat::Hexadecimal));
+    encrypt_dict.set(
+        "Perms",
+        Object::String(perms_blob, StringFormat::Hexadecimal),
+    );
 
     let mut std_cf = lopdf::Dictionary::new();
     std_cf.set("AuthEvent", Object::Name(b"DocOpen".to_vec()));
@@ -443,13 +481,16 @@ pub fn encrypt_pdf_with_permissions(
     }
 
     let mut out = Vec::new();
-    doc.save_to(&mut out).map_err(|e| format!("暗号化PDFの書き出しに失敗しました: {e}"))?;
+    doc.save_to(&mut out)
+        .map_err(|e| format!("暗号化PDFの書き出しに失敗しました: {e}"))?;
     Ok(out)
 }
 
 /// Cheap password-protection probe (parse + trailer check, no decryption).
 pub fn is_encrypted(data: &[u8]) -> bool {
-    Document::load_mem(data).map(|doc| doc.is_encrypted()).unwrap_or(false)
+    Document::load_mem(data)
+        .map(|doc| doc.is_encrypted())
+        .unwrap_or(false)
 }
 
 /// Decrypt a password-protected PDF. Supports R=5/R=6 (native) and
@@ -465,11 +506,17 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
         .trailer
         .get(b"Encrypt")
         .and_then(Object::as_reference)
-        .map_err(|_| "暗号化辞書の参照が不正です（オブジェクト直書きの暗号化辞書には未対応です）".to_string())?;
+        .map_err(|_| {
+            "暗号化辞書の参照が不正です（オブジェクト直書きの暗号化辞書には未対応です）".to_string()
+        })?;
 
     let (revision, o, oe, u, ue, encrypt_metadata) = {
-        let enc = doc.get_object(encrypt_id).map_err(|_| "暗号化辞書が存在しません".to_string())?;
-        let dict = enc.as_dict().map_err(|_| "暗号化辞書が不正です".to_string())?;
+        let enc = doc
+            .get_object(encrypt_id)
+            .map_err(|_| "暗号化辞書が存在しません".to_string())?;
+        let dict = enc
+            .as_dict()
+            .map_err(|_| "暗号化辞書が不正です".to_string())?;
         let revision = dict
             .get(b"R")
             .map_err(|_| "暗号化辞書の /R が存在しません".to_string())?
@@ -501,7 +548,14 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
                 encrypt_metadata,
             )
         } else {
-            (revision, Vec::new(), Vec::new(), Vec::new(), Vec::new(), encrypt_metadata)
+            (
+                revision,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                encrypt_metadata,
+            )
         }
     };
 
@@ -532,9 +586,7 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
     }
 
     let mut out = Vec::new();
-    doc.save_to(&mut out).map_err(|e| format!("復号PDFの書き出しに失敗しました: {e}"))?;
+    doc.save_to(&mut out)
+        .map_err(|e| format!("復号PDFの書き出しに失敗しました: {e}"))?;
     Ok(out)
 }
-
-
-

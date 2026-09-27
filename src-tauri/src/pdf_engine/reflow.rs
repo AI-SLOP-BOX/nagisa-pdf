@@ -204,11 +204,10 @@ pub fn reflow_text(
                 // 行末禁則処理：現在の行末に置いてはいけない文字（「、『 など）が最後の文字になる場合
                 if is_kinsoku_line_end(c)
                     && (current_line_width + char_w + font_size > target_max_width)
+                    && !current_line.is_empty()
                 {
-                    if !current_line.is_empty() {
-                        wrapped_lines.push(current_line);
-                        current_line = String::new();
-                    }
+                    wrapped_lines.push(current_line);
+                    current_line = String::new();
                 }
                 current_line.push(c);
                 current_line_width += char_w;
@@ -258,7 +257,7 @@ pub fn reflow_text(
     };
 
     // Check if text contains non-ASCII (e.g. Japanese Kanji/Kana/Hiragana)
-    let has_non_ascii = new_text.chars().any(|c| !c.is_ascii());
+    let has_non_ascii = !new_text.is_ascii();
 
     if has_non_ascii {
         // Genuine CJK TrueType Embedding Pipeline (IPAexGothic / Type0 / Identity-H / ToUnicode)
@@ -312,7 +311,9 @@ pub fn reflow_text(
         let mut all_ops = cleaned_operations;
         all_ops.extend(new_text_ops);
 
-        let content = lopdf::content::Content { operations: all_ops };
+        let content = lopdf::content::Content {
+            operations: all_ops,
+        };
         let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
@@ -383,7 +384,9 @@ pub fn reflow_text(
         let mut all_ops = cleaned_operations;
         all_ops.extend(new_text_ops);
 
-        let content = lopdf::content::Content { operations: all_ops };
+        let content = lopdf::content::Content {
+            operations: all_ops,
+        };
         let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
@@ -467,10 +470,8 @@ fn remove_text_in_rect(
             "ET" => {
                 pending_block.push(op);
                 // ブロック先頭座標が矩形内にあれば除去、そうでなければ保持
-                let in_rect = block_x >= x_min
-                    && block_x <= x_max
-                    && block_y >= y_min
-                    && block_y <= y_max;
+                let in_rect =
+                    block_x >= x_min && block_x <= x_max && block_y >= y_min && block_y <= y_max;
                 if !in_rect {
                     result.append(&mut pending_block);
                 } else {
@@ -506,16 +507,24 @@ fn remove_text_in_rect(
                 }
             }
             "Td" | "TD" => {
-                let dx = op.operands.first().and_then(|o| match o {
-                    Object::Real(v) => Some(*v),
-                    Object::Integer(v) => Some(*v as f32),
-                    _ => None,
-                }).unwrap_or(0.0);
-                let dy = op.operands.get(1).and_then(|o| match o {
-                    Object::Real(v) => Some(*v),
-                    Object::Integer(v) => Some(*v as f32),
-                    _ => None,
-                }).unwrap_or(0.0);
+                let dx = op
+                    .operands
+                    .first()
+                    .and_then(|o| match o {
+                        Object::Real(v) => Some(*v),
+                        Object::Integer(v) => Some(*v as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+                let dy = op
+                    .operands
+                    .get(1)
+                    .and_then(|o| match o {
+                        Object::Real(v) => Some(*v),
+                        Object::Integer(v) => Some(*v as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
                 current_x += dx;
                 current_y += dy;
                 if in_text && !position_set {

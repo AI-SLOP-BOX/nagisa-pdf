@@ -20,7 +20,10 @@ pub struct FormFieldConfig {
 
 /// Helper to ensure /AcroForm exists on Catalog Root and has standard /DR (Default Resources)
 /// with /Helv (Helvetica) font properly declared and /NeedAppearances true.
-pub(crate) fn ensure_acroform_with_resources(doc: &mut Document, field_id: lopdf::ObjectId) -> Result<(), String> {
+pub(crate) fn ensure_acroform_with_resources(
+    doc: &mut Document,
+    field_id: lopdf::ObjectId,
+) -> Result<(), String> {
     let root_id = doc
         .trailer
         .get(b"Root")
@@ -47,7 +50,9 @@ pub(crate) fn ensure_acroform_with_resources(doc: &mut Document, field_id: lopdf
                 dr.and_then(|d| {
                     let fonts = match d.get(b"Font").ok() {
                         Some(Object::Dictionary(fd)) => Some(fd),
-                        Some(Object::Reference(r)) => doc.objects.get(r).and_then(|o| o.as_dict().ok()),
+                        Some(Object::Reference(r)) => {
+                            doc.objects.get(r).and_then(|o| o.as_dict().ok())
+                        }
                         _ => None,
                     };
                     fonts.and_then(|fd| {
@@ -78,7 +83,8 @@ pub(crate) fn ensure_acroform_with_resources(doc: &mut Document, field_id: lopdf
     dr_dict.set("Font", Object::Dictionary(font_res));
 
     // 3. Inspect existing fields before mutable borrow
-    let existing_fields = if let Some(Object::Dictionary(ref root_dict)) = doc.objects.get(&root_id) {
+    let existing_fields = if let Some(Object::Dictionary(ref root_dict)) = doc.objects.get(&root_id)
+    {
         match root_dict.get(b"AcroForm") {
             Ok(Object::Dictionary(ref form_dict)) => match form_dict.get(b"Fields") {
                 Ok(Object::Array(ref arr)) => arr.clone(),
@@ -107,7 +113,10 @@ pub(crate) fn ensure_acroform_with_resources(doc: &mut Document, field_id: lopdf
         acro_form.set("DR", Object::Dictionary(dr_dict));
         acro_form.set(
             "DA",
-            Object::String(b"/Helv 12 Tf 0 0 0 rg".to_vec(), lopdf::StringFormat::Literal),
+            Object::String(
+                b"/Helv 12 Tf 0 0 0 rg".to_vec(),
+                lopdf::StringFormat::Literal,
+            ),
         );
         acro_form.set("NeedAppearances", Object::Boolean(true));
         root_dict.set("AcroForm", Object::Dictionary(acro_form));
@@ -201,7 +210,10 @@ pub(crate) fn create_appearance_stream(
         _ => {
             // Text or Choice field appearance: clean light background, subtle border, and text
             let val_text = value.unwrap_or("");
-            let escaped_text = val_text.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
+            let escaped_text = val_text
+                .replace('\\', "\\\\")
+                .replace('(', "\\(")
+                .replace(')', "\\)");
             format!(
                 "0.98 0.98 0.98 rg 0 0 {width:.2} {height:.2} re f \
                  0.7 0.7 0.7 RG 1 w 0.5 0.5 {w:.2} {h:.2} re s \
@@ -292,7 +304,11 @@ pub fn create_form_field(
     } else if let Some(ref value) = config.value {
         if is_button {
             // For checkbox/radio button, value is a Name (e.g. /Yes or /Off)
-            let on_state = if value.eq_ignore_ascii_case("off") { "Off" } else { value.as_str() };
+            let on_state = if value.eq_ignore_ascii_case("off") {
+                "Off"
+            } else {
+                value.as_str()
+            };
             field_dict.set("V", Object::Name(on_state.as_bytes().to_vec()));
             field_dict.set("AS", Object::Name(on_state.as_bytes().to_vec()));
         } else {
@@ -342,7 +358,11 @@ pub fn create_form_field(
 
         let mut n_dict = Dictionary::new();
         let on_val = config.value.as_deref().unwrap_or("Yes");
-        let on_state_name = if on_val.eq_ignore_ascii_case("off") { "Yes" } else { on_val };
+        let on_state_name = if on_val.eq_ignore_ascii_case("off") {
+            "Yes"
+        } else {
+            on_val
+        };
         n_dict.set(on_state_name, Object::Reference(on_id));
         n_dict.set("Off", Object::Reference(off_id));
 
@@ -433,7 +453,7 @@ pub fn create_radio_button(
 
     let selected_val = options[0].clone();
 
-    for (_i, opt_name) in options.iter().enumerate() {
+    for opt_name in options.iter() {
         let is_selected = opt_name == &selected_val;
 
         // Button normal appearance streams
@@ -495,7 +515,8 @@ pub fn create_radio_button(
     parent_dict.set("V", Object::Name(selected_val.as_bytes().to_vec()));
     parent_dict.set("Kids", Object::Array(kid_refs.clone()));
 
-    doc.objects.insert(parent_id, Object::Dictionary(parent_dict));
+    doc.objects
+        .insert(parent_id, Object::Dictionary(parent_dict));
 
     // Add kid widgets to page annotations
     if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {

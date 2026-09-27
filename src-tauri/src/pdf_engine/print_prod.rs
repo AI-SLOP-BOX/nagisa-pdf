@@ -55,40 +55,59 @@ pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
 
         for img_id in images_to_convert {
             if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&img_id) {
-                let width = stream.dict.get(b"Width").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
-                let height = stream.dict.get(b"Height").ok().and_then(|o| o.as_i64().ok()).unwrap_or(0) as u32;
+                let width = stream
+                    .dict
+                    .get(b"Width")
+                    .ok()
+                    .and_then(|o| o.as_i64().ok())
+                    .unwrap_or(0) as u32;
+                let height = stream
+                    .dict
+                    .get(b"Height")
+                    .ok()
+                    .and_then(|o| o.as_i64().ok())
+                    .unwrap_or(0) as u32;
 
                 if width > 0 && height > 0 {
-                    let decoded_bytes = stream.decompressed_content()
-                        .or_else(|_| image::load_from_memory(&stream.content).map(|img| img.to_rgb8().into_raw()).map_err(|e| e.to_string()))
+                    let decoded_bytes = stream
+                        .decompressed_content()
+                        .or_else(|_| {
+                            image::load_from_memory(&stream.content)
+                                .map(|img| img.to_rgb8().into_raw())
+                                .map_err(|e| e.to_string())
+                        })
                         .unwrap_or_else(|_| stream.content.clone());
 
                     if decoded_bytes.len() >= (width * height * 3) as usize {
                         let bytes = decoded_bytes;
                         let mut cmyk = Vec::with_capacity((width * height * 4) as usize);
-                            for chunk in bytes.chunks_exact(3) {
-                                let (c, m, y, k) = rgb_to_cmyk(chunk[0], chunk[1], chunk[2]);
-                                cmyk.push(c);
-                                cmyk.push(m);
-                                cmyk.push(y);
-                                cmyk.push(k);
-                            }
-                            use std::io::Write;
-                            use flate2::write::ZlibEncoder;
-                            use flate2::Compression;
-
-                            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-                            let _ = encoder.write_all(&cmyk);
-                            let compressed = encoder.finish().unwrap_or(cmyk);
-
-                            stream.set_content(compressed);
-                            stream.dict.set("ColorSpace", Object::Name(b"DeviceCMYK".to_vec()));
-                            stream.dict.set("BitsPerComponent", Object::Integer(8));
-                            stream.dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+                        for chunk in bytes.as_chunks::<3>().0 {
+                            let (c, m, y, k) = rgb_to_cmyk(chunk[0], chunk[1], chunk[2]);
+                            cmyk.push(c);
+                            cmyk.push(m);
+                            cmyk.push(y);
+                            cmyk.push(k);
                         }
+                        use flate2::write::ZlibEncoder;
+                        use flate2::Compression;
+                        use std::io::Write;
+
+                        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+                        let _ = encoder.write_all(&cmyk);
+                        let compressed = encoder.finish().unwrap_or(cmyk);
+
+                        stream.set_content(compressed);
+                        stream
+                            .dict
+                            .set("ColorSpace", Object::Name(b"DeviceCMYK".to_vec()));
+                        stream.dict.set("BitsPerComponent", Object::Integer(8));
+                        stream
+                            .dict
+                            .set("Filter", Object::Name(b"FlateDecode".to_vec()));
                     }
                 }
             }
+        }
 
         let saved = save_doc(&mut doc)?;
 
@@ -98,7 +117,8 @@ pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // Fallback if data is a standalone image (PNG/JPEG)
-    let img = image::load_from_memory(data).map_err(|e| format!("Failed to parse as PDF or image: {e}"))?;
+    let img = image::load_from_memory(data)
+        .map_err(|e| format!("Failed to parse as PDF or image: {e}"))?;
     let rgb = img.to_rgb8();
     let (width, height) = rgb.dimensions();
 
@@ -135,57 +155,65 @@ fn convert_rgb_operators_in_streams(data: &[u8]) -> Result<Vec<u8>, String> {
         // and avoids leaving orphaned zombie streams in the PDF object table.
         for cid in content_ids {
             if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&cid) {
-                let bytes = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+                let bytes = stream
+                    .decompressed_content()
+                    .unwrap_or_else(|_| stream.content.clone());
                 if let Ok(content) = lopdf::content::Content::decode(&bytes) {
-                    let new_ops: Vec<lopdf::content::Operation> = content.operations.into_iter().map(|mut op| {
-                        match op.operator.as_str() {
-                            // rg: fill color (RGB) -> k: fill color (CMYK)
-                            "rg" if op.operands.len() >= 3 => {
-                                if let (Some(r), Some(g), Some(b)) = (
-                                    op.operands[0].as_float().ok(),
-                                    op.operands[1].as_float().ok(),
-                                    op.operands[2].as_float().ok(),
-                                ) {
-                                    let ri = (r * 255.0).clamp(0.0, 255.0) as u8;
-                                    let gi = (g * 255.0).clamp(0.0, 255.0) as u8;
-                                    let bi = (b * 255.0).clamp(0.0, 255.0) as u8;
-                                    let (c, m, y, k) = rgb_to_cmyk(ri, gi, bi);
-                                    op.operator = "k".to_string();
-                                    op.operands = vec![
-                                        Object::Real(c as f32 / 100.0),
-                                        Object::Real(m as f32 / 100.0),
-                                        Object::Real(y as f32 / 100.0),
-                                        Object::Real(k as f32 / 100.0),
-                                    ];
+                    let new_ops: Vec<lopdf::content::Operation> = content
+                        .operations
+                        .into_iter()
+                        .map(|mut op| {
+                            match op.operator.as_str() {
+                                // rg: fill color (RGB) -> k: fill color (CMYK)
+                                "rg" if op.operands.len() >= 3 => {
+                                    if let (Some(r), Some(g), Some(b)) = (
+                                        op.operands[0].as_float().ok(),
+                                        op.operands[1].as_float().ok(),
+                                        op.operands[2].as_float().ok(),
+                                    ) {
+                                        let ri = (r * 255.0).clamp(0.0, 255.0) as u8;
+                                        let gi = (g * 255.0).clamp(0.0, 255.0) as u8;
+                                        let bi = (b * 255.0).clamp(0.0, 255.0) as u8;
+                                        let (c, m, y, k) = rgb_to_cmyk(ri, gi, bi);
+                                        op.operator = "k".to_string();
+                                        op.operands = vec![
+                                            Object::Real(c as f32 / 100.0),
+                                            Object::Real(m as f32 / 100.0),
+                                            Object::Real(y as f32 / 100.0),
+                                            Object::Real(k as f32 / 100.0),
+                                        ];
+                                    }
+                                    op
                                 }
-                                op
-                            }
-                            // RG: stroke color (RGB) -> K: stroke color (CMYK)
-                            "RG" if op.operands.len() >= 3 => {
-                                if let (Some(r), Some(g), Some(b)) = (
-                                    op.operands[0].as_float().ok(),
-                                    op.operands[1].as_float().ok(),
-                                    op.operands[2].as_float().ok(),
-                                ) {
-                                    let ri = (r * 255.0).clamp(0.0, 255.0) as u8;
-                                    let gi = (g * 255.0).clamp(0.0, 255.0) as u8;
-                                    let bi = (b * 255.0).clamp(0.0, 255.0) as u8;
-                                    let (c, m, y, k) = rgb_to_cmyk(ri, gi, bi);
-                                    op.operator = "K".to_string();
-                                    op.operands = vec![
-                                        Object::Real(c as f32 / 100.0),
-                                        Object::Real(m as f32 / 100.0),
-                                        Object::Real(y as f32 / 100.0),
-                                        Object::Real(k as f32 / 100.0),
-                                    ];
+                                // RG: stroke color (RGB) -> K: stroke color (CMYK)
+                                "RG" if op.operands.len() >= 3 => {
+                                    if let (Some(r), Some(g), Some(b)) = (
+                                        op.operands[0].as_float().ok(),
+                                        op.operands[1].as_float().ok(),
+                                        op.operands[2].as_float().ok(),
+                                    ) {
+                                        let ri = (r * 255.0).clamp(0.0, 255.0) as u8;
+                                        let gi = (g * 255.0).clamp(0.0, 255.0) as u8;
+                                        let bi = (b * 255.0).clamp(0.0, 255.0) as u8;
+                                        let (c, m, y, k) = rgb_to_cmyk(ri, gi, bi);
+                                        op.operator = "K".to_string();
+                                        op.operands = vec![
+                                            Object::Real(c as f32 / 100.0),
+                                            Object::Real(m as f32 / 100.0),
+                                            Object::Real(y as f32 / 100.0),
+                                            Object::Real(k as f32 / 100.0),
+                                        ];
+                                    }
+                                    op
                                 }
-                                op
+                                _ => op,
                             }
-                            _ => op,
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
-                    let new_content = lopdf::content::Content { operations: new_ops };
+                    let new_content = lopdf::content::Content {
+                        operations: new_ops,
+                    };
                     if let Ok(encoded) = new_content.encode() {
                         stream.set_content(encoded);
                         stream.dict.remove(b"Filter"); // Update to raw encoded bytes
@@ -219,11 +247,17 @@ pub fn set_cmyk_output_intent(data: &[u8], profile_name: &str) -> Result<Vec<u8>
     intent_dict.set("S", Object::Name("GTS_PDFX".into()));
     intent_dict.set(
         "OutputConditionIdentifier",
-        Object::String(profile_name.as_bytes().to_vec(), lopdf::StringFormat::Literal),
+        Object::String(
+            profile_name.as_bytes().to_vec(),
+            lopdf::StringFormat::Literal,
+        ),
     );
     intent_dict.set(
         "Info",
-        Object::String(format!("Output Profile: {profile_name}").into_bytes(), lopdf::StringFormat::Literal),
+        Object::String(
+            format!("Output Profile: {profile_name}").into_bytes(),
+            lopdf::StringFormat::Literal,
+        ),
     );
     intent_dict.set("DestOutputProfile", Object::Reference(profile_id));
     let intent_id = doc.add_object(Object::Dictionary(intent_dict));
@@ -267,11 +301,9 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
     // Find all image XObjects
     for (&id, obj) in doc.objects.iter() {
         if let Object::Stream(ref stream) = obj {
-            if let Some(subtype) = stream.dict.get(b"Subtype").ok() {
-                if let Object::Name(name) = subtype {
-                    if name == b"Image" {
-                        images_to_update.push(id);
-                    }
+            if let Ok(Object::Name(name)) = stream.dict.get(b"Subtype") {
+                if name == b"Image" {
+                    images_to_update.push(id);
                 }
             }
         }
@@ -316,8 +348,12 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                                 let content_ids = resolve_page_content_stream_ids(&doc, pid);
                                 for cid in content_ids {
                                     if let Some(Object::Stream(cs)) = doc.objects.get(&cid) {
-                                        let cbytes = cs.decompressed_content().unwrap_or_else(|_| cs.content.clone());
-                                        if let Ok(c_content) = lopdf::content::Content::decode(&cbytes) {
+                                        let cbytes = cs
+                                            .decompressed_content()
+                                            .unwrap_or_else(|_| cs.content.clone());
+                                        if let Ok(c_content) =
+                                            lopdf::content::Content::decode(&cbytes)
+                                        {
                                             let mut cm = (1.0f32, 0.0f32, 0.0f32, 1.0f32);
                                             for op in &c_content.operations {
                                                 if op.operator == "cm" && op.operands.len() >= 4 {
@@ -326,14 +362,22 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                                                         op.operands[1].as_float().ok(),
                                                         op.operands[2].as_float().ok(),
                                                         op.operands[3].as_float().ok(),
-                                                    ) { cm = (a, b, c, d); }
+                                                    ) {
+                                                        cm = (a, b, c, d);
+                                                    }
                                                 } else if op.operator == "Do" {
-                                                    if let Some(do_name) = op.operands.first().and_then(|o| o.as_name().ok()) {
+                                                    if let Some(do_name) = op
+                                                        .operands
+                                                        .first()
+                                                        .and_then(|o| o.as_name().ok())
+                                                    {
                                                         if do_name == res_name.as_slice() {
-                                                            let placed_w_pt = cm.0.hypot(cm.1).abs().max(1.0);
+                                                            let placed_w_pt =
+                                                                cm.0.hypot(cm.1).abs().max(1.0);
                                                             let placed_w_inch = placed_w_pt / 72.0;
                                                             if placed_w_inch > 0.0 {
-                                                                image_dpi = width as f32 / placed_w_inch;
+                                                                image_dpi =
+                                                                    width as f32 / placed_w_inch;
                                                             }
                                                             break 'dpi_outer;
                                                         }
@@ -397,9 +441,13 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                         let new_data = jpg_buf.into_inner();
                         stream.content = new_data;
                         stream.dict.set("Width", Object::Integer(new_width as i64));
-                        stream.dict.set("Height", Object::Integer(new_height as i64));
+                        stream
+                            .dict
+                            .set("Height", Object::Integer(new_height as i64));
                         stream.dict.set("Filter", Object::Name("DCTDecode".into()));
-                        stream.dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+                        stream
+                            .dict
+                            .set("ColorSpace", Object::Name("DeviceRGB".into()));
                         stream.dict.remove(b"DecodeParms");
                         stream.dict.remove(b"BitsPerComponent");
                     }
@@ -434,7 +482,7 @@ pub fn remove_metadata(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // Remove any embedded files
-    for (_, obj) in doc.objects.iter_mut() {
+    for obj in doc.objects.values_mut() {
         if let Object::Dictionary(ref mut dict) = obj {
             dict.remove(b"Names");
             dict.remove(b"EmbeddedFiles");
@@ -578,7 +626,10 @@ pub fn flatten_transparency(data: &[u8]) -> Result<Vec<u8>, String> {
             let mut inline_res = match res_obj {
                 Object::Reference(rid) => {
                     target_res_id = Some(rid);
-                    doc.objects.get(&rid).and_then(|o| o.as_dict().ok()).cloned()
+                    doc.objects
+                        .get(&rid)
+                        .and_then(|o| o.as_dict().ok())
+                        .cloned()
                 }
                 Object::Dictionary(d) => Some(d),
                 _ => None,
@@ -606,7 +657,9 @@ pub fn flatten_transparency(data: &[u8]) -> Result<Vec<u8>, String> {
                                     sd.remove(b"SMask");
                                 }
                                 Object::Reference(s_id) => {
-                                    if let Some(Object::Dictionary(ref mut sd)) = doc.objects.get_mut(s_id) {
+                                    if let Some(Object::Dictionary(ref mut sd)) =
+                                        doc.objects.get_mut(s_id)
+                                    {
                                         sd.set("CA", Object::Real(1.0));
                                         sd.set("ca", Object::Real(1.0));
                                         sd.set("BM", Object::Name(b"Normal".to_vec()));
@@ -627,7 +680,9 @@ pub fn flatten_transparency(data: &[u8]) -> Result<Vec<u8>, String> {
 
                 if let Some(rid) = target_res_id {
                     doc.objects.insert(rid, Object::Dictionary(rdict.clone()));
-                } else if let Some(Object::Dictionary(ref mut pdict)) = doc.objects.get_mut(&page_id) {
+                } else if let Some(Object::Dictionary(ref mut pdict)) =
+                    doc.objects.get_mut(&page_id)
+                {
                     pdict.set("Resources", Object::Dictionary(rdict.clone()));
                 }
             }
@@ -668,10 +723,16 @@ pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, Strin
                             "k" | "K" => uses_cmyk = true,
                             "g" | "G" => uses_gray = true,
                             "cs" | "CS" => {
-                                if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
-                                    if name == b"DeviceRGB" { uses_rgb = true; }
-                                    else if name == b"DeviceCMYK" { uses_cmyk = true; }
-                                    else if name == b"DeviceGray" { uses_gray = true; }
+                                if let Some(name) =
+                                    op.operands.first().and_then(|o| o.as_name().ok())
+                                {
+                                    if name == b"DeviceRGB" {
+                                        uses_rgb = true;
+                                    } else if name == b"DeviceCMYK" {
+                                        uses_cmyk = true;
+                                    } else if name == b"DeviceGray" {
+                                        uses_gray = true;
+                                    }
                                 }
                             }
                             _ => {}
@@ -685,7 +746,9 @@ pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, Strin
             // 2. Inspect embedded XObject Images in Page Resources
             let res_dict = dict.get(b"Resources").ok().and_then(|r| match r {
                 Object::Dictionary(d) => Some(d.clone()),
-                Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()).cloned(),
+                Object::Reference(id) => {
+                    doc.objects.get(id).and_then(|o| o.as_dict().ok()).cloned()
+                }
                 _ => None,
             });
 
@@ -693,7 +756,9 @@ pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, Strin
                 if let Ok(xobjs) = res.get(b"XObject") {
                     let xobj_dict = match xobjs {
                         Object::Dictionary(d) => Some(d.clone()),
-                        Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()).cloned(),
+                        Object::Reference(id) => {
+                            doc.objects.get(id).and_then(|o| o.as_dict().ok()).cloned()
+                        }
                         _ => None,
                     };
 
@@ -701,9 +766,13 @@ pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, Strin
                         for (_, val) in xd.iter() {
                             if let Ok(xid) = val.as_reference() {
                                 if let Some(Object::Stream(stream)) = doc.objects.get(&xid) {
-                                    if let Ok(Object::Name(ref subtype)) = stream.dict.get(b"Subtype") {
+                                    if let Ok(Object::Name(ref subtype)) =
+                                        stream.dict.get(b"Subtype")
+                                    {
                                         if subtype == b"Image" {
-                                            if let Ok(Object::Name(ref cs)) = stream.dict.get(b"ColorSpace") {
+                                            if let Ok(Object::Name(ref cs)) =
+                                                stream.dict.get(b"ColorSpace")
+                                            {
                                                 if cs == b"DeviceRGB" {
                                                     uses_rgb = true;
                                                 } else if cs == b"DeviceCMYK" {

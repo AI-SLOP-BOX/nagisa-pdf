@@ -100,12 +100,8 @@ pub fn add_calculated_field(
     field_dict.set("AA", Object::Dictionary(aa_dict));
 
     // 2. Visible Normal Appearance (/AP /N)
-    let ap_stream = super::form_creator::create_appearance_stream(
-        width as f32,
-        height as f32,
-        "Tx",
-        Some("0"),
-    );
+    let ap_stream =
+        super::form_creator::create_appearance_stream(width as f32, height as f32, "Tx", Some("0"));
     let ap_id = doc.add_object(Object::Stream(ap_stream));
     let mut ap_dict = Dictionary::new();
     ap_dict.set("N", Object::Reference(ap_id));
@@ -132,28 +128,38 @@ pub fn add_calculated_field(
     let mut page_resources = resolve_page_resources(&doc, page_id);
     let mut font_dict = match page_resources.get(b"Font") {
         Ok(Object::Dictionary(d)) => d.clone(),
-        Ok(Object::Reference(f_ref)) => doc.objects.get(f_ref).and_then(|o| o.as_dict().ok()).cloned().unwrap_or_default(),
+        Ok(Object::Reference(f_ref)) => doc
+            .objects
+            .get(f_ref)
+            .and_then(|o| o.as_dict().ok())
+            .cloned()
+            .unwrap_or_default(),
         _ => Dictionary::new(),
     };
     if !font_dict.has(b"Helv") {
         // Find or create Helvetica font object
-        let helv_font_id = doc.objects.iter().find_map(|(id, obj)| {
-            if let Object::Dictionary(d) = obj {
-                if d.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"Font")
-                    && d.get(b"BaseFont").ok().and_then(|b| b.as_name().ok()) == Some(b"Helvetica")
-                {
-                    return Some(*id);
+        let helv_font_id = doc
+            .objects
+            .iter()
+            .find_map(|(id, obj)| {
+                if let Object::Dictionary(d) = obj {
+                    if d.get(b"Type").ok().and_then(|t| t.as_name().ok()) == Some(b"Font")
+                        && d.get(b"BaseFont").ok().and_then(|b| b.as_name().ok())
+                            == Some(b"Helvetica")
+                    {
+                        return Some(*id);
+                    }
                 }
-            }
-            None
-        }).unwrap_or_else(|| {
-            let mut f_dict = Dictionary::new();
-            f_dict.set("Type", Object::Name(b"Font".to_vec()));
-            f_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
-            f_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
-            f_dict.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
-            doc.add_object(Object::Dictionary(f_dict))
-        });
+                None
+            })
+            .unwrap_or_else(|| {
+                let mut f_dict = Dictionary::new();
+                f_dict.set("Type", Object::Name(b"Font".to_vec()));
+                f_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+                f_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+                f_dict.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
+                doc.add_object(Object::Dictionary(f_dict))
+            });
         font_dict.set("Helv", Object::Reference(helv_font_id));
         page_resources.set("Font", Object::Dictionary(font_dict));
         if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
@@ -210,9 +216,7 @@ pub fn export_xfdf(data: &[u8]) -> Result<String, String> {
                                 .get(b"Contents")
                                 .ok()
                                 .and_then(|o| match o {
-                                    Object::String(bytes, _) => {
-                                        Some(decode_pdf_text_string(bytes))
-                                    }
+                                    Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                                     _ => None,
                                 })
                                 .unwrap_or_default();
@@ -221,9 +225,7 @@ pub fn export_xfdf(data: &[u8]) -> Result<String, String> {
                                 .get(b"T")
                                 .ok()
                                 .and_then(|o| match o {
-                                    Object::String(bytes, _) => {
-                                        Some(decode_pdf_text_string(bytes))
-                                    }
+                                    Object::String(bytes, _) => Some(decode_pdf_text_string(bytes)),
                                     _ => None,
                                 })
                                 .unwrap_or_default();
@@ -391,18 +393,13 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
 
                 if tag_lower == "contents" {
                     if let Some(ref mut annot) = current_annot {
-                        match reader.read_text(e.to_end().name()) {
-                            Ok(text) => {
-                                let unescaped = quick_xml::escape::unescape(&text)
-                                    .map(|c| c.into_owned())
-                                    .unwrap_or_else(|_| text.to_string());
-                                // Also ensure &apos; and &quot; are handled if unescape was minimal
-                                let resolved = unescaped
-                                    .replace("&quot;", "\"")
-                                    .replace("&apos;", "'");
-                                annot.contents = resolved;
-                            }
-                            Err(_) => {}
+                        if let Ok(text) = reader.read_text(e.to_end().name()) {
+                            let unescaped = quick_xml::escape::unescape(&text)
+                                .map(|c| c.into_owned())
+                                .unwrap_or_else(|_| text.to_string());
+                            // Also ensure &apos; and &quot; are handled if unescape was minimal
+                            let resolved = unescaped.replace("&quot;", "\"").replace("&apos;", "'");
+                            annot.contents = resolved;
                         }
                     }
                 } else if tag_lower == "highlight"
@@ -580,7 +577,13 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XFDF XML parsing error at position {}: {:?}", reader.buffer_position(), e)),
+            Err(e) => {
+                return Err(format!(
+                    "XFDF XML parsing error at position {}: {:?}",
+                    reader.buffer_position(),
+                    e
+                ))
+            }
             _ => {}
         }
         buf.clear();
@@ -688,8 +691,8 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
                 let ry = ((h - stroke_w) / 2.0).max(0.1);
                 let cx = half_s + rx;
                 let cy = half_s + ry;
-                let kx = rx * 0.55228475;
-                let ky = ry * 0.55228475;
+                let kx = rx * 0.552_284_8;
+                let ky = ry * 0.552_284_8;
                 let ops = vec![
                     lopdf::content::Operation::new("q", vec![]),
                     lopdf::content::Operation::new("w", vec![Object::Real(stroke_w)]),
@@ -701,7 +704,10 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
                             Object::Real(pa.color.2),
                         ],
                     ),
-                    lopdf::content::Operation::new("m", vec![Object::Real(cx + rx), Object::Real(cy)]),
+                    lopdf::content::Operation::new(
+                        "m",
+                        vec![Object::Real(cx + rx), Object::Real(cy)],
+                    ),
                     lopdf::content::Operation::new(
                         "c",
                         vec![

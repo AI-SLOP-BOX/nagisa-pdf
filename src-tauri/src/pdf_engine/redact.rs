@@ -47,15 +47,15 @@ impl FontInfo {
         }
 
         // Fallback UTF-16BE
-        if bytes.len() >= 2 && bytes.len() % 2 == 0 {
-            if bytes.starts_with(&[0xFE, 0xFF]) {
-                let u16s: Vec<u16> = bytes[2..]
-                    .chunks_exact(2)
-                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                    .collect();
-                if let Ok(s) = String::from_utf16(&u16s) {
-                    return s;
-                }
+        if bytes.len() >= 2 && bytes.len().is_multiple_of(2) && bytes.starts_with(&[0xFE, 0xFF]) {
+            let u16s: Vec<u16> = bytes[2..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            if let Ok(s) = String::from_utf16(&u16s) {
+                return s;
             }
         }
 
@@ -63,10 +63,7 @@ impl FontInfo {
     }
 }
 
-fn extract_font_infos(
-    res_dict: Option<&Dictionary>,
-    doc: &Document,
-) -> HashMap<Vec<u8>, FontInfo> {
+fn extract_font_infos(res_dict: Option<&Dictionary>, doc: &Document) -> HashMap<Vec<u8>, FontInfo> {
     let mut fonts = HashMap::new();
     if let Some(res) = res_dict {
         let font_sub = res.get(b"Font").ok().and_then(|f| match f {
@@ -82,9 +79,11 @@ fn extract_font_infos(
                     _ => None,
                 };
                 if let Some(fd) = fdict {
-                    let is_type0 = fd.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Type0");
+                    let is_type0 =
+                        fd.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Type0");
                     let mut cmap = None;
-                    if let Ok(to_unicode_ref) = fd.get(b"ToUnicode").and_then(|o| o.as_reference()) {
+                    if let Ok(to_unicode_ref) = fd.get(b"ToUnicode").and_then(|o| o.as_reference())
+                    {
                         if let Some(Object::Stream(st)) = doc.objects.get(&to_unicode_ref) {
                             let decompressed = st
                                 .decompressed_content()
@@ -295,8 +294,10 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                                 } else {
                                     raw_lossy.replace(search_text, replacement)
                                 };
-                                op.operands[0] =
-                                    Object::String(replaced.into_bytes(), lopdf::StringFormat::Literal);
+                                op.operands[0] = Object::String(
+                                    replaced.into_bytes(),
+                                    lopdf::StringFormat::Literal,
+                                );
                                 modified = true;
                             }
                         }
@@ -316,7 +317,8 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                                         String::from_utf8_lossy(bytes).to_string()
                                     };
                                     let raw_lossy = String::from_utf8_lossy(bytes);
-                                    if text.contains(search_text) || raw_lossy.contains(search_text) {
+                                    if text.contains(search_text) || raw_lossy.contains(search_text)
+                                    {
                                         has_match = true;
                                         break;
                                     }
@@ -332,7 +334,8 @@ pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<
                                         String::from_utf8_lossy(bytes).to_string()
                                     };
                                     let raw_lossy = String::from_utf8_lossy(bytes);
-                                    if text.contains(search_text) || raw_lossy.contains(search_text) {
+                                    if text.contains(search_text) || raw_lossy.contains(search_text)
+                                    {
                                         let replaced = if text.contains(search_text) {
                                             text.replace(search_text, replacement)
                                         } else {
@@ -384,15 +387,13 @@ pub fn has_active_signature(data: &[u8]) -> bool {
         Ok(d) => d,
         Err(_) => return false,
     };
-    doc.objects.iter().any(|(_, obj)| {
-        match obj.as_dict() {
-            Ok(d) => {
-                let sig_ft = matches!(d.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
-                let sig_subtype = matches!(d.get(b"Subtype"), Ok(Object::Name(n)) if n == b"Sig");
-                (sig_ft || sig_subtype) && d.get(b"ByteRange").is_ok()
-            }
-            Err(_) => false,
+    doc.objects.iter().any(|(_, obj)| match obj.as_dict() {
+        Ok(d) => {
+            let sig_ft = matches!(d.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
+            let sig_subtype = matches!(d.get(b"Subtype"), Ok(Object::Name(n)) if n == b"Sig");
+            (sig_ft || sig_subtype) && d.get(b"ByteRange").is_ok()
         }
+        Err(_) => false,
     })
 }
 
@@ -430,7 +431,14 @@ fn rect_array_intersects(rect: &[Object], x: f64, y: f64, width: f64, height: f6
     lx < x + width && hx > x && ly < y + height && hy > y
 }
 
-fn field_tree_intersects(doc: &Document, id: lopdf::ObjectId, x: f64, y: f64, width: f64, height: f64) -> bool {
+fn field_tree_intersects(
+    doc: &Document,
+    id: lopdf::ObjectId,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> bool {
     if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
         if let Ok(Object::Array(rect)) = dict.get(b"Rect") {
             if rect_array_intersects(rect, x, y, width, height) {
@@ -911,7 +919,9 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                                     combined_lossy.push_str(&String::from_utf8_lossy(bytes));
                                 }
                             }
-                            if combined_decoded.contains(search_text) || combined_lossy.contains(search_text) {
+                            if combined_decoded.contains(search_text)
+                                || combined_lossy.contains(search_text)
+                            {
                                 continue;
                             }
                         }
@@ -1022,7 +1032,9 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
                                         combined_lossy.push_str(&String::from_utf8_lossy(b));
                                     }
                                 }
-                                if combined_decoded.contains(search_text) || combined_lossy.contains(search_text) {
+                                if combined_decoded.contains(search_text)
+                                    || combined_lossy.contains(search_text)
+                                {
                                     modified = true;
                                     continue;
                                 }

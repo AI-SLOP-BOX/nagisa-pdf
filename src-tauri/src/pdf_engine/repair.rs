@@ -35,7 +35,9 @@ pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
                 // We locate the genuine endobj keyword that terminates the object or follows endstream.
                 let mut search_offset = 0;
                 let mut found_obj = None;
-                while let Some(rel_end) = find_subsequence(&data[content_start + search_offset..], b"endobj") {
+                while let Some(rel_end) =
+                    find_subsequence(&data[content_start + search_offset..], b"endobj")
+                {
                     let candidate_end = search_offset + rel_end;
                     let obj_body = &data[content_start..content_start + candidate_end];
                     if let Ok(parsed_obj) = parse_salvaged_object(obj_body) {

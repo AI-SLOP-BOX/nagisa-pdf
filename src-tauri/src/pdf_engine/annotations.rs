@@ -22,11 +22,12 @@ pub fn add_watermark(
     let cos_r = rad.cos();
     let sin_r = rad.sin();
 
-    let has_cjk = text.chars().any(|c| !c.is_ascii());
+    let has_cjk = !text.is_ascii();
 
     // Font setup: If text contains Japanese / CJK characters, embed genuine Type0 CJK font
     let (font_id, cjk_font_opt) = if has_cjk {
-        let (fid, _) = crate::pdf_engine::font_unicode::embed_and_encode_unicode_text(&mut doc, text)?;
+        let (fid, _) =
+            crate::pdf_engine::font_unicode::embed_and_encode_unicode_text(&mut doc, text)?;
         let f = crate::pdf_engine::font_unicode::load_primary_cjk_font()?;
         (fid, Some(f))
     } else {
@@ -70,7 +71,10 @@ pub fn add_watermark(
         } else {
             lopdf::content::Operation::new(
                 "Tj",
-                vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)],
+                vec![Object::String(
+                    text.as_bytes().to_vec(),
+                    lopdf::StringFormat::Literal,
+                )],
             )
         };
 
@@ -168,23 +172,24 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
 
     // 1. Remove ISO 32000 /Watermark subtype Annotations from all pages
     for &page_id in &page_ids {
-        let annots_list: Vec<(u32, u16)> = if let Some(Object::Dictionary(ref p_dict)) = doc.objects.get(&page_id) {
-            match p_dict.get(b"Annots") {
-                Ok(Object::Reference(r)) => {
-                    if let Some(Object::Array(arr)) = doc.objects.get(r) {
-                        arr.iter().filter_map(|a| a.as_reference().ok()).collect()
-                    } else {
-                        Vec::new()
+        let annots_list: Vec<(u32, u16)> =
+            if let Some(Object::Dictionary(ref p_dict)) = doc.objects.get(&page_id) {
+                match p_dict.get(b"Annots") {
+                    Ok(Object::Reference(r)) => {
+                        if let Some(Object::Array(arr)) = doc.objects.get(r) {
+                            arr.iter().filter_map(|a| a.as_reference().ok()).collect()
+                        } else {
+                            Vec::new()
+                        }
                     }
+                    Ok(Object::Array(arr)) => {
+                        arr.iter().filter_map(|a| a.as_reference().ok()).collect()
+                    }
+                    _ => Vec::new(),
                 }
-                Ok(Object::Array(arr)) => {
-                    arr.iter().filter_map(|a| a.as_reference().ok()).collect()
-                }
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
+            } else {
+                Vec::new()
+            };
 
         let mut watermark_annot_ids = Vec::new();
         for aid in annots_list {
@@ -198,7 +203,8 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         if !watermark_annot_ids.is_empty() {
-            let annots_ref = if let Some(Object::Dictionary(ref p_dict)) = doc.objects.get(&page_id) {
+            let annots_ref = if let Some(Object::Dictionary(ref p_dict)) = doc.objects.get(&page_id)
+            {
                 match p_dict.get(b"Annots") {
                     Ok(Object::Reference(r)) => Some(*r),
                     _ => None,
@@ -242,26 +248,33 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
         let mut surviving_streams = Vec::new();
 
         for cid in stream_ids {
-            let is_watermark_stream = if let Some(Object::Stream(ref stream)) = doc.objects.get(&cid) {
-                let bytes = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
-                if let Ok(content) = lopdf::content::Content::decode(&bytes) {
-                    // Check if entire stream is a watermark injection
-                    let uses_watermark_res = content.operations.iter().any(|op| {
-                        if op.operator == "gs" {
-                            op.operands.iter().any(|arg| matches!(arg, Object::Name(n) if n == b"GSWatermark"))
-                        } else if op.operator == "Tf" {
-                            op.operands.iter().any(|arg| matches!(arg, Object::Name(n) if n == b"WatermarkFont"))
-                        } else {
-                            false
-                        }
-                    });
-                    uses_watermark_res
+            let is_watermark_stream =
+                if let Some(Object::Stream(ref stream)) = doc.objects.get(&cid) {
+                    let bytes = stream
+                        .decompressed_content()
+                        .unwrap_or_else(|_| stream.content.clone());
+                    if let Ok(content) = lopdf::content::Content::decode(&bytes) {
+                        // Check if entire stream is a watermark injection
+                        let uses_watermark_res = content.operations.iter().any(|op| {
+                            if op.operator == "gs" {
+                                op.operands.iter().any(
+                                    |arg| matches!(arg, Object::Name(n) if n == b"GSWatermark"),
+                                )
+                            } else if op.operator == "Tf" {
+                                op.operands.iter().any(
+                                    |arg| matches!(arg, Object::Name(n) if n == b"WatermarkFont"),
+                                )
+                            } else {
+                                false
+                            }
+                        });
+                        uses_watermark_res
+                    } else {
+                        false
+                    }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
 
             if is_watermark_stream {
                 // Delete watermark stream object from document
@@ -269,7 +282,9 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
             } else {
                 // Filter out any localized watermark operations or /Artifact <</Subtype /Watermark>> blocks
                 if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&cid) {
-                    let decomp = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+                    let decomp = stream
+                        .decompressed_content()
+                        .unwrap_or_else(|_| stream.content.clone());
                     if let Ok(content) = lopdf::content::Content::decode(&decomp) {
                         let mut filtered_ops = Vec::new();
                         let mut in_watermark_block = false;
@@ -280,7 +295,10 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
                             if op.operator == "BDC" {
                                 let is_wm_bdc = op.operands.iter().any(|arg| match arg {
                                     Object::Name(n) => n == b"Watermark",
-                                    Object::Dictionary(d) => d.get(b"Subtype").map(|s| s == &Object::Name(b"Watermark".to_vec())).unwrap_or(false),
+                                    Object::Dictionary(d) => d
+                                        .get(b"Subtype")
+                                        .map(|s| s == &Object::Name(b"Watermark".to_vec()))
+                                        .unwrap_or(false),
                                     _ => false,
                                 });
                                 if is_wm_bdc {
@@ -297,7 +315,11 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
                             }
 
                             // Check for direct watermark graphics state invocation
-                            if op.operator == "gs" && op.operands.iter().any(|arg| matches!(arg, Object::Name(n) if n == b"GSWatermark")) {
+                            if op.operator == "gs"
+                                && op.operands.iter().any(
+                                    |arg| matches!(arg, Object::Name(n) if n == b"GSWatermark"),
+                                )
+                            {
                                 continue;
                             }
 
@@ -305,7 +327,9 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
                         }
 
                         if filtered_ops.len() != orig_count {
-                            let new_content = lopdf::content::Content { operations: filtered_ops };
+                            let new_content = lopdf::content::Content {
+                                operations: filtered_ops,
+                            };
                             if let Ok(encoded) = new_content.encode() {
                                 stream.set_plain_content(encoded);
                             }
@@ -323,7 +347,10 @@ pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
             } else if surviving_streams.len() == 1 {
                 p_dict.set("Contents", Object::Reference(surviving_streams[0]));
             } else {
-                let arr: Vec<Object> = surviving_streams.into_iter().map(Object::Reference).collect();
+                let arr: Vec<Object> = surviving_streams
+                    .into_iter()
+                    .map(Object::Reference)
+                    .collect();
                 p_dict.set("Contents", Object::Array(arr));
             }
         }
@@ -503,7 +530,10 @@ pub fn add_sticky_note(
         "C",
         Object::Array(vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
     );
-    annot_dict.set("Contents", Object::String(encode_pdf_text_string(text), lopdf::StringFormat::Literal));
+    annot_dict.set(
+        "Contents",
+        Object::String(encode_pdf_text_string(text), lopdf::StringFormat::Literal),
+    );
     annot_dict.set("Open", Object::Boolean(true));
     annot_dict.set("Name", Object::Name("Comment".into()));
 
@@ -512,12 +542,15 @@ pub fn add_sticky_note(
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name(b"XObject".to_vec()));
     ap_dict.set("Subtype", Object::Name(b"Form".to_vec()));
-    ap_dict.set("BBox", Object::Array(vec![
-        Object::Real(0.0),
-        Object::Real(0.0),
-        Object::Real(20.0),
-        Object::Real(20.0),
-    ]));
+    ap_dict.set(
+        "BBox",
+        Object::Array(vec![
+            Object::Real(0.0),
+            Object::Real(0.0),
+            Object::Real(20.0),
+            Object::Real(20.0),
+        ]),
+    );
 
     // Draw folded note pad icon in selected color
     let ap_stream_content = format!(
@@ -608,7 +641,9 @@ pub fn add_rectangle(
         lopdf::content::Operation::new("Q", vec![]),
     ];
     let ap_content = lopdf::content::Content { operations: ap_ops };
-    let ap_bytes = ap_content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let ap_bytes = ap_content
+        .encode()
+        .map_err(|e| format!("Encode error: {e}"))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));
@@ -705,8 +740,8 @@ pub fn add_circle(
     let ry = (h - stroke_width).max(1.0) / 2.0;
     let cx = half_stroke + rx;
     let cy = half_stroke + ry;
-    let kx = rx * 0.55228475;
-    let ky = ry * 0.55228475;
+    let kx = rx * 0.552_284_8;
+    let ky = ry * 0.552_284_8;
 
     let ap_ops = vec![
         lopdf::content::Operation::new("q", vec![]),
@@ -773,7 +808,9 @@ pub fn add_circle(
         lopdf::content::Operation::new("Q", vec![]),
     ];
     let ap_content = lopdf::content::Content { operations: ap_ops };
-    let ap_bytes = ap_content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let ap_bytes = ap_content
+        .encode()
+        .map_err(|e| format!("Encode error: {e}"))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));
@@ -883,7 +920,9 @@ pub fn add_line(
         lopdf::content::Operation::new("Q", vec![]),
     ];
     let ap_content = lopdf::content::Content { operations: ap_ops };
-    let ap_bytes = ap_content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let ap_bytes = ap_content
+        .encode()
+        .map_err(|e| format!("Encode error: {e}"))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));

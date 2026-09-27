@@ -134,7 +134,9 @@ fn enhance_raw_image_stream(
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     let out_buf = if std::io::Write::write_all(&mut encoder, &out_raw).is_ok() {
         if let Ok(compressed) = encoder.finish() {
-            stream.dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+            stream
+                .dict
+                .set("Filter", Object::Name(b"FlateDecode".to_vec()));
             compressed
         } else {
             stream.dict.remove(b"Filter");

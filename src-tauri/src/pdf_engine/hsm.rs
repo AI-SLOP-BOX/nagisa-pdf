@@ -126,7 +126,7 @@ pub fn pkcs11_certificate_der(slot_id: u64, certificate_id: &str) -> Result<Vec<
 }
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("証明書IDが不正です".into());
     }
     (0..value.len())

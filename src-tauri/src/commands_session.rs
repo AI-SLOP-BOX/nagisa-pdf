@@ -292,5 +292,5 @@ pub fn session_print_pdf(
 ) -> Result<(), String> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write().map_err(|e| e.to_string())?;
-    session.with_bytes(|bytes| pdf_engine::print_pdf(bytes))
+    session.with_bytes(pdf_engine::print_pdf)
 }

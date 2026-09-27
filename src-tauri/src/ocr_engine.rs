@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::pdf_engine::find_tool_command;
+use std::path::Path;
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct OCRSuspect {
@@ -778,7 +778,8 @@ pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLin
         }
     }
 
-    let is_cjk = language.starts_with("jpn") || language.starts_with("chi") || language.starts_with("kor");
+    let is_cjk =
+        language.starts_with("jpn") || language.starts_with("chi") || language.starts_with("kor");
 
     let mut blocks = Vec::new();
     for (_, acc) in lines_map {
@@ -789,7 +790,9 @@ pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLin
                 let mut joined = String::new();
                 for (idx, w) in acc.words.iter().enumerate() {
                     if idx > 0 {
-                        let prev_is_ascii = acc.words[idx - 1].chars().all(|c| c.is_ascii_alphanumeric());
+                        let prev_is_ascii = acc.words[idx - 1]
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric());
                         let curr_is_ascii = w.chars().all(|c| c.is_ascii_alphanumeric());
                         if prev_is_ascii && curr_is_ascii {
                             joined.push(' ');

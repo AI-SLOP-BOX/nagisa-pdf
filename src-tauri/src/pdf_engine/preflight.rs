@@ -54,7 +54,7 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
     let mut non_embedded_fonts = Vec::new();
 
     // Check fonts with FontDescriptor indirect reference lookup
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(font_type)) = dict.get(b"Type") {
                 if font_type == b"Font" {
@@ -109,7 +109,7 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
     let mut has_icc = false;
     let mut max_ink_coverage = 0.0f32;
 
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Stream(stream) = obj {
             if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
                 for op in &content.operations {
@@ -149,7 +149,7 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
     }
 
     // Check ExtGState dictionaries for overprint settings
-    for (_, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             if let Ok(Object::Name(type_name)) = dict.get(b"Type") {
                 if type_name == b"ExtGState" {
@@ -256,7 +256,11 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                     // True ICC Profile check: ColorSpace must be ICCBased, or an Array [/ICCBased, stream_ref]
                     let is_cmyk_image = match stream.dict.get(b"ColorSpace") {
                         Ok(Object::Name(cs_name)) => cs_name == b"DeviceCMYK",
-                        Ok(Object::Array(arr)) => arr.first().and_then(|o| o.as_name().ok()).map(|n| n == b"DeviceCMYK").unwrap_or(false),
+                        Ok(Object::Array(arr)) => arr
+                            .first()
+                            .and_then(|o| o.as_name().ok())
+                            .map(|n| n == b"DeviceCMYK")
+                            .unwrap_or(false),
                         _ => false,
                     };
                     if is_cmyk_image {
@@ -265,7 +269,7 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                         if let Ok(decomp) = stream.decompressed_content() {
                             let mut pixel_max_tac = 0.0f32;
                             // CMYK pixel bytes: 4 bytes per pixel (C, M, Y, K)
-                            for chunk in decomp.chunks_exact(4) {
+                            for chunk in decomp.as_chunks::<4>().0 {
                                 let c = chunk[0] as f32 / 255.0;
                                 let m = chunk[1] as f32 / 255.0;
                                 let y = chunk[2] as f32 / 255.0;
@@ -304,7 +308,6 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
                     if !has_icc_profile {
                         images_without_profile.push(format!("Image_{}_{}", id.0, id.1));
                     }
-
 
                     // Calculate effective DPI: (pixel_width / placed_inches)
                     // Look up placement dims by OID for accurate per-image DPI
@@ -385,7 +388,7 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
 
     Ok(PreflightResult {
         passed: issues.iter().filter(|i| i.severity == "error").count() == 0,
-        score: score.max(0),
+        score: score,
         issues,
         font_check: FontCheck {
             total_fonts,
@@ -434,18 +437,16 @@ pub fn check_ink_coverage(data: &[u8], page_index: usize) -> Result<serde_json::
                 if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
                     for op in &content.operations {
                         match op.operator.as_str() {
-                            "k" | "K" => {
-                                if op.operands.len() >= 4 {
-                                    if let (Some(c), Some(m), Some(y), Some(k)) = (
-                                        op.operands[0].as_float().ok(),
-                                        op.operands[1].as_float().ok(),
-                                        op.operands[2].as_float().ok(),
-                                        op.operands[3].as_float().ok(),
-                                    ) {
-                                        let coverage = c + m + y + k;
-                                        max_coverage = max_coverage.max(coverage);
-                                        coverage_samples.push(coverage);
-                                    }
+                            "k" | "K" if op.operands.len() >= 4 => {
+                                if let (Some(c), Some(m), Some(y), Some(k)) = (
+                                    op.operands[0].as_float().ok(),
+                                    op.operands[1].as_float().ok(),
+                                    op.operands[2].as_float().ok(),
+                                    op.operands[3].as_float().ok(),
+                                ) {
+                                    let coverage = c + m + y + k;
+                                    max_coverage = max_coverage.max(coverage);
+                                    coverage_samples.push(coverage);
                                 }
                             }
                             _ => {}

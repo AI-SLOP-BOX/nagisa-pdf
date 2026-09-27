@@ -82,10 +82,10 @@ pub fn compare_pdf_documents(original: &[u8], revised: &[u8]) -> Result<CompareR
                         // Calculate character-level Levenshtein similarity
                         let sim = text_similarity(&orig_item.text, &rev_item.text);
                         // At least 30% text similarity or overlapping bounding box to consider a modification
-                        if sim > 0.3 || (dx < 10.0 && dy < 6.0) {
-                            if best_match.as_ref().map_or(true, |m| sim > m.1) {
-                                best_match = Some((rj, sim));
-                            }
+                        if (sim > 0.3 || (dx < 10.0 && dy < 6.0))
+                            && best_match.as_ref().is_none_or(|m| sim > m.1)
+                        {
+                            best_match = Some((rj, sim));
                         }
                     }
                 }
@@ -232,7 +232,12 @@ fn extract_page_text(doc: &Document, page_id: OID) -> Vec<SimpleTextBlock> {
                                 }) {
                                     let calc_width: f32 = s
                                         .chars()
-                                        .map(|c| super::reflow::get_char_metric_width(c, current_font_size))
+                                        .map(|c| {
+                                            super::reflow::get_char_metric_width(
+                                                c,
+                                                current_font_size,
+                                            )
+                                        })
                                         .sum();
                                     blocks.push(SimpleTextBlock {
                                         text: s,
@@ -248,13 +253,20 @@ fn extract_page_text(doc: &Document, page_id: OID) -> Vec<SimpleTextBlock> {
                                     let mut line_buf = String::new();
                                     for item in arr {
                                         if let Object::String(bytes, _) = item {
-                                            line_buf.push_str(&super::common::decode_pdf_text_string(bytes));
+                                            line_buf.push_str(
+                                                &super::common::decode_pdf_text_string(bytes),
+                                            );
                                         }
                                     }
                                     if !line_buf.is_empty() {
                                         let calc_width: f32 = line_buf
                                             .chars()
-                                            .map(|c| super::reflow::get_char_metric_width(c, current_font_size))
+                                            .map(|c| {
+                                                super::reflow::get_char_metric_width(
+                                                    c,
+                                                    current_font_size,
+                                                )
+                                            })
                                             .sum();
                                         blocks.push(SimpleTextBlock {
                                             text: line_buf,

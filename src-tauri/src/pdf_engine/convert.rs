@@ -51,8 +51,7 @@ pub fn pdf_to_images_ex(
     let selection: Option<Vec<usize>> = match page_indexes {
         None => None,
         Some(list) => {
-            let doc =
-                Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+            let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
             let count = get_page_ids(&doc).len();
             let mut sel: Vec<usize> = list.iter().copied().filter(|&i| i < count).collect();
             sel.sort_unstable();
@@ -121,29 +120,61 @@ pub fn pdf_to_images_ex(
                 if let Ok(Object::Dictionary(xobj_dict)) = resources.get(b"XObject") {
                     for (_, obj_ref) in xobj_dict.iter() {
                         let stream_opt = match obj_ref {
-                            Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_stream().ok()),
+                            Object::Reference(id) => {
+                                doc.objects.get(id).and_then(|o| o.as_stream().ok())
+                            }
                             _ => None,
                         };
                         if let Some(stream) = stream_opt {
                             if let Ok(sub) = stream.dict.get(b"Subtype").and_then(|o| o.as_name()) {
                                 if sub == b"Image" {
-                                    let img_bytes = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
-                                    let dyn_res = image::load_from_memory(&img_bytes).or_else(|_| {
-                                        let w = stream.dict.get(b"Width").and_then(|w| w.as_i64()).unwrap_or(0) as u32;
-                                        let h = stream.dict.get(b"Height").and_then(|h| h.as_i64()).unwrap_or(0) as u32;
-                                        if w > 0 && h > 0 && img_bytes.len() == (w * h * 3) as usize {
-                                            image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(w, h, img_bytes).map(image::DynamicImage::ImageRgb8).ok_or(())
-                                        } else {
-                                            Err(())
-                                        }
-                                    });
+                                    let img_bytes = stream
+                                        .decompressed_content()
+                                        .unwrap_or_else(|_| stream.content.clone());
+                                    let dyn_res =
+                                        image::load_from_memory(&img_bytes).or_else(|_| {
+                                            let w = stream
+                                                .dict
+                                                .get(b"Width")
+                                                .and_then(|w| w.as_i64())
+                                                .unwrap_or(0)
+                                                as u32;
+                                            let h = stream
+                                                .dict
+                                                .get(b"Height")
+                                                .and_then(|h| h.as_i64())
+                                                .unwrap_or(0)
+                                                as u32;
+                                            if w > 0
+                                                && h > 0
+                                                && img_bytes.len() == (w * h * 3) as usize
+                                            {
+                                                image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+                                                    w, h, img_bytes,
+                                                )
+                                                .map(image::DynamicImage::ImageRgb8)
+                                                .ok_or(())
+                                            } else {
+                                                Err(())
+                                            }
+                                        });
                                     if let Ok(dyn_img) = dyn_res {
-                                        let out_filename = format!("page-{:03}.{}", page_idx, if format == "jpg" { "jpg" } else { "png" });
+                                        let out_filename = format!(
+                                            "page-{:03}.{}",
+                                            page_idx,
+                                            if format == "jpg" { "jpg" } else { "png" }
+                                        );
                                         let out_filepath = tmp.join(out_filename);
                                         let save_res = if format == "jpg" {
-                                            dyn_img.save_with_format(&out_filepath, image::ImageFormat::Jpeg)
+                                            dyn_img.save_with_format(
+                                                &out_filepath,
+                                                image::ImageFormat::Jpeg,
+                                            )
                                         } else {
-                                            dyn_img.save_with_format(&out_filepath, image::ImageFormat::Png)
+                                            dyn_img.save_with_format(
+                                                &out_filepath,
+                                                image::ImageFormat::Png,
+                                            )
                                         };
                                         if save_res.is_ok() {
                                             extracted_count += 1;
@@ -200,10 +231,22 @@ pub fn pdf_to_images_ex(
     // Numeric sort on the parsed page number (lexicographic sort misorders
     // page-100 before page-20 once a document passes 99 pages).
     result.sort_by(|a, b| {
-        let na = page_num_from_filename(std::path::Path::new(a).file_name().unwrap_or_default().to_str().unwrap_or(""))
-            .unwrap_or(usize::MAX);
-        let nb = page_num_from_filename(std::path::Path::new(b).file_name().unwrap_or_default().to_str().unwrap_or(""))
-            .unwrap_or(usize::MAX);
+        let na = page_num_from_filename(
+            std::path::Path::new(a)
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or(""),
+        )
+        .unwrap_or(usize::MAX);
+        let nb = page_num_from_filename(
+            std::path::Path::new(b)
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or(""),
+        )
+        .unwrap_or(usize::MAX);
         na.cmp(&nb).then_with(|| a.cmp(b))
     });
     Ok(result)
@@ -251,7 +294,10 @@ pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), St
         let (pt_w, pt_h) = if width > 1200 || height > 1200 {
             // High-resolution scan / photo: scale to fit within standard A4 bounds while strictly preserving aspect ratio
             let scale = (a4_w / width as f32).min(a4_h / height as f32);
-            ((width as f32 * scale).max(10.0), (height as f32 * scale).max(10.0))
+            (
+                (width as f32 * scale).max(10.0),
+                (height as f32 * scale).max(10.0),
+            )
         } else {
             // Screen or web image: calculate at 150 DPI, but scale uniformly if exceeding A4 to prevent aspect distortion
             let base_dpi = 150.0f32;
@@ -353,10 +399,10 @@ pub fn html_to_pdf(html_content: &str, output_path: &str) -> Result<(), String> 
         let cmd_res = {
             let mut c = std::process::Command::new(candidate);
             c.arg("--headless=new")
-             .arg("--disable-gpu")
-             .arg("--no-pdf-header-footer")
-             .arg(format!("--print-to-pdf={}", pdf_file.display()))
-             .arg(&html_file);
+                .arg("--disable-gpu")
+                .arg("--no-pdf-header-footer")
+                .arg(format!("--print-to-pdf={}", pdf_file.display()))
+                .arg(&html_file);
             run_command_with_timeout(c, EXTERNAL_CMD_TIMEOUT_SECS)
         };
 
@@ -382,8 +428,8 @@ pub fn html_to_pdf(html_content: &str, output_path: &str) -> Result<(), String> 
     let wk_cmd = {
         let mut c = crate::pdf_engine::common::find_tool_command("wkhtmltopdf");
         c.arg("--disable-local-file-access")
-         .arg(&html_file)
-         .arg(output_path);
+            .arg(&html_file)
+            .arg(output_path);
         run_command_with_timeout(c, EXTERNAL_CMD_TIMEOUT_SECS)
     };
 
@@ -438,7 +484,18 @@ pub(crate) fn extract_text_from_html(html: &str) -> String {
                 in_script_or_style = true;
             } else if tag_name == "/script" || tag_name == "/style" {
                 in_script_or_style = false;
-            } else if tag_name == "p" || tag_name == "br" || tag_name == "/p" || tag_name == "div" || tag_name == "/div" || tag_name.starts_with("h1") || tag_name.starts_with("h2") || tag_name.starts_with("h3") || tag_name.starts_with("h4") || tag_name.starts_with("h5") || tag_name.starts_with("h6") {
+            } else if tag_name == "p"
+                || tag_name == "br"
+                || tag_name == "/p"
+                || tag_name == "div"
+                || tag_name == "/div"
+                || tag_name.starts_with("h1")
+                || tag_name.starts_with("h2")
+                || tag_name.starts_with("h3")
+                || tag_name.starts_with("h4")
+                || tag_name.starts_with("h5")
+                || tag_name.starts_with("h6")
+            {
                 out.push('\n');
             } else if tag_name == "li" {
                 out.push_str("\n• ");
@@ -511,7 +568,7 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
     let page_w = 595.0f32; // A4 pt
     let page_h = 842.0f32;
 
-    let has_non_ascii = text.chars().any(|c| !c.is_ascii());
+    let has_non_ascii = !text.is_ascii();
 
     if has_non_ascii {
         // True CJK Unicode embedding pipeline using bundled IPAexGothic font
@@ -548,7 +605,10 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
                 let encoded_cids = encoder.encode_text(line);
                 operations.push(lopdf::content::Operation::new(
                     "Tj",
-                    vec![Object::String(encoded_cids, lopdf::StringFormat::Hexadecimal)],
+                    vec![Object::String(
+                        encoded_cids,
+                        lopdf::StringFormat::Hexadecimal,
+                    )],
                 ));
             }
 
@@ -556,7 +616,9 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
             operations.push(lopdf::content::Operation::new("Q", vec![]));
 
             let content = lopdf::content::Content { operations };
-            let content_bytes = content.encode().map_err(|e| format!("Content encode: {e}"))?;
+            let content_bytes = content
+                .encode()
+                .map_err(|e| format!("Content encode: {e}"))?;
 
             let mut res_dict = Dictionary::new();
             let mut fonts = Dictionary::new();
@@ -603,7 +665,13 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
                     .replace(')', "\\)");
                 let ascii_safe: String = escaped
                     .chars()
-                    .map(|c| if c.is_ascii() && !c.is_control() { c } else { ' ' })
+                    .map(|c| {
+                        if c.is_ascii() && !c.is_control() {
+                            c
+                        } else {
+                            ' '
+                        }
+                    })
                     .collect();
                 content.push_str(&format!("({}) ' \n", ascii_safe));
             }
@@ -686,7 +754,7 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
     // Rebuild streams:
     // 1. Re-encode and compress DCTDecode (JPEG) and uncompressed image streams according to target quality
     // 2. FlateDecode text/vector streams with target compression level
-    for (_, obj) in doc.objects.iter_mut() {
+    for obj in doc.objects.values_mut() {
         if let Object::Stream(ref mut stream) = obj {
             let is_image = stream
                 .dict
@@ -715,7 +783,7 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
                     continue;
                 }
 
-                if filter_name.as_deref() == Some(b"DCTDecode") || filter_name.is_none() {
+                if filter_name == Some(b"DCTDecode") || filter_name.is_none() {
                     let w = stream
                         .dict
                         .get(b"Width")
@@ -756,7 +824,11 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
                         let target_img = if quality <= 30 && (w > 1600 || h > 1600) {
                             dyn_img.resize(w / 2, h / 2, image::imageops::FilterType::Triangle)
                         } else if quality <= 60 && (w > 2400 || h > 2400) {
-                            dyn_img.resize((w * 3) / 4, (h * 3) / 4, image::imageops::FilterType::Triangle)
+                            dyn_img.resize(
+                                (w * 3) / 4,
+                                (h * 3) / 4,
+                                image::imageops::FilterType::Triangle,
+                            )
                         } else {
                             dyn_img
                         };
@@ -764,13 +836,25 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
                         let (new_w, new_h) = (target_img.width(), target_img.height());
                         let rgb = target_img.to_rgb8();
                         let mut jpeg_buf = std::io::Cursor::new(Vec::new());
-                        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, quality.clamp(10, 95));
-                        if encoder.encode(rgb.as_raw(), new_w, new_h, image::ExtendedColorType::Rgb8).is_ok() {
+                        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+                            &mut jpeg_buf,
+                            quality.clamp(10, 95),
+                        );
+                        if encoder
+                            .encode(rgb.as_raw(), new_w, new_h, image::ExtendedColorType::Rgb8)
+                            .is_ok()
+                        {
                             let new_jpeg = jpeg_buf.into_inner();
-                            if new_jpeg.len() < stream.content.len() || stream.dict.get(b"Filter").is_err() {
+                            if new_jpeg.len() < stream.content.len()
+                                || stream.dict.get(b"Filter").is_err()
+                            {
                                 stream.set_content(new_jpeg);
-                                stream.dict.set("Filter", Object::Name(b"DCTDecode".to_vec()));
-                                stream.dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+                                stream
+                                    .dict
+                                    .set("Filter", Object::Name(b"DCTDecode".to_vec()));
+                                stream
+                                    .dict
+                                    .set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
                                 stream.dict.set("BitsPerComponent", Object::Integer(8));
                                 stream.dict.set("Width", Object::Integer(new_w as i64));
                                 stream.dict.set("Height", Object::Integer(new_h as i64));
@@ -939,8 +1023,11 @@ pub fn add_page_numbers(
                 .and_then(|r| r.as_reference().ok());
 
             if let Some(existing_res_id) = res_ref {
-                doc.objects.insert(existing_res_id, Object::Dictionary(resources_dict));
-            } else if let Some(Object::Dictionary(ref mut page_dict)) = doc.objects.get_mut(&page_id) {
+                doc.objects
+                    .insert(existing_res_id, Object::Dictionary(resources_dict));
+            } else if let Some(Object::Dictionary(ref mut page_dict)) =
+                doc.objects.get_mut(&page_id)
+            {
                 page_dict.set("Resources", Object::Dictionary(resources_dict));
             }
         }
@@ -1191,10 +1278,7 @@ fn build_outline_nodes(
             let mut item_dict = Dictionary::new();
             item_dict.set(
                 "Title",
-                Object::String(
-                    encode_pdf_text_string(title),
-                    lopdf::StringFormat::Literal,
-                ),
+                Object::String(encode_pdf_text_string(title), lopdf::StringFormat::Literal),
             );
             item_dict.set("Parent", Object::Reference(parent_id));
             item_dict.set(
@@ -1222,7 +1306,9 @@ fn build_outline_nodes(
                         build_outline_nodes(doc, page_ids, item_id, child_items);
                     total_count += child_count;
 
-                    if let Some(Object::Dictionary(ref mut cur_dict)) = doc.objects.get_mut(&item_id) {
+                    if let Some(Object::Dictionary(ref mut cur_dict)) =
+                        doc.objects.get_mut(&item_id)
+                    {
                         cur_dict.set("Count", Object::Integer(child_count));
                         if let Some(first_child) = child_ids.first() {
                             cur_dict.set("First", Object::Reference(*first_child));
@@ -1235,7 +1321,8 @@ fn build_outline_nodes(
                     // Link sibling children
                     for i in 0..child_ids.len() {
                         let c_id = child_ids[i];
-                        if let Some(Object::Dictionary(ref mut c_dict)) = doc.objects.get_mut(&c_id) {
+                        if let Some(Object::Dictionary(ref mut c_dict)) = doc.objects.get_mut(&c_id)
+                        {
                             if i > 0 {
                                 c_dict.set("Prev", Object::Reference(child_ids[i - 1]));
                             }
@@ -1265,7 +1352,8 @@ pub fn add_bookmark_tree(data: &[u8], bookmarks: &[serde_json::Value]) -> Result
     let outline_id = doc.add_object(Object::Dictionary(outline_dict));
 
     // Recursively build hierarchical outline nodes
-    let (top_level_ids, total_count) = build_outline_nodes(&mut doc, &page_ids, outline_id, bookmarks);
+    let (top_level_ids, total_count) =
+        build_outline_nodes(&mut doc, &page_ids, outline_id, bookmarks);
 
     // Link top-level siblings
     for i in 0..top_level_ids.len() {
