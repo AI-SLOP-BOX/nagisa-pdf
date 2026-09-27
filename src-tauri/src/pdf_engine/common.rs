@@ -520,13 +520,6 @@ pub fn add_text(
     save_doc(&mut doc)
 }
 
-pub fn protect_pdf(_data: &[u8], _password: &str) -> Result<Vec<u8>, String> {
-    // Honest: Refuse to generate corrupted pseudo-encrypted PDF.
-    // Full Standard Security Handler with AES-128/256 and key derivation schedule
-    // is required to safely encrypt streams and strings without corrupting the document.
-    Err("PDF暗号化（AES-128/256 Standard Security Handler）によるストリーム暗号化は現在実装準備中です。破損した暗号化PDFの出力を防止するため処理を安全に中断しました。".into())
-}
-
 pub fn create_blank_pdf(width: f64, height: f64, page_count: usize) -> Result<Vec<u8>, String> {
     let mut doc = Document::with_version("1.7");
 

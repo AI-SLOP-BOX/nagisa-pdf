@@ -256,7 +256,7 @@ fn optimize_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
 
 #[tauri::command]
 fn protect_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, String> {
-    pdf_engine::protect_pdf(&data, &password)
+    pdf_engine::encrypt::encrypt_pdf(&data, &password, &password)
 }
 
 // ===== COMPARE =====
@@ -546,6 +546,7 @@ pub fn run() {
             stamp_pdf_ltv,
             add_document_timestamp,
             verify_document_timestamp,
+            decrypt_pdf,
             inspect_compatibility,
             get_engine_health,
             embed_font,

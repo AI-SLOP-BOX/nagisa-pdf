@@ -444,7 +444,7 @@ fn main() {
             let out = get_arg(subargs, "-o").unwrap_or_else(|| "protected.pdf".into());
 
             let data = fs::read(input).expect("Failed to read input");
-            match protect_pdf(&data, &pwd) {
+            match encrypt::encrypt_pdf(&data, &pwd, &pwd) {
                 Ok(res) => {
                     fs::write(&out, res).unwrap();
                     println!("Protected PDF created: {out}");

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { open } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import type { SignatureInfo, PdfExec, Pkcs11Slot } from '../types'
 import { DocumentService } from '../services/documentService'
@@ -41,6 +41,11 @@ export function SecurityPanel({
   const [docTsUrl, setDocTsUrl] = useState('')
   const [isTimestamping, setIsTimestamping] = useState(false)
   const [docTsReport, setDocTsReport] = useState<{ valid: boolean; timestamp: string; authority: string } | null>(null)
+
+  // Password protection (Standard Security Handler, AES-256 V=5/R=6):
+  // exported as an encrypted copy so the in-memory document stays editable.
+  const [protectPw, setProtectPw] = useState('')
+  const [isProtecting, setIsProtecting] = useState(false)
 
   // OS keychain signing states: the private key never leaves the Secure Enclave
   // / keychain, so no file or password is ever handled.
@@ -316,6 +321,35 @@ export function SecurityPanel({
     }
   }
 
+  // Export a password-protected copy (Standard Security Handler, AES-256).
+  // The in-memory session keeps the plaintext so editing continues seamlessly.
+  const handleProtectExport = async () => {
+    if (!protectPw) {
+      showToast('パスワードを入力してください')
+      return
+    }
+    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    if (!currentBytes?.length) {
+      showToast('PDFデータが見つかりません')
+      return
+    }
+    try {
+      setIsProtecting(true)
+      const protectedBytes = await invoke<number[]>('protect_pdf', { data: currentBytes, password: protectPw })
+      const outputPath = await save({ defaultPath: 'protected.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] })
+      if (!outputPath) {
+        showToast('保存先が未選択のため中止しました')
+        return
+      }
+      await invoke('write_file_bytes', { path: outputPath, data: protectedBytes })
+      showToast('AES-256 (V5/R6) パスワード保護PDFを書き出しました')
+    } catch (err) {
+      showToast(`暗号化エラー: ${err}`)
+    } finally {
+      setIsProtecting(false)
+    }
+  }
+
   const handleVerify = async () => {
     const target = docId || pdfData
     if (!target) return
@@ -551,6 +585,25 @@ export function SecurityPanel({
             </span>
           </div>
         )}
+      </div>
+
+      {/* Card 5: Password protection (Standard Security Handler AES-256) */}
+      <div className="inspector-card">
+        <div className="inspector-card-header">
+          <span>パスワード保護</span>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>AES-256</span>
+        </div>
+        <div className="inspector-card-desc">
+          開閉パスワードで暗号化したコピーを書き出します（Standard Security Handler V=5 / R=6、Acrobat互換）。編集中の文書は平文のまま保持されます
+        </div>
+        <Input value={protectPw} onChange={setProtectPw} placeholder="開くためのパスワード（必須）" />
+        <AccentBtn
+          onClick={handleProtectExport}
+          disabled={!protectPw || isProtecting}
+          style={{ marginTop: 6, background: 'rgba(210, 153, 34, 0.15)', color: '#d29922', border: '1px solid rgba(210, 153, 34, 0.4)' }}
+        >
+          {isProtecting ? '暗号化中...' : '暗号化コピーを書き出す'}
+        </AccentBtn>
       </div>
     </div>
   )

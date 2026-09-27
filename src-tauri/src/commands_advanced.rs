@@ -121,6 +121,13 @@ pub fn verify_document_timestamp(
     pdf_engine::security::verify_timestamp(&data)
 }
 
+/// Remove password protection (requires the user or owner password).
+/// R=5/R=6 handled natively, R=2..4 via lopdf.
+#[tauri::command]
+pub fn decrypt_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, String> {
+    pdf_engine::encrypt::decrypt_pdf(&data, &password)
+}
+
 #[tauri::command]
 pub fn inspect_compatibility(
     data: Vec<u8>,

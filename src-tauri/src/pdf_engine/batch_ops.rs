@@ -260,10 +260,18 @@ pub fn batch_add_watermark(
     Ok(results)
 }
 
-pub fn batch_protect(_paths: &[String], _password: &str) -> Result<Vec<Vec<u8>>, String> {
-    // Honest: Standard Security Handler (AES-128/256) is under implementation.
-    // Early return honest error to prevent wasted I/O and prevent generation of corrupt PDFs.
-    Err("PDF暗号化（AES-128/256 Standard Security Handler）によるストリーム暗号化は現在実装準備中です。破損した暗号化PDFの出力を防止するためバッチ処理を安全に中断しました。".into())
+pub fn batch_protect(paths: &[String], password: &str) -> Result<Vec<Vec<u8>>, String> {
+    if password.is_empty() {
+        return Err("パスワードを指定してください".into());
+    }
+    let mut results = Vec::new();
+    for path in paths {
+        let data = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let encrypted = crate::pdf_engine::encrypt::encrypt_pdf(&data, password, password)
+            .map_err(|e| format!("{path}: {e}"))?;
+        results.push(encrypted);
+    }
+    Ok(results)
 }
 
 pub fn batch_optimize(paths: &[String]) -> Result<Vec<Vec<u8>>, String> {

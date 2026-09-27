@@ -34,7 +34,18 @@ export function ToolsBatchAndColorSection({
     if (!password || batchPaths.length === 0) return
     try {
       const results = await invoke<number[][]>('batch_protect', { paths: batchPaths, password })
-      showToast(`${results.length}ファイルを暗号化しました`)
+      // Results are real encrypted bytes now: persist them instead of dropping.
+      const outputDir = await open({ directory: true, multiple: false, title: '暗号化PDFの保存先フォルダを選択' })
+      if (typeof outputDir !== 'string' || !outputDir) {
+        showToast('保存先が未選択のため書き込みを中止しました（暗号化自体は成功）')
+        return
+      }
+      for (let i = 0; i < results.length; i++) {
+        const base = batchPaths[i].split('/').pop() ?? `file${i + 1}`
+        const outPath = `${outputDir}/${base.replace(/\.pdf$/i, '')}_protected.pdf`
+        await invoke('write_file_bytes', { path: outPath, data: results[i] })
+      }
+      showToast(`${results.length}ファイルをAES-256暗号化して保存しました`)
     } catch (err) { showToast(`エラー: ${err}`) }
   }
 

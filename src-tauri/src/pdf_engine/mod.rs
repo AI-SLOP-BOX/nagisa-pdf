@@ -6,6 +6,7 @@ pub mod annotations;
 pub mod batch_ops;
 pub use batch_ops::*;
 pub mod common;
+pub mod encrypt;
 pub mod convert;
 pub mod export_office;
 pub mod font_style;
