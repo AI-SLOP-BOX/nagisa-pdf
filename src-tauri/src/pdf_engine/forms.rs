@@ -304,6 +304,22 @@ pub fn export_xfdf(data: &[u8]) -> Result<String, String> {
     }
 
     xfdf.push_str("  </annotations>\n");
+    // AcroForm field export (XFDF <fields> section)
+    if let Ok(form_fields) = super::inspect::get_form_fields_from_doc(&doc) {
+        if !form_fields.is_empty() {
+            xfdf.push_str("  <fields>\n");
+            for f in &form_fields {
+                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let value = f.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                xfdf.push_str(&format!(
+                    "    <field name=\"{}\">\n      <value>{}</value>\n    </field>\n",
+                    xml_escape(name),
+                    xml_escape(value)
+                ));
+            }
+            xfdf.push_str("  </fields>\n");
+        }
+    }
     xfdf.push_str("</xfdf>\n");
 
     Ok(xfdf)

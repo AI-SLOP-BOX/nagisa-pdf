@@ -5589,5 +5589,108 @@ mod tests {
         assert!(page_obj.get(b"Contents").unwrap().as_reference().is_ok(), "Contents must be flattened into a single stream reference");
     }
 
+    #[test]
+    fn test_page_tree_reorder_extract_duplicate() {
+        let pdf = create_test_pdf(3); // Pages 0, 1, 2 with "Page 1", "Page 2", "Page 3"
+        
+        // 1. Reorder page 0 to page 2 (moving page 1 to the end)
+        let reordered = crate::pdf_engine::reorder_pages(&pdf, 0, 2).expect("reorder_pages");
+        let reordered_doc = Document::load_mem(&reordered).unwrap();
+        let r_ids = get_page_ids(&reordered_doc);
+        assert_eq!(r_ids.len(), 3);
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&reordered_doc, r_ids[0]), "Page 2");
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&reordered_doc, r_ids[1]), "Page 3");
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&reordered_doc, r_ids[2]), "Page 1");
+
+        // 2. Extract pages [0, 2] from reordered
+        let extracted = crate::pdf_engine::extract_pages(&reordered, &[0, 2]).expect("extract_pages");
+        let extracted_doc = Document::load_mem(&extracted).unwrap();
+        let e_ids = get_page_ids(&extracted_doc);
+        assert_eq!(e_ids.len(), 2);
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&extracted_doc, e_ids[0]), "Page 2");
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&extracted_doc, e_ids[1]), "Page 1");
+
+        // 3. Duplicate page 0 (should insert right after page 0, making 3 pages)
+        let duplicated = crate::pdf_engine::duplicate_page(&extracted, 0).expect("duplicate_page");
+        let dup_doc = Document::load_mem(&duplicated).unwrap();
+        let d_ids = get_page_ids(&dup_doc);
+        assert_eq!(d_ids.len(), 3);
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&dup_doc, d_ids[0]), "Page 2");
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&dup_doc, d_ids[1]), "Page 2");
+        assert_eq!(crate::pdf_engine::inspect::page_text_from_doc(&dup_doc, d_ids[2]), "Page 1");
+    }
+
+    #[test]
+    fn test_search_text_and_set_flatten_form() {
+        let pdf = create_test_pdf(2);
+        
+        // 1. Search text
+        let search_res = crate::pdf_engine::inspect::search_text(&pdf, "Page 2").expect("search_text");
+        assert_eq!(search_res.len(), 1);
+        assert_eq!(search_res[0]["page"], 1);
+        assert_eq!(search_res[0]["matches"], 1);
+
+        // 2. Add an AcroForm with a Text Field and test set_form_field
+        let mut doc = Document::load_mem(&pdf).unwrap();
+        let page_id = get_page_ids(&doc)[0];
+
+        let mut field_dict = Dictionary::new();
+        field_dict.set("Type", Object::Name(b"Annot".to_vec()));
+        field_dict.set("Subtype", Object::Name(b"Widget".to_vec()));
+        field_dict.set("FT", Object::Name(b"Tx".to_vec()));
+        field_dict.set("T", Object::String(b"FirstName".to_vec(), lopdf::StringFormat::Literal));
+        field_dict.set("V", Object::String(b"Initial".to_vec(), lopdf::StringFormat::Literal));
+        field_dict.set("Rect", Object::Array(vec![
+            Object::Integer(50),
+            Object::Integer(50),
+            Object::Integer(150),
+            Object::Integer(80),
+        ]));
+        let field_id = doc.add_object(Object::Dictionary(field_dict));
+
+        // Attach to page Annots
+        if let Some(Object::Dictionary(ref mut p)) = doc.objects.get_mut(&page_id) {
+            p.set("Annots", Object::Array(vec![Object::Reference(field_id)]));
+        }
+
+        // Attach to AcroForm in Catalog
+        let root_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let mut acro_dict = Dictionary::new();
+        acro_dict.set("Fields", Object::Array(vec![Object::Reference(field_id)]));
+        let acro_id = doc.add_object(Object::Dictionary(acro_dict));
+        if let Some(Object::Dictionary(ref mut cat)) = doc.objects.get_mut(&root_id) {
+            cat.set("AcroForm", Object::Reference(acro_id));
+        }
+
+        let mut form_pdf = Vec::new();
+        doc.save_to(&mut form_pdf).unwrap();
+
+        // Check get_form_fields
+        let fields = crate::pdf_engine::get_form_fields(&form_pdf).expect("get_form_fields");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0]["name"], "FirstName");
+        assert_eq!(fields[0]["value"], "Initial");
+
+        // Update form field
+        let updated_form_pdf = crate::pdf_engine::set_form_field(&form_pdf, "FirstName", "Nagisa")
+            .expect("set_form_field");
+        let updated_fields = crate::pdf_engine::get_form_fields(&updated_form_pdf).expect("get_form_fields");
+        assert_eq!(updated_fields[0]["value"], "Nagisa");
+
+        // Export XFDF
+        let xfdf_out = crate::pdf_engine::forms::export_xfdf(&updated_form_pdf).expect("export_xfdf");
+        assert!(xfdf_out.contains("<field name=\"FirstName\">"), "XFDF must include FirstName field");
+        assert!(xfdf_out.contains("<value>Nagisa</value>"), "XFDF must include value Nagisa");
+
+        // Flatten form
+        let flattened_pdf = crate::pdf_engine::inspect::flatten_form(&updated_form_pdf)
+            .expect("flatten_form");
+        let flat_doc = Document::load_mem(&flattened_pdf).unwrap();
+        let flat_cat = flat_doc.objects.get(&flat_doc.trailer.get(b"Root").unwrap().as_reference().unwrap())
+            .unwrap().as_dict().unwrap();
+        assert!(flat_cat.get(b"AcroForm").is_err(), "AcroForm must be removed after flattening");
+    }
+
+
 }
 

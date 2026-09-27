@@ -237,7 +237,7 @@ fn may_contain_text_ops(data: &[u8]) -> bool {
 
 /// パース済み Document から指定ページのテキストを抽出する内部ヘルパー。
 /// 全頁処理時にページ毎の全文書再パース（O(n²)）を避けるため分離。
-fn page_text_from_doc(doc: &Document, page_id: lopdf::ObjectId) -> String {
+pub fn page_text_from_doc(doc: &Document, page_id: lopdf::ObjectId) -> String {
     let mut text = String::new();
     let content_ids = resolve_page_content_stream_ids(doc, page_id);
     for cid in content_ids {
