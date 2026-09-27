@@ -1,6 +1,6 @@
 {
   "productName": "Nagisa PDF",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.nagisa.pdf",
   "build": {
     "beforeDevCommand": "npm run dev",
