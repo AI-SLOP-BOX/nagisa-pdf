@@ -130,3 +130,23 @@ cargo test --lib -- --nocapture
   ```
 - **全78件の自動テストがエラー・警告なく完全通過**。
 
+---
+
+## 🟠 第12次監査課題（#48〜#51）: 画素レベル赤入れ（ラスタ消去）の不完全性
+
+| # | 重要度 | モジュール | 課題概要 | 是正内容 | ステータス |
+|---|---|---|---|---|---|
+| 48 | 🟠 重大 | `redact.rs` | **画像配置を「最後のcmのみ」で推定しており、`q`/`Q`やcm合成・Form XObjectを考慮しないため、拡大縮小＋平行移動された配置で誤った画素（または無画素）を消去** | 新モジュール `raster_redact.rs` を新設。コンテンツストリームを `q`/`Q` スタックと `cm` 行列合成（射影変換）で走査し、Form XObject（/Matrix含む）を再帰的に展開、継承 /Resources も解決して正確なCTMを得る。矩形は逆CTMで画像ピクセル空間へ写像 | ✅ **解消完了** |
+| 49 | 🟠 重大 | `redact.rs` | **消去後の画像を常にDCTDecode(JPEG)で再圧縮していたため非可逆劣化し、境界ブロックに元内容の痕跡（ゴースト）が残り得る** | FlateDecodeによる**可逆**再エンコードに変更（`compress()`のFilter既存時no-opというlopdf仕様も修正）。劣化ゼロ・痕跡ゼロ | ✅ **解消完了** |
+| 50 | 🟠 重大 | `raster_redact.rs` | **Form XObject内の画像、/SMask・/Mask 併走ストリーム、DeviceGray（ColorSpace省略含む）・Indexed 画像が未対応で、透明レイヤや別カラースペース経由で内容が復元可能** | Form再帰・SMask/Mask同一領域の不透明化（255）・DeviceRGB/Gray/Indexed(8bit)＋Flate/無フィルタ/DCTDecode のデコードを実装 | ✅ **解消完了** |
+| 51 | 🔴 致命的 | `raster_redact.rs` | **デコード不能な画像（JPX/CCITT/JBIG2等）を黙ってスキップし「消去したように見えるだけ」のファイルを生成する虚偽リスク** | 該当矩形と重なる画像が安全に消去できない場合は**処理全体をエラーで中止**し、平坦化を促す正直なメッセージを返却。偽の成功を完全排除 | ✅ **解消完了** |
+
+### 検証（第12次）
+- `test_raster_redact_precise_region_in_scaled_image`: 2色画像（左赤/右青）を拡大配置し、右半分内の矩形を緑で消去 → 消去帯は完全にフィル色、左半分は無傷、元色の残存ゼロ
+- `test_raster_redact_inside_form_xobject_with_transform`: Form XObject の /Matrix ＋ ページ側 `cm` の合成配置で正しい画素を消去（旧実装では消去不能だったケース）
+- `test_raster_redact_rejects_undecodable_image`: /JPXDecode 画像と重なる赤入れは**エラーで中止**（偽の赤入れを生成しない）
+- `test_raster_redact_leaves_no_original_image_bytes`: 出力PDF内に**元の圧縮ペイロード・生ピクセルの双方が連続バイトとして存在しない**ことを確認
+- 既存のOCRスキャン経路（`deep_redact_scanned_all`）は再OCR検証付きで回帰なし（物理消去は本モジュール経由に統一）
+- **全118件の自動テストが完全通過**（`cargo test` / vitest 102件・tsc clean）
+
+

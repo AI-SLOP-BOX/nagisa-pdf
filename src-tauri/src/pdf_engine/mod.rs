@@ -7,6 +7,7 @@ pub mod batch_ops;
 pub use batch_ops::*;
 pub mod common;
 pub mod encrypt;
+pub mod raster_redact;
 pub mod convert;
 pub mod export_office;
 pub mod font_style;

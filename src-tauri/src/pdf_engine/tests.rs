@@ -934,6 +934,291 @@ mod tests {
         }
     }
 
+    /// One-page 500x500 PDF drawing `content_ops` with the given XObjects.
+    fn build_pdf_with_page(content_ops: &str, xobjects: Vec<(&str, Object)>) -> Vec<u8> {
+        let mut doc = Document::with_version("1.7");
+        let mut xobj_dict = Dictionary::new();
+        for (name, obj) in xobjects {
+            let id = doc.add_object(obj);
+            xobj_dict.set(name, Object::Reference(id));
+        }
+        let mut resources = Dictionary::new();
+        resources.set("XObject", Object::Dictionary(xobj_dict));
+        let content_id = doc.add_object(Object::Stream(lopdf::Stream::new(
+            Dictionary::new(),
+            content_ops.as_bytes().to_vec(),
+        )));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name("Page".into()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(500),
+                Object::Integer(500),
+            ]),
+        );
+        page.set("Resources", Object::Dictionary(resources));
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name("Pages".into()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name("Catalog".into()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("save fixture");
+        out
+    }
+
+    /// Flate-encoded DeviceRGB image XObject (lossless, like a scanned page).
+    fn rgb_image_object(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 3]) -> Object {
+        let mut data = Vec::with_capacity((w * h * 3) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                data.extend_from_slice(&f(x, y));
+            }
+        }
+        let mut dict = Dictionary::new();
+        dict.set("Type", Object::Name("XObject".into()));
+        dict.set("Subtype", Object::Name("Image".into()));
+        dict.set("Width", Object::Integer(w as i64));
+        dict.set("Height", Object::Integer(h as i64));
+        dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+        dict.set("BitsPerComponent", Object::Integer(8));
+        let mut stream = lopdf::Stream::new(dict, data);
+        stream.compress().expect("flate");
+        Object::Stream(stream)
+    }
+
+    /// Decode the single image XObject of a document as RGB8.
+    fn extract_first_image(pdf: &[u8]) -> (u32, u32, Vec<u8>) {
+        let doc = Document::load_mem(pdf).expect("load");
+        for obj in doc.objects.values() {
+            if let Object::Stream(s) = obj {
+                if s.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok()) == Some(b"Image".as_slice())
+                {
+                    let d = crate::pdf_engine::raster_redact::decode_image_rgb(s).expect("decode image");
+                    return (d.width, d.height, d.rgb);
+                }
+            }
+        }
+        panic!("no image XObject found");
+    }
+
+    fn pixel_at(rgb: &[u8], w: u32, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * w + x) * 3) as usize;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    }
+
+    /// Two-tone image (left red, right blue) placed scaled/translated; redact a
+    /// rectangle that falls entirely inside the RIGHT (blue) half and prove the
+    /// pixels are gone, while the left half survives untouched.
+    #[test]
+    fn test_raster_redact_precise_region_in_scaled_image() {
+        let img = rgb_image_object(200, 100, |x, _y| if x < 100 { [255, 0, 0] } else { [0, 0, 255] });
+        // Image occupies x 100..400, y 200..350 in PDF points.
+        let pdf = build_pdf_with_page("q 300 0 0 150 100 200 cm /Im0 Do Q", vec![("Im0", img)]);
+
+        // Rect covers x 280..320 (image u = 0.60..0.733), y 250..300 (v = 0.333..0.667).
+        let out = deep_redact(&pdf, 0, 280.0, 250.0, 40.0, 50.0, "#00FF00").expect("redact");
+        let (w, h, rgb) = extract_first_image(&out);
+
+        // Pixel inside the redacted band must be exactly the fill colour.
+        let cx = (0.666 * w as f64) as u32; // u ≈ 0.666 → inside the rect
+        for y in (h as f64 * 0.34) as u32..(h as f64 * 0.66) as u32 {
+            let p = pixel_at(&rgb, w, cx, y);
+            assert_eq!(p, [0, 255, 0], "pixel ({cx},{y}) must be the redaction fill");
+        }
+
+        // Untouched red half and blue right edge must survive.
+        assert_eq!(pixel_at(&rgb, w, 20, h / 2), [255, 0, 0], "left half must survive");
+        assert_eq!(pixel_at(&rgb, w, w - 10, h / 2), [0, 0, 255], "right edge must survive");
+
+        // The original colours must be absent from the redacted band.
+        for y in (h as f64 * 0.34) as u32..(h as f64 * 0.66) as u32 {
+            let p = pixel_at(&rgb, w, cx, y);
+            assert_ne!(p, [0, 0, 255], "erased blue pixels must not remain ({cx},{y})");
+        }
+        assert!(w == 200 && h == 100, "image geometry must be preserved");
+    }
+
+    /// Same two-tone image, but drawn through a Form XObject that applies its
+    /// own scaling while the page translates the form. Verifies CTM
+    /// composition (the old "last cm wins" heuristic redacted nothing here).
+    #[test]
+    fn test_raster_redact_inside_form_xobject_with_transform() {
+        let img = rgb_image_object(200, 100, |x, _y| if x < 100 { [255, 0, 0] } else { [0, 0, 255] });
+        let pdf = build_form_fixture(img);
+
+        let out = deep_redact(&pdf, 0, 280.0, 250.0, 40.0, 50.0, "#00FF00").expect("redact");
+        let (w, h, rgb) = extract_first_image(&out);
+
+        let cx = (0.666 * w as f64) as u32;
+        for y in (h as f64 * 0.34) as u32..(h as f64 * 0.66) as u32 {
+            assert_eq!(
+                pixel_at(&rgb, w, cx, y),
+                [0, 255, 0],
+                "form-placed image pixel ({cx},{y}) must be erased"
+            );
+        }
+        assert_eq!(pixel_at(&rgb, w, 20, h / 2), [255, 0, 0], "left half must survive");
+    }
+
+    /// A Form XObject that scales the image; the page translates the form.
+    fn build_form_fixture(img: Object) -> Vec<u8> {
+        let mut doc = Document::with_version("1.7");
+        let img_id = doc.add_object(img);
+        let mut form_xobjs = Dictionary::new();
+        form_xobjs.set("Im0", Object::Reference(img_id));
+        let mut form_res = Dictionary::new();
+        form_res.set("XObject", Object::Dictionary(form_xobjs));
+        let mut form_dict = Dictionary::new();
+        form_dict.set("Type", Object::Name("XObject".into()));
+        form_dict.set("Subtype", Object::Name("Form".into()));
+        form_dict.set(
+            "BBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(300),
+                Object::Integer(150),
+            ]),
+        );
+        form_dict.set(
+            "Matrix",
+            Object::Array(vec![
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(0),
+            ]),
+        );
+        form_dict.set("Resources", Object::Dictionary(form_res));
+        let form_id = doc.add_object(Object::Stream(lopdf::Stream::new(
+            form_dict,
+            b"q 300 0 0 150 0 0 cm /Im0 Do Q".to_vec(),
+        )));
+
+        let content_id = doc.add_object(Object::Stream(lopdf::Stream::new(
+            Dictionary::new(),
+            b"q 1 0 0 1 100 200 cm /Fm0 Do Q".to_vec(),
+        )));
+        let mut page_xobjs = Dictionary::new();
+        page_xobjs.set("Fm0", Object::Reference(form_id));
+        let mut resources = Dictionary::new();
+        resources.set("XObject", Object::Dictionary(page_xobjs));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name("Page".into()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(500),
+                Object::Integer(500),
+            ]),
+        );
+        page.set("Resources", Object::Dictionary(resources));
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name("Pages".into()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name("Catalog".into()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("save form fixture");
+        out
+    }
+
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || needle.len() > haystack.len() {
+            return false;
+        }
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Undecodable (JPX) images must abort the redaction with an honest error
+    /// instead of producing a file that only *looks* redacted.
+    #[test]
+    fn test_raster_redact_rejects_undecodable_image() {
+        let mut dict = Dictionary::new();
+        dict.set("Type", Object::Name("XObject".into()));
+        dict.set("Subtype", Object::Name("Image".into()));
+        dict.set("Width", Object::Integer(100));
+        dict.set("Height", Object::Integer(100));
+        dict.set("ColorSpace", Object::Name("DeviceRGB".into()));
+        dict.set("BitsPerComponent", Object::Integer(8));
+        dict.set("Filter", Object::Name("JPXDecode".into()));
+        let img = Object::Stream(lopdf::Stream::new(dict, vec![0xAB; 64]));
+        let pdf = build_pdf_with_page("q 300 0 0 150 100 200 cm /Im0 Do Q", vec![("Im0", img)]);
+
+        let err = deep_redact(&pdf, 0, 280.0, 250.0, 40.0, 50.0, "#000000")
+            .expect_err("undecodable intersecting image must fail the redaction");
+        assert!(
+            err.contains("画素を安全に消去できない") || err.contains("未対応"),
+            "error must be honest about the limitation: {err}"
+        );
+    }
+
+    /// Neither the original compressed payload nor the original raw pixels may
+    /// survive anywhere in the output file (no recoverable residue).
+    #[test]
+    fn test_raster_redact_leaves_no_original_image_bytes() {
+        let img = rgb_image_object(64, 64, |x, y| {
+            [(x as u8).wrapping_mul(3), (y as u8).wrapping_mul(5), 0x5A]
+        });
+        let pdf = build_pdf_with_page("q 200 0 0 200 100 100 cm /Im0 Do Q", vec![("Im0", img)]);
+
+        let (original_payload, original_raw) = {
+            let doc = Document::load_mem(&pdf).expect("load fixture");
+            let mut payload = Vec::new();
+            let mut raw = Vec::new();
+            for obj in doc.objects.values() {
+                if let Object::Stream(s) = obj {
+                    if s.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok())
+                        == Some(b"Image".as_slice())
+                    {
+                        payload = s.content.clone();
+                        raw = s.decompressed_content().unwrap_or_default();
+                    }
+                }
+            }
+            (payload, raw)
+        };
+        assert!(original_payload.len() > 8 && !original_raw.is_empty());
+
+        let out = deep_redact(&pdf, 0, 150.0, 150.0, 40.0, 40.0, "#000000").expect("redact");
+        assert!(
+            !contains_subslice(&out, &original_payload),
+            "the original compressed image payload must not survive"
+        );
+        assert!(
+            !contains_subslice(&out, &original_raw),
+            "the original raw pixel data must not survive"
+        );
+    }
+
     #[test]
     fn test_deep_redact_physical_image_raster_eradication() {
         // Create an image with known pixels (e.g. 100x100 all white 255)
@@ -966,7 +1251,9 @@ mod tests {
             .expect("Deep redaction must succeed");
 
         let redacted_doc = Document::load_mem(&redacted_pdf).expect("Load redacted PDF");
-        // Inspect the image stream in the redacted doc
+        // Inspect the image stream in the redacted doc. The engine now writes
+        // lossless FlateDecode RGB, so decode with the raster decoder (the
+        // generic `image` crate only understands JPEG/PNG bitstreams).
         let mut found_modified_image = false;
         for (_id, obj) in redacted_doc.objects.iter() {
             if let Object::Stream(stream) = obj {
@@ -976,14 +1263,11 @@ mod tests {
                     .ok()
                     .and_then(|s| s.as_name().ok());
                 if subtype == Some(b"Image") {
-                    let decoded_bytes = stream
-                        .decompressed_content()
-                        .unwrap_or_else(|_| stream.content.clone());
-                    let load_res = image::load_from_memory(&decoded_bytes)
-                        .or_else(|_| image::load_from_memory(&stream.content));
-                    if let Ok(dyn_img) = load_res {
-                        let rgb = dyn_img.to_rgb8();
-                        let has_black = rgb.pixels().any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
+                    if let Ok(decoded) = crate::pdf_engine::raster_redact::decode_image_rgb(stream) {
+                        let has_black = decoded
+                            .rgb
+                            .chunks_exact(3)
+                            .any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
                         assert!(
                             has_black,
                             "Image raster must physically contain erased solid black pixels!"
