@@ -207,7 +207,7 @@ pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, Strin
 
 /// ドキュメントオブジェクトから暗号署名の有無を検査する内部ヘルパー。
 /// ByteRange エントリ（PAdES/PKCS#7）を持つ /Sig フィールドを探す。
-pub(crate) fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
+pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
     for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             // /FT /Sig かつ /ByteRange を持つ → 暗号的に署名されたフィールド

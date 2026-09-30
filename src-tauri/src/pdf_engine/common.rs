@@ -393,6 +393,9 @@ pub fn rotate_page_in_doc(
 
 pub fn rotate_page(data: &[u8], page_index: usize, degrees: i32) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     rotate_page_in_doc(&mut doc, page_index, degrees)?;
     save_doc(&mut doc)
 }
@@ -419,6 +422,9 @@ pub fn add_text(
     color: &str,
 ) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
         return Err("Page index out of range".into());
@@ -580,6 +586,9 @@ pub fn add_image_to_page(
     height: f64,
 ) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
         return Err("Page index out of range".into());

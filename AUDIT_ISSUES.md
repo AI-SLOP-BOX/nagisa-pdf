@@ -174,6 +174,13 @@ cargo test --lib -- --nocapture
 ### 検証（第14次）
 - **全123件のRust単体・統合テストが100%完全通過**（`cargo test --lib`: 123 passed, 0 failed, 10.53s）
 
+---
 
+## 🟢 第15次改修課題（#58）: 署名済みPDF改ざん防止ガードの全変異操作への全面適用
 
+| # | 重要度 | モジュール | 課題概要 | 是正内容 | ステータス |
+|---|---|---|---|---|---|
+| 58 | 🔴 致命的 | `page_tree.rs`, `common.rs`, `text_edit.rs`, `text_block_ops.rs` | **暗号署名（/ByteRange）済みPDFに対してページ操作・テキスト編集を行うとハッシュが無効化され「改ざん警告」が発生する** | `rotate_page`, `delete_page`, `reorder_pages`, `duplicate_page`, `add_text`, `add_image_to_page`, `edit_text`, `edit_text_block`, `move_text_block`, `delete_text_block` の全変異関数に `doc_has_cryptographic_signatures` ガードを配備。有効な暗号署名を持つ文書への破壊的再シリアライズを未然に遮断し、安全なエラーを返却。 | ✅ **解消完了** |
 
+### 検証（第15次）
+- **全124件のRust単体・統合テストが100%完全通過**（`cargo test --lib`: 124 passed, 0 failed, 11.75s）

@@ -5369,6 +5369,84 @@ mod tests {
     }
 
     #[test]
+    fn test_signed_pdf_mutations_blocked() {
+        let base_pdf = create_test_pdf(2);
+        let mut doc = Document::load_mem(&base_pdf).unwrap();
+
+        // Simulate a signed field with ByteRange
+        let mut sig_val = Dictionary::new();
+        sig_val.set("Type", Object::Name(b"Sig".to_vec()));
+        sig_val.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+        sig_val.set("SubFilter", Object::Name(b"adbe.pkcs7.detached".to_vec()));
+        sig_val.set(
+            "ByteRange",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(100),
+                Object::Integer(200),
+                Object::Integer(500),
+            ]),
+        );
+        let sig_val_id = doc.add_object(Object::Dictionary(sig_val));
+
+        let mut sig_field = Dictionary::new();
+        sig_field.set("FT", Object::Name(b"Sig".to_vec()));
+        sig_field.set(
+            "T",
+            Object::String(b"ExistingSig".to_vec(), lopdf::StringFormat::Literal),
+        );
+        sig_field.set("V", Object::Reference(sig_val_id));
+        doc.add_object(Object::Dictionary(sig_field));
+
+        let signed_bytes = save_doc(&mut doc).unwrap();
+
+        // 1. rotate_page must be blocked
+        let res_rot = rotate_page(&signed_bytes, 0, 90);
+        assert!(res_rot.is_err());
+        assert!(res_rot.unwrap_err().contains("有効なデジタル署名"));
+
+        // 2. delete_page must be blocked
+        let res_del = delete_page(&signed_bytes, 0);
+        assert!(res_del.is_err());
+        assert!(res_del.unwrap_err().contains("有効なデジタル署名"));
+
+        // 3. reorder_pages must be blocked
+        let res_reord = reorder_pages(&signed_bytes, 0, 1);
+        assert!(res_reord.is_err());
+        assert!(res_reord.unwrap_err().contains("有効なデジタル署名"));
+
+        // 4. duplicate_page must be blocked
+        let res_dup = duplicate_page(&signed_bytes, 0);
+        assert!(res_dup.is_err());
+        assert!(res_dup.unwrap_err().contains("有効なデジタル署名"));
+
+        // 5. add_text must be blocked
+        let res_add_txt = add_text(&signed_bytes, 0, "Blocked Text", 10.0, 10.0, 12.0, "#000000");
+        assert!(res_add_txt.is_err());
+        assert!(res_add_txt.unwrap_err().contains("有効なデジタル署名"));
+
+        // 6. edit_text must be blocked
+        let res_edit_txt = edit_text(&signed_bytes, 0, "Test", "Replaced", "Helvetica", 12.0, "#000000");
+        assert!(res_edit_txt.is_err());
+        assert!(res_edit_txt.unwrap_err().contains("有効なデジタル署名"));
+
+        // 7. edit_text_block must be blocked
+        let res_edit_blk = crate::pdf_engine::text_block_ops::edit_text_block(&signed_bytes, 0, 0, "New Block");
+        assert!(res_edit_blk.is_err());
+        assert!(res_edit_blk.unwrap_err().contains("有効なデジタル署名"));
+
+        // 8. move_text_block must be blocked
+        let res_move_blk = crate::pdf_engine::text_block_ops::move_text_block(&signed_bytes, 0, 0, 20.0, 20.0);
+        assert!(res_move_blk.is_err());
+        assert!(res_move_blk.unwrap_err().contains("有効なデジタル署名"));
+
+        // 9. delete_text_block must be blocked
+        let res_del_blk = crate::pdf_engine::text_block_ops::delete_text_block(&signed_bytes, 0, 0);
+        assert!(res_del_blk.is_err());
+        assert!(res_del_blk.unwrap_err().contains("有効なデジタル署名"));
+    }
+
+    #[test]
     fn test_edit_text_color_injection_and_replacement() {
         let mut doc = Document::with_version("1.7");
         let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));

@@ -484,6 +484,9 @@ pub fn merge_pdf_buffers_robust(buffers: &[&[u8]]) -> Result<Vec<u8>, String> {
 /// - Flattens and rebuilds the remaining pages with valid `/Parent`, `/Kids`, and `/Count`
 pub fn delete_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if page_index >= page_ids.len() {
@@ -518,6 +521,9 @@ pub fn reorder_pages_robust(
     to_index: usize,
 ) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if from_index >= page_ids.len() || to_index >= page_ids.len() {
@@ -554,6 +560,9 @@ pub fn reorder_pages_robust(
 /// - Rebuilds flat tree
 pub fn duplicate_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
     let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    if super::security::doc_has_cryptographic_signatures(&doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if page_index >= page_ids.len() {
