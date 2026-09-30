@@ -318,11 +318,9 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
             if stream.dict.has(b"SMask") || stream.dict.has(b"Mask") {
                 continue;
             }
-            if let Ok(cs) = stream.dict.get(b"ColorSpace") {
-                if let Object::Name(ref name) = cs {
-                    if name == b"DeviceCMYK" || name == b"Separation" {
-                        continue;
-                    }
+            if let Ok(Object::Name(ref name)) = stream.dict.get(b"ColorSpace") {
+                if name == b"DeviceCMYK" || name == b"Separation" {
+                    continue;
                 }
             }
 

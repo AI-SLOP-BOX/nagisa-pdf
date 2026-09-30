@@ -349,6 +349,9 @@ pub fn merge_pdfs(paths: &[String]) -> Result<Vec<u8>, String> {
 }
 
 pub fn delete_page_in_doc(doc: &mut Document, page_index: usize) -> Result<(), String> {
+    if super::security::doc_has_cryptographic_signatures(doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let mut page_ids = super::page_tree::get_logical_page_ids(doc);
     if page_index >= page_ids.len() {
         return Err(format!(
@@ -375,6 +378,9 @@ pub fn rotate_page_in_doc(
     page_index: usize,
     degrees: i32,
 ) -> Result<(), String> {
+    if super::security::doc_has_cryptographic_signatures(doc) {
+        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
     let page_ids = super::page_tree::get_logical_page_ids(doc);
     if page_index >= page_ids.len() {
         return Err("Page index out of range".into());
