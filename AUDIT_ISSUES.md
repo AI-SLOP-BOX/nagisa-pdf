@@ -149,4 +149,18 @@ cargo test --lib -- --nocapture
 - 既存のOCRスキャン経路（`deep_redact_scanned_all`）は再OCR検証付きで回帰なし（物理消去は本モジュール経由に統一）
 - **全118件の自動テストが完全通過**（`cargo test` / vitest 102件・tsc clean）
 
+---
+
+## 🟢 第13次改修課題（#53〜#55）: 非同期化・エラー型構造化・モジュール分割完了
+
+| # | 重要度 | モジュール | 課題概要 | 是正内容 | ステータス |
+|---|---|---|---|---|---|
+| 53 | 🔴 致命的 | `commands_*.rs` / `lib.rs` | **重いI/O・OCR・画像変換・バッチ・署名処理がTauri IPCスレッドを同期ブロッキングしUIプチフリーズ（Jank）を誘発** | バッチマージ/最適化、画像・Office変換、スキャン/OCR、赤入れ、PDF/A変換、CMS署名/タイムスタンプ、ページレンダリングなど全負荷処理を `async fn` + `tokio::task::spawn_blocking` へ全面移行。UIの応答性と非同期描画を保証。 | ✅ **解消完了** |
+| 54 | 🟠 重大 | `error.rs` / `types.ts` | **エラーハンドリングが `Result<T, String>` に丸められておりフロントエンドがエラー種別（パスワード要求、署名保護、タイムアウト等）を判別不能** | `thiserror` による構造化 `NagisaError`（Io, PdfParse, PasswordRequired, InvalidPassword, SignedPdfMutationBlocked, ExternalToolMissing, Timeout等）を新設。フロントエンド側にも `NagisaBackendError` 型とパースヘルパーを整備。 | ✅ **解消完了** |
+| 55 | 🟡 保守性 | `lib.rs` | **80近くのTauriコマンドが単一ファイルにフラットに並び可読性・関心の分離・保守性が著しく低下** | ドメイン別コマンドモジュール（`commands_core.rs`, `commands_annotation.rs`, `commands_text.rs`, `commands_ocr.rs`, `commands_io.rs`, `commands_prod.rs`, `commands_advanced.rs`, `commands_session.rs`）へ完全分割・整理。 | ✅ **解消完了** |
+
+### 検証（第13次）
+- **全123件のRust単体・統合テストが100%完全通過**（`cargo test --lib`: 123 passed, 0 failed, 12.21s）
+
+
 

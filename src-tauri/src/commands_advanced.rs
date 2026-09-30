@@ -36,7 +36,7 @@ pub fn verify_signature(
 }
 
 #[tauri::command]
-pub fn sign_pdf_cms(
+pub async fn sign_pdf_cms(
     data: Vec<u8>,
     page_index: usize,
     x: f64,
@@ -53,70 +53,90 @@ pub fn sign_pdf_cms(
     certificate_pem: Option<String>,
     tsa_url: Option<String>,
 ) -> Result<Vec<u8>, String> {
-    let seed = pdf_engine::cms_sign::SignatureFieldSeed {
-        page_index,
-        rect: [x, y, x + width, y + height],
-        field_name: format!(
-            "Signature_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ),
-        signer_name,
-        reason,
-        location: location.unwrap_or_default(),
-        contact_info: contact_info.unwrap_or_default(),
-    };
+    tokio::task::spawn_blocking(move || {
+        let seed = pdf_engine::cms_sign::SignatureFieldSeed {
+            page_index,
+            rect: [x, y, x + width, y + height],
+            field_name: format!(
+                "Signature_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
+            signer_name,
+            reason,
+            location: location.unwrap_or_default(),
+            contact_info: contact_info.unwrap_or_default(),
+        };
 
-    let req = pdf_engine::cms_sign::CmsSignRequest {
-        seed,
-        private_key_pem: private_key_pem.map(|s| s.into_bytes()).unwrap_or_default(),
-        certificate_pem: certificate_pem.map(|s| s.into_bytes()).unwrap_or_default(),
-        chain_pem: Vec::new(),
-        p12_der: p12_data,
-        p12_password,
-        tsa_url,
-    };
+        let req = pdf_engine::cms_sign::CmsSignRequest {
+            seed,
+            private_key_pem: private_key_pem.map(|s| s.into_bytes()).unwrap_or_default(),
+            certificate_pem: certificate_pem.map(|s| s.into_bytes()).unwrap_or_default(),
+            chain_pem: Vec::new(),
+            p12_der: p12_data,
+            p12_password,
+            tsa_url,
+        };
 
-    pdf_engine::cms_sign::sign_pdf_cms(&req, &data)
+        pdf_engine::cms_sign::sign_pdf_cms(&req, &data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn verify_pdf_cms(
+pub async fn verify_pdf_cms(
     data: Vec<u8>,
     signature_index: usize,
     trust_roots_pem: Option<String>,
 ) -> Result<pdf_engine::cms_sign::CmsVerifyReport, String> {
-    pdf_engine::cms_sign::verify_pdf_cms_with_trust(
-        &data,
-        signature_index,
-        trust_roots_pem.as_deref().map(|s| s.as_bytes()),
-    )
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::cms_sign::verify_pdf_cms_with_trust(
+            &data,
+            signature_index,
+            trust_roots_pem.as_deref().map(|s| s.as_bytes()),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// Embed PAdES-LTV validation material (cert chains + CRL/OCSP when
 /// reachable) into the document catalog's /DSS as an additive update.
 #[tauri::command]
-pub fn stamp_pdf_ltv(data: Vec<u8>) -> Result<pdf_engine::cms_sign::LtvStampResult, String> {
-    pdf_engine::cms_sign::stamp_ltv_dss(&data)
+pub async fn stamp_pdf_ltv(data: Vec<u8>) -> Result<pdf_engine::cms_sign::LtvStampResult, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::cms_sign::stamp_ltv_dss(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// Apply a PAdES B-T style document timestamp: hashes the whole covered
 /// byte range, obtains a real RFC 3161 token from the given TSA and embeds
 /// it as /Perms/DocTimeStamp with a matching /ByteRange.
 #[tauri::command]
-pub fn add_document_timestamp(data: Vec<u8>, tsa_url: String) -> Result<Vec<u8>, String> {
-    pdf_engine::cms_sign::add_document_timestamp(&data, &tsa_url)
+pub async fn add_document_timestamp(data: Vec<u8>, tsa_url: String) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::cms_sign::add_document_timestamp(&data, &tsa_url)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// Cryptographically verify the document timestamp: recomputes the ByteRange
 /// digest and compares it against the RFC 3161 token's messageImprint.
 #[tauri::command]
-pub fn verify_document_timestamp(
+pub async fn verify_document_timestamp(
     data: Vec<u8>,
 ) -> Result<pdf_engine::security::TimestampResult, String> {
-    pdf_engine::security::verify_timestamp(&data)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::security::verify_timestamp(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// Remove password protection (requires the user or owner password).
@@ -304,8 +324,12 @@ pub fn import_xfdf(data: Vec<u8>, xfdf_content: String) -> Result<Vec<u8>, Strin
 }
 
 #[tauri::command]
-pub fn repair_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
-    pdf_engine::repair_pdf(&data)
+pub async fn repair_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::repair_pdf(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -314,8 +338,12 @@ pub fn unlock_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-pub fn compress_pdf_quality(data: Vec<u8>, quality: u8) -> Result<Vec<u8>, String> {
-    pdf_engine::compress_pdf_quality(&data, quality)
+pub async fn compress_pdf_quality(data: Vec<u8>, quality: u8) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::compress_pdf_quality(&data, quality)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -345,8 +373,12 @@ pub fn create_action_wizard(name: String, steps: Vec<serde_json::Value>) -> Resu
 }
 
 #[tauri::command]
-pub fn execute_action_wizard(data: Vec<u8>, wizard_json: String) -> Result<Vec<u8>, String> {
-    pdf_engine::execute_action_wizard(&data, &wizard_json)
+pub async fn execute_action_wizard(data: Vec<u8>, wizard_json: String) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::execute_action_wizard(&data, &wizard_json)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -368,8 +400,12 @@ pub fn add_bookmark_tree(
 }
 
 #[tauri::command]
-pub fn visual_diff(data1: Vec<u8>, data2: Vec<u8>, output_path: String) -> Result<(), String> {
-    pdf_engine::visual_diff(&data1, &data2, &output_path)
+pub async fn visual_diff(data1: Vec<u8>, data2: Vec<u8>, output_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::visual_diff(&data1, &data2, &output_path)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]

@@ -128,3 +128,38 @@ export interface AppSettings {
   defaultDPI: number
   ocrLanguage: string
 }
+
+export type NagisaBackendErrorType =
+  | 'Io'
+  | 'PdfParse'
+  | 'PasswordRequired'
+  | 'InvalidPassword'
+  | 'SignedPdfMutationBlocked'
+  | 'ExternalToolMissing'
+  | 'ExternalProcessError'
+  | 'Timeout'
+  | 'InvalidParameter'
+  | 'General'
+
+export interface NagisaBackendError {
+  type: NagisaBackendErrorType
+  details?: string
+}
+
+export function parseNagisaError(err: unknown): NagisaBackendError {
+  if (typeof err === 'object' && err !== null && 'type' in err) {
+    return err as NagisaBackendError
+  }
+  const str = String(err)
+  if (str.includes('PASSWORD_REQUIRED') || str.includes('password protected')) {
+    return { type: 'PasswordRequired', details: str }
+  }
+  if (str.includes('SIGNED_PDF_MUTATION_ERROR') || str.includes('署名') || str.includes('Signature')) {
+    return { type: 'SignedPdfMutationBlocked', details: str }
+  }
+  if (str.includes('timed out') || str.includes('Timeout')) {
+    return { type: 'Timeout', details: str }
+  }
+  return { type: 'General', details: str }
+}
+

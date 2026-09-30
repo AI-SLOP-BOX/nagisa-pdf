@@ -234,19 +234,23 @@ pub fn session_search_text(
 }
 
 #[tauri::command]
-pub fn session_render_page_to_png(
+pub async fn session_render_page_to_png(
     doc_id: String,
     page_index: usize,
     dpi: u32,
     manager: tauri::State<'_, crate::session::SessionManager>,
 ) -> Result<Vec<u8>, String> {
     let session_arc = manager.get_session(&doc_id)?;
-    let mut session = session_arc.write().map_err(|e| e.to_string())?;
-    session.with_bytes(|bytes| pdf_engine::render_page_to_png(bytes, page_index, dpi))
+    tokio::task::spawn_blocking(move || {
+        let mut session = session_arc.write().map_err(|e| e.to_string())?;
+        session.with_bytes(|bytes| pdf_engine::render_page_to_png(bytes, page_index, dpi))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn session_render_color_separation(
+pub async fn session_render_color_separation(
     doc_id: String,
     page_index: usize,
     dpi: u32,
@@ -259,20 +263,24 @@ pub fn session_render_color_separation(
     manager: tauri::State<'_, crate::session::SessionManager>,
 ) -> Result<Vec<u8>, String> {
     let session_arc = manager.get_session(&doc_id)?;
-    let mut session = session_arc.write().map_err(|e| e.to_string())?;
-    session.with_bytes(|bytes| {
-        pdf_engine::render_color_separation(
-            bytes,
-            page_index,
-            dpi,
-            show_c,
-            show_m,
-            show_y,
-            show_k,
-            highlight_tac,
-            tac_limit,
-        )
+    tokio::task::spawn_blocking(move || {
+        let mut session = session_arc.write().map_err(|e| e.to_string())?;
+        session.with_bytes(|bytes| {
+            pdf_engine::render_color_separation(
+                bytes,
+                page_index,
+                dpi,
+                show_c,
+                show_m,
+                show_y,
+                show_k,
+                highlight_tac,
+                tac_limit,
+            )
+        })
     })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]

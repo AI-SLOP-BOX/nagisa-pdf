@@ -77,7 +77,7 @@ pub fn get_pdf_file_info(path: String) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn batch_merge_pdfs(
+pub async fn batch_merge_pdfs(
     paths: Vec<String>,
     output_path: String,
     keep_bookmarks: Option<bool>,
@@ -86,18 +86,22 @@ pub fn batch_merge_pdfs(
     separator_text: Option<String>,
     password: Option<String>,
 ) -> Result<(), String> {
-    let opts = pdf_engine::MergeOptions {
-        keep_bookmarks: keep_bookmarks.unwrap_or(true),
-        handle_password: handle_password.unwrap_or(true),
-        insert_separator: insert_separator.unwrap_or(false),
-        separator_text: separator_text.unwrap_or_default(),
-        password,
-    };
-    pdf_engine::batch_merge_pdfs_with_options(&paths, &output_path, &opts)
+    tokio::task::spawn_blocking(move || {
+        let opts = pdf_engine::MergeOptions {
+            keep_bookmarks: keep_bookmarks.unwrap_or(true),
+            handle_password: handle_password.unwrap_or(true),
+            insert_separator: insert_separator.unwrap_or(false),
+            separator_text: separator_text.unwrap_or_default(),
+            password,
+        };
+        pdf_engine::batch_merge_pdfs_with_options(&paths, &output_path, &opts)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn batch_add_watermark(
+pub async fn batch_add_watermark(
     paths: Vec<String>,
     text: String,
     opacity: f32,
@@ -105,44 +109,68 @@ pub fn batch_add_watermark(
     font_size: f32,
     color: String,
 ) -> Result<Vec<Vec<u8>>, String> {
-    pdf_engine::batch_add_watermark(&paths, &text, opacity, rotation, font_size, &color)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::batch_add_watermark(&paths, &text, opacity, rotation, font_size, &color)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn batch_protect(paths: Vec<String>, password: String) -> Result<Vec<Vec<u8>>, String> {
-    pdf_engine::batch_protect(&paths, &password)
+pub async fn batch_protect(paths: Vec<String>, password: String) -> Result<Vec<Vec<u8>>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::batch_protect(&paths, &password)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn batch_optimize(paths: Vec<String>) -> Result<Vec<Vec<u8>>, String> {
-    pdf_engine::batch_optimize(&paths)
+pub async fn batch_optimize(paths: Vec<String>) -> Result<Vec<Vec<u8>>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::batch_optimize(&paths)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 // ===== CONVERSIONS & EXPORT TAURI COMMANDS =====
 
 #[tauri::command]
-pub fn pdf_to_images(
+pub async fn pdf_to_images(
     data: Vec<u8>,
     output_dir: String,
     format: String,
     dpi: u32,
     page_indexes: Option<Vec<usize>>,
 ) -> Result<Vec<String>, String> {
-    pdf_engine::pdf_to_images_ex(&data, &output_dir, &format, dpi, page_indexes.as_deref())
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::pdf_to_images_ex(&data, &output_dir, &format, dpi, page_indexes.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn images_to_pdf(image_paths: Vec<String>, output_path: String) -> Result<(), String> {
-    pdf_engine::images_to_pdf(&image_paths, &output_path)
+pub async fn images_to_pdf(image_paths: Vec<String>, output_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::images_to_pdf(&image_paths, &output_path)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn html_to_pdf(html_content: String, output_path: String) -> Result<(), String> {
-    pdf_engine::html_to_pdf(&html_content, &output_path)
+pub async fn html_to_pdf(html_content: String, output_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::html_to_pdf(&html_content, &output_path)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn pdf_to_word(
+pub async fn pdf_to_word(
     data: Vec<u8>,
     output_path: String,
     page_indexes: Option<Vec<usize>>,
@@ -150,51 +178,67 @@ pub fn pdf_to_word(
     editable_tables: Option<bool>,
     run_ocr: Option<bool>,
 ) -> Result<(), String> {
-    pdf_engine::pdf_to_word_ex(
-        &data,
-        &output_path,
-        page_indexes.as_deref(),
-        keep_images.unwrap_or(false),
-        editable_tables.unwrap_or(false),
-        run_ocr.unwrap_or(false),
-    )
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::pdf_to_word_ex(
+            &data,
+            &output_path,
+            page_indexes.as_deref(),
+            keep_images.unwrap_or(false),
+            editable_tables.unwrap_or(false),
+            run_ocr.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn pdf_to_excel(
+pub async fn pdf_to_excel(
     data: Vec<u8>,
     output_path: String,
     page_indexes: Option<Vec<usize>>,
     editable_tables: Option<bool>,
     run_ocr: Option<bool>,
 ) -> Result<(), String> {
-    pdf_engine::pdf_to_excel_ex(
-        &data,
-        &output_path,
-        page_indexes.as_deref(),
-        editable_tables.unwrap_or(true),
-        run_ocr.unwrap_or(false),
-    )
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::pdf_to_excel_ex(
+            &data,
+            &output_path,
+            page_indexes.as_deref(),
+            editable_tables.unwrap_or(true),
+            run_ocr.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn pdf_to_powerpoint(
+pub async fn pdf_to_powerpoint(
     data: Vec<u8>,
     output_path: String,
     page_indexes: Option<Vec<usize>>,
     run_ocr: Option<bool>,
 ) -> Result<(), String> {
-    pdf_engine::pdf_to_powerpoint_ex(
-        &data,
-        &output_path,
-        page_indexes.as_deref(),
-        run_ocr.unwrap_or(false),
-    )
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::pdf_to_powerpoint_ex(
+            &data,
+            &output_path,
+            page_indexes.as_deref(),
+            run_ocr.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn create_pdf_portfolio(file_paths: Vec<String>, output_path: String) -> Result<(), String> {
-    pdf_engine::create_pdf_portfolio(&file_paths, &output_path)
+pub async fn create_pdf_portfolio(file_paths: Vec<String>, output_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::create_pdf_portfolio(&file_paths, &output_path)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]

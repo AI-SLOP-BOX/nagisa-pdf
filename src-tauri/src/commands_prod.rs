@@ -3,34 +3,50 @@ use super::*;
 // ===== PRO PRODUCTION, COLOR, AND COMPLIANCE TAURI COMMANDS =====
 
 #[tauri::command]
-pub fn convert_to_pdfx(data: Vec<u8>, output_intent: String) -> Result<Vec<u8>, String> {
-    pdf_engine::convert_to_pdfx(&data, &output_intent)
+pub async fn convert_to_pdfx(data: Vec<u8>, output_intent: String) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::convert_to_pdfx(&data, &output_intent)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn convert_to_pdfx_standard(
+pub async fn convert_to_pdfx_standard(
     data: Vec<u8>,
     standard: String,
     output_intent: String,
 ) -> Result<Vec<u8>, String> {
-    pdf_engine::convert_to_pdfx_standard(&data, &standard, &output_intent)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::convert_to_pdfx_standard(&data, &standard, &output_intent)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn validate_pdfx_compliance(
+pub async fn validate_pdfx_compliance(
     data: Vec<u8>,
     target_standard: String,
 ) -> Result<pdf_engine::PdfxValidationReport, String> {
-    pdf_engine::validate_pdfx_compliance(&data, &target_standard)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::validate_pdfx_compliance(&data, &target_standard)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// Inspect a PDF for PDF/A (ISO 19005) conformance without modifying it.
 #[tauri::command]
-pub fn validate_pdfa_compliance(
+pub async fn validate_pdfa_compliance(
     data: Vec<u8>,
     target_conformance: String,
 ) -> Result<pdf_engine::PdfaValidationReport, String> {
-    pdf_engine::validate_pdfa_compliance(&data, &target_conformance)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::validate_pdfa_compliance(&data, &target_conformance)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -41,23 +57,35 @@ pub fn check_accessibility(data: Vec<u8>) -> Result<serde_json::Value, String> {
 /// Acrobat Pro 相当のプリフライト検査: フォント埋め込み・カラースペース・
 /// 画像解像度・インク被覆率・ページ寸法を総合診断しスコアを返す。
 #[tauri::command]
-pub fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightResult, String> {
-    pdf_engine::preflight::preflight_check(&data)
+pub async fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightResult, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::preflight::preflight_check(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 /// 指定ページのCMYKインク被覆率(%)を実測する。
 #[tauri::command]
-pub fn check_ink_coverage(data: Vec<u8>, page_index: usize) -> Result<serde_json::Value, String> {
-    pdf_engine::preflight::check_ink_coverage(&data, page_index)
+pub async fn check_ink_coverage(data: Vec<u8>, page_index: usize) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::preflight::check_ink_coverage(&data, page_index)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn fix_accessibility_issues(
+pub async fn fix_accessibility_issues(
     data: Vec<u8>,
     default_title: String,
     default_lang: String,
 ) -> Result<Vec<u8>, String> {
-    pdf_engine::fix_accessibility_issues(&data, &default_title, &default_lang)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::fix_accessibility_issues(&data, &default_title, &default_lang)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -66,7 +94,7 @@ pub fn preview_color_separations(data: Vec<u8>) -> Result<serde_json::Value, Str
 }
 
 #[tauri::command]
-pub fn render_color_separation(
+pub async fn render_color_separation(
     data: Vec<u8>,
     page_index: usize,
     dpi: u32,
@@ -77,22 +105,30 @@ pub fn render_color_separation(
     highlight_tac: bool,
     tac_limit: u32,
 ) -> Result<Vec<u8>, String> {
-    pdf_engine::render_color_separation(
-        &data,
-        page_index,
-        dpi,
-        show_c,
-        show_m,
-        show_y,
-        show_k,
-        highlight_tac,
-        tac_limit,
-    )
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::render_color_separation(
+            &data,
+            page_index,
+            dpi,
+            show_c,
+            show_m,
+            show_y,
+            show_k,
+            highlight_tac,
+            tac_limit,
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn convert_to_cmyk(data: Vec<u8>) -> Result<Vec<u8>, String> {
-    pdf_engine::convert_to_cmyk(&data)
+pub async fn convert_to_cmyk(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::convert_to_cmyk(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -113,18 +149,30 @@ pub fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> Result<serde_json::Value, Stri
 }
 
 #[tauri::command]
-pub fn flatten_transparency(data: Vec<u8>) -> Result<Vec<u8>, String> {
-    pdf_engine::flatten_transparency(&data)
+pub async fn flatten_transparency(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::flatten_transparency(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn flatten_content(data: Vec<u8>) -> Result<Vec<u8>, String> {
-    pdf_engine::flatten_content(&data)
+pub async fn flatten_content(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::flatten_content(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn downsample_images(data: Vec<u8>, target_dpi: u32, quality: u8) -> Result<Vec<u8>, String> {
-    pdf_engine::downsample_images(&data, target_dpi, quality)
+pub async fn downsample_images(data: Vec<u8>, target_dpi: u32, quality: u8) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::downsample_images(&data, target_dpi, quality)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -133,22 +181,34 @@ pub fn remove_metadata(data: Vec<u8>) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-pub fn repair_corrupt_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
-    pdf_engine::repair_corrupt_pdf(&data)
+pub async fn repair_corrupt_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::repair_corrupt_pdf(&data)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn enhance_scanned_pdf(
+pub async fn enhance_scanned_pdf(
     data: Vec<u8>,
     options: pdf_engine::ScanEnhanceOptions,
 ) -> Result<Vec<u8>, String> {
-    pdf_engine::enhance_scanned_pdf(&data, &options)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::enhance_scanned_pdf(&data, &options)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn compare_pdf_documents(
+pub async fn compare_pdf_documents(
     original: Vec<u8>,
     revised: Vec<u8>,
 ) -> Result<pdf_engine::CompareReport, String> {
-    pdf_engine::compare_pdf_documents(&original, &revised)
+    tokio::task::spawn_blocking(move || {
+        pdf_engine::compare_pdf_documents(&original, &revised)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }

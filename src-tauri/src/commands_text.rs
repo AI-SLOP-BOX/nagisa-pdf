@@ -123,3 +123,30 @@ pub fn reflow_text(
         &color,
     )
 }
+
+#[tauri::command]
+pub fn add_text(
+    data: Vec<u8>,
+    page_index: usize,
+    text: String,
+    x: f64,
+    y: f64,
+    size: f64,
+    color: String,
+) -> Result<Vec<u8>, String> {
+    pdf_engine::add_text(&data, page_index, &text, x, y, size, &color)
+}
+
+#[tauri::command]
+pub fn add_image_to_page(
+    data: Vec<u8>,
+    page_index: usize,
+    image_data: Vec<u8>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<Vec<u8>, String> {
+    pdf_engine::add_image_to_page(&data, page_index, &image_data, x, y, width, height)
+}
+

@@ -1,8 +1,33 @@
+import { parseNagisaError } from '../types'
+
 /**
- * Formats low-level errors into human-readable, actionable diagnostic messages.
+ * Formats low-level errors and structured backend errors into human-readable, actionable diagnostic messages.
  */
 export function formatError(err: unknown, fallbackMessage = '処理中にエラーが発生しました'): string {
   if (!err) return fallbackMessage
+
+  const parsed = parseNagisaError(err)
+  switch (parsed.type) {
+    case 'PasswordRequired':
+      return 'PDFがパスワードで保護されています。閲覧・編集用のパスワードを入力してください。'
+    case 'InvalidPassword':
+      return '入力されたパスワードが正しくありません。再度ご確認ください。'
+    case 'SignedPdfMutationBlocked':
+      return '電子署名（暗号署名）で保護されたPDFです。直接変更すると法的効力やハッシュ整合性が破損するため、この操作は制限されています。'
+    case 'Timeout':
+      return '外部処理が制限時間を超過しました（タイムアウト）。ファイルが極端に巨大か複雑な可能性があります。'
+    case 'ExternalToolMissing':
+      return `必要な外部ツールが見つかりません: ${parsed.details || 'Poppler / Tesseract をインストールしてください。'}`
+    case 'PdfParse':
+      return 'PDFファイルの構文が破損しているか、非対応の形式です。'
+    case 'Io':
+      return `ファイル入出力エラーが発生しました: ${parsed.details || ''}`
+    case 'InvalidParameter':
+      return `指定されたパラメータが無効です: ${parsed.details || ''}`
+    case 'General':
+    default:
+      break
+  }
 
   const rawMessage = typeof err === 'string'
     ? err
@@ -21,30 +46,7 @@ export function formatError(err: unknown, fallbackMessage = '処理中にエラ�
     return `依存プログラムまたはファイルが見つかりません: ${rawMessage}`
   }
 
-  // PDF syntax / corrupted document
-  if (rawMessage.includes('Invalid PDF') || rawMessage.includes('Failed to load PDF') || rawMessage.includes('syntax error')) {
-    return 'PDFファイルの形式が破損しているか、対応していない暗号化が施されています。'
-  }
-
-  // Password / encryption
-  if (rawMessage.includes('password') || rawMessage.includes('encrypted')) {
-    return 'パスワードで保護されているか、権限が不足しています。正しいパスワードを入力してください。'
-  }
-
-  // Page range / index out of bounds
-  if (
-    rawMessage.includes('out of range') ||
-    rawMessage.includes('index out of') ||
-    rawMessage.includes('page index')
-  ) {
-    return '指定されたページ番号がドキュメントの範囲外です。'
-  }
-
-  // File permission / IO
-  if (rawMessage.includes('Permission denied')) {
-    return 'ファイルへのアクセス権限がありません。保存先フォルダの書き込み権限をご確認ください。'
-  }
-
   // Return clean formatted error
   return `${fallbackMessage}: ${rawMessage}`
 }
+
