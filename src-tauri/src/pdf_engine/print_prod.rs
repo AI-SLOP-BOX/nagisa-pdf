@@ -312,6 +312,20 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
     // Process each image
     for img_id in images_to_update {
         if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&img_id) {
+            // #102 是正: SMask (ソフトマスク/透過レイヤー) または Mask を持つ画像、
+            // および CMYK / Separation 色空間を持つ印刷用画像は不可逆 JPEG 再圧縮で
+            // アルファ透過や色情報が破壊されるためダウンサンプルの対象から保護する。
+            if stream.dict.has(b"SMask") || stream.dict.has(b"Mask") {
+                continue;
+            }
+            if let Ok(cs) = stream.dict.get(b"ColorSpace") {
+                if let Object::Name(ref name) = cs {
+                    if name == b"DeviceCMYK" || name == b"Separation" {
+                        continue;
+                    }
+                }
+            }
+
             // Get image dimensions
             let width = stream
                 .dict
@@ -322,6 +336,7 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                     _ => None,
                 })
                 .unwrap_or(100);
+
 
             let height = stream
                 .dict

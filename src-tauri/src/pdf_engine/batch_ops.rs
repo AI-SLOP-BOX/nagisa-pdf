@@ -743,9 +743,33 @@ pub fn validate_pdfa_compliance(
         if is_lzw {
             has_lzw = true;
         }
-        // PDF/A-1 has no transparency model at all.
-        if dict.get(b"Group").is_ok() || dict.get(b"SMask").is_ok() {
+        // PDF/A-1 has no transparency model at all. Check Group /S /Transparency, SMask, and ExtGState ca/CA
+        if let Ok(group) = dict.get(b"Group") {
+            if let Ok(group_dict) = group.as_dict() {
+                if let Ok(Object::Name(ref s)) = group_dict.get(b"S") {
+                    if s == b"Transparency" {
+                        has_transparency = true;
+                    }
+                }
+            } else {
+                has_transparency = true;
+            }
+        }
+        if dict.get(b"SMask").is_ok() {
             has_transparency = true;
+        }
+        // ExtGState with opacity < 1.0 (/CA or /ca)
+        if dict.get(b"Type").ok().and_then(|t| t.as_name().ok()).map(|n| n == b"ExtGState").unwrap_or(false) {
+            if let Ok(ca) = dict.get(b"ca").and_then(|o| o.as_float()) {
+                if ca < 0.999 {
+                    has_transparency = true;
+                }
+            }
+            if let Ok(ca) = dict.get(b"CA").and_then(|o| o.as_float()) {
+                if ca < 0.999 {
+                    has_transparency = true;
+                }
+            }
         }
         if dict
             .get(b"Subtype")

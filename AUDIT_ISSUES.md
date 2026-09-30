@@ -162,5 +162,18 @@ cargo test --lib -- --nocapture
 ### 検証（第13次）
 - **全123件のRust単体・統合テストが100%完全通過**（`cargo test --lib`: 123 passed, 0 failed, 12.21s）
 
+---
+
+## 🟢 第14次改修課題（#56〜#57）: 画像ダウンサンプル資産保護・PDF/A厳格検証の完了
+
+| # | 重要度 | モジュール | 課題概要 | 是正内容 | ステータス |
+|---|---|---|---|---|---|
+| 56 | 🟠 重大 | `print_prod.rs` | **`downsample_images` で SMask/Mask（透過レイヤー）や CMYK/Separation 印刷用画像が強制 JPEG 再圧縮されアルファ情報・色情報が破壊される** | `/SMask` または `/Mask` を持つ画像、および `DeviceCMYK` / `Separation` の印刷用色空間を持つ画像を不可逆 JPEG 再圧縮の対象外として保護・スキップするガードを実装。 | ✅ **解消完了** |
+| 57 | 🟡 中程度 | `batch_ops.rs` | **`validate_pdfa_compliance` で `ExtGState` の不透明度（`ca` / `CA` < 1.0）や `/Group << /S /Transparency >>` の未検出** | グループ辞書の透明度指定に加え、`ExtGState` 辞書の `ca` / `CA` 属性を走査して 1.0 未満のライブ透明度を ISO 19005-1 適合違反として正確にフラグ付け。 | ✅ **解消完了** |
+
+### 検証（第14次）
+- **全123件のRust単体・統合テストが100%完全通過**（`cargo test --lib`: 123 passed, 0 failed, 10.53s）
+
+
 
 
