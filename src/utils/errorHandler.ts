@@ -35,6 +35,20 @@ export function formatError(err: unknown, fallbackMessage = '処理中にエラ�
       ? err.message
       : String(err)
 
+  // Raw string / Error pattern matching (handles both unstructured Tauri errors and standard exceptions)
+  if (rawMessage.includes('Invalid PDF') || rawMessage.includes('Failed to load PDF') || rawMessage.includes('syntax error')) {
+    return 'PDFファイルの形式が破損しているか、対応していない暗号化が施されています。'
+  }
+  if (rawMessage.includes('password') || rawMessage.includes('encrypted')) {
+    return 'パスワードで保護されているか、権限が不足しています。正しいパスワードを入力してください。'
+  }
+  if (rawMessage.includes('out of range') || rawMessage.includes('index out of') || rawMessage.includes('page index')) {
+    return '指定されたページ番号がドキュメントの範囲外です。'
+  }
+  if (rawMessage.includes('Permission denied')) {
+    return 'ファイルへのアクセス権限がありません。保存先フォルダの書き込み権限をご確認ください。'
+  }
+
   // System command missing / not installed
   if (rawMessage.includes('No such file or directory') || rawMessage.includes('not found')) {
     if (rawMessage.includes('pdftocairo') || rawMessage.includes('poppler')) {
