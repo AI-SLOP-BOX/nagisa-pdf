@@ -242,8 +242,16 @@ pub async fn session_render_page_to_png(
 ) -> Result<Vec<u8>, String> {
     let session_arc = manager.get_session(&doc_id)?;
     tokio::task::spawn_blocking(move || {
-        let mut session = session_arc.write().map_err(|e| e.to_string())?;
-        session.with_bytes(|bytes| pdf_engine::render_page_to_png(bytes, page_index, dpi))
+        // 1. Ensure cache with brief write lock (no heavy rasterization under write lock)
+        {
+            let mut session = session_arc.write().map_err(|e| e.to_string())?;
+            session.ensure_cached_bytes()?;
+        }
+        // 2. Perform CPU-heavy raster rendering concurrently under shared read lock
+        let session = session_arc.read().map_err(|e| e.to_string())?;
+        session
+            .peek_cached_bytes(|bytes| pdf_engine::render_page_to_png(bytes, page_index, dpi))
+            .ok_or_else(|| "Cached document buffer unavailable".to_string())?
     })
     .await
     .map_err(|e| format!("Task failed: {e}"))?
@@ -264,20 +272,28 @@ pub async fn session_render_color_separation(
 ) -> Result<Vec<u8>, String> {
     let session_arc = manager.get_session(&doc_id)?;
     tokio::task::spawn_blocking(move || {
-        let mut session = session_arc.write().map_err(|e| e.to_string())?;
-        session.with_bytes(|bytes| {
-            pdf_engine::render_color_separation(
-                bytes,
-                page_index,
-                dpi,
-                show_c,
-                show_m,
-                show_y,
-                show_k,
-                highlight_tac,
-                tac_limit,
-            )
-        })
+        // 1. Ensure cache with brief write lock
+        {
+            let mut session = session_arc.write().map_err(|e| e.to_string())?;
+            session.ensure_cached_bytes()?;
+        }
+        // 2. Perform color separation under shared read lock
+        let session = session_arc.read().map_err(|e| e.to_string())?;
+        session
+            .peek_cached_bytes(|bytes| {
+                pdf_engine::render_color_separation(
+                    bytes,
+                    page_index,
+                    dpi,
+                    show_c,
+                    show_m,
+                    show_y,
+                    show_k,
+                    highlight_tac,
+                    tac_limit,
+                )
+            })
+            .ok_or_else(|| "Cached document buffer unavailable".to_string())?
     })
     .await
     .map_err(|e| format!("Task failed: {e}"))?

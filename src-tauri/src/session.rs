@@ -107,11 +107,8 @@ impl DocumentSession {
         }
     }
 
-    /// Access cached or serialized bytes by reference without allocating or cloning the entire PDF buffer.
-    pub fn with_bytes<F, R>(&mut self, f: F) -> Result<R, String>
-    where
-        F: FnOnce(&[u8]) -> Result<R, String>,
-    {
+    /// Ensure cached bytes are populated so subsequent readers can read without write lock.
+    pub fn ensure_cached_bytes(&mut self) -> Result<(), String> {
         if self.cached_bytes.is_none() {
             let mut buf = Vec::new();
             self.doc
@@ -119,8 +116,25 @@ impl DocumentSession {
                 .map_err(|e| format!("Failed to serialize PDF: {e}"))?;
             self.cached_bytes = Some(buf);
         }
+        Ok(())
+    }
+
+    /// Access cached or serialized bytes by reference without allocating or cloning the entire PDF buffer.
+    pub fn with_bytes<F, R>(&mut self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&[u8]) -> Result<R, String>,
+    {
+        self.ensure_cached_bytes()?;
         let bytes = self.cached_bytes.as_ref().unwrap();
         f(bytes.as_slice())
+    }
+
+    /// Read-only access to cached bytes if already populated.
+    pub fn peek_cached_bytes<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        self.cached_bytes.as_deref().map(f)
     }
 
     pub fn save_to_bytes(&mut self) -> Result<Vec<u8>, String> {
