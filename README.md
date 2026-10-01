@@ -229,8 +229,10 @@ Nagisa PDF is open-source software licensed under the [MIT License](LICENSE).
 ### Third-Party & Derivative Code
 - **Tauri / Tao**: The window management layer includes patches adapted from [Tauri / Tao](https://github.com/tauri-apps/tao), licensed under the **Apache License 2.0**.
 - **pdfjs-dist**: PDF rendering is powered by [Mozilla PDF.js](https://github.com/mozilla/pdf.js), licensed under the **Apache License 2.0**.
-- **Poppler**: Rendering and rasterization interop uses Poppler utilities (GPLv2/GPLv3).
-- **Tesseract OCR**: Optical character recognition is powered by the Tesseract engine (Apache License 2.0).
+- **External CLI Tools (Optional Interop)**:
+  - **Poppler** (`pdftoppm` / `pdftocairo`): GPLv2/GPLv3. Poppler is never statically or dynamically linked into Nagisa PDF, nor is it bundled in redistributable packages. It is executed purely via out-of-process CLI when available on the host `PATH`. If missing, Nagisa PDF gracefully falls back to its built-in Pure-Rust extraction engine.
+  - **Tesseract OCR**: Apache License 2.0. Similarly invoked as an external CLI process when OCR features are requested.
+
 
 
 
