@@ -240,15 +240,19 @@ impl DocumentSession {
     }
 }
 
+const MAX_ACTIVE_SESSIONS: usize = 32;
+
 #[derive(Default)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<RwLock<DocumentSession>>>>,
+    session_order: RwLock<VecDeque<String>>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            session_order: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -259,7 +263,19 @@ impl SessionManager {
         let session = Arc::new(RwLock::new(DocumentSession::new(id.clone(), doc)));
 
         let mut lock = self.sessions.write().map_err(|e| e.to_string())?;
+        let mut order = self.session_order.write().map_err(|e| e.to_string())?;
+
+        // Evict oldest session if maximum active session limit is exceeded
+        while lock.len() >= MAX_ACTIVE_SESSIONS {
+            if let Some(oldest_id) = order.pop_front() {
+                lock.remove(&oldest_id);
+            } else {
+                break;
+            }
+        }
+
         lock.insert(id.clone(), session);
+        order.push_back(id.clone());
         Ok(id)
     }
 
@@ -271,11 +287,15 @@ impl SessionManager {
     }
 
     pub fn close_session(&self, id: &str) -> bool {
-        if let Ok(mut lock) = self.sessions.write() {
+        let removed = if let Ok(mut lock) = self.sessions.write() {
             lock.remove(id).is_some()
         } else {
             false
+        };
+        if let Ok(mut order) = self.session_order.write() {
+            order.retain(|item| item != id);
         }
+        removed
     }
 }
 
@@ -698,5 +718,32 @@ mod tests {
                 "Serialized document must preserve edited text"
             );
         }
+    }
+
+    #[test]
+    fn test_session_manager_eviction_limit() {
+        let manager = SessionManager::new();
+        let pdf = dummy_pdf();
+
+        let mut ids = Vec::new();
+        for _ in 0..MAX_ACTIVE_SESSIONS + 5 {
+            let id = manager.create_session(&pdf).expect("Session creation should succeed");
+            ids.push(id);
+        }
+
+        // The first 5 sessions should have been evicted
+        for id in &ids[..5] {
+            assert!(manager.get_session(id).is_err(), "Old session {id} should have been evicted");
+        }
+
+        // The remaining MAX_ACTIVE_SESSIONS should exist
+        for id in &ids[5..] {
+            assert!(manager.get_session(id).is_ok(), "Active session {id} should exist");
+        }
+
+        // Explicit close
+        let last_id = ids.last().unwrap();
+        assert!(manager.close_session(last_id));
+        assert!(manager.get_session(last_id).is_err());
     }
 }

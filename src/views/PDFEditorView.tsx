@@ -488,6 +488,8 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
             setPdfData(currentBytes)
             pushHistory(currentBytes)
           }
+          setPageCount(prev => Math.max(1, prev - 1))
+          setCurrentPage(prev => Math.min(prev, Math.max(0, pageCount - 2)))
           setRevision(r => r + 1)
           await refreshHistoryStatus(nativeDocId)
           showSuccess(t().completed)

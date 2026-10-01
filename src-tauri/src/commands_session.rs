@@ -120,6 +120,11 @@ pub fn session_update_bytes(
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write().map_err(|e| e.to_string())?;
 
+    // 0. Guard against mutating digitally signed documents (preserves ISO 32000-1 ByteRange integrity)
+    if pdf_engine::doc_has_cryptographic_signatures(&session.doc) {
+        return Err(pdf_engine::SIGNED_PDF_MUTATION_ERROR.to_string());
+    }
+
     // 1. Take snapshot of current state before applying new bytes
     let snapshot = session.save_to_bytes()?;
 
