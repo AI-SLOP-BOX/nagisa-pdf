@@ -238,12 +238,11 @@ export function ThumbnailsPanel({
     if (busy || !onPdfUpdate) return
     setBusy(true)
     try {
-      const updated = await invoke<number[]>('rotate_page', {
-        data: pdfData,
+      const updated = await DocumentService.invokeOp('rotate_page', docId, pdfData, {
         pageIndex: pageIdx,
         degrees: 90,
       })
-      onPdfUpdate(updated)
+      onPdfUpdate(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
     } catch (err) {
       console.error('Rotate failed:', err)
       notifyError('ページの回転に失敗しました', err instanceof Error ? err.message : String(err))
@@ -263,11 +262,10 @@ export function ThumbnailsPanel({
     if (!onPdfUpdate) return
     setBusy(true)
     try {
-      const updated = await invoke<number[]>('delete_page', {
-        data: pdfData,
+      const updated = await DocumentService.invokeOp('delete_page', docId, pdfData, {
         pageIndex: pageIdx,
       })
-      onPdfUpdate(updated)
+      onPdfUpdate(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       if (currentPage >= pageIdx && currentPage > 0) {
         onGoToPage(currentPage - 1)
       }
@@ -307,12 +305,11 @@ export function ThumbnailsPanel({
     if (sourceIdx === null || sourceIdx === targetIdx || busy || !onPdfUpdate) return
     setBusy(true)
     try {
-      const updated = await invoke<number[]>('reorder_pages', {
-        data: pdfData,
+      const updated = await DocumentService.invokeOp('reorder_pages', docId, pdfData, {
         fromIndex: sourceIdx,
         toIndex: targetIdx,
       })
-      onPdfUpdate(updated)
+      onPdfUpdate(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       onGoToPage(targetIdx)
     } catch (err) {
       console.error('Reorder failed:', err)
