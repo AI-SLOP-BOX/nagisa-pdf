@@ -38,6 +38,10 @@ pub fn session_rotate_page(
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
 
+    if pdf_engine::doc_has_password_encryption(&session.doc) {
+        return Err(NagisaError::PasswordRequired);
+    }
+
     let page_ids = crate::pdf_engine::get_page_ids(&session.doc);
     if page_index >= page_ids.len() {
         return Err(NagisaError::InvalidParameter(format!(
@@ -77,6 +81,10 @@ pub fn session_delete_page(
 ) -> Result<(), NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
+
+    if pdf_engine::doc_has_password_encryption(&session.doc) {
+        return Err(NagisaError::PasswordRequired);
+    }
 
     // 1. Take snapshot before modification
     let snapshot = session.save_to_bytes()?;
@@ -139,6 +147,13 @@ pub fn apply_session_bytes(
         return Err(NagisaError::SignedPdfMutationBlocked(
             pdf_engine::SIGNED_PDF_MUTATION_ERROR.to_string(),
         ));
+    }
+
+    // 0b. Guard against mutating password-encrypted documents. lopdf parses
+    // them without decrypting, so edits would corrupt ciphered streams.
+    // (Reached e.g. right after protect_pdf; reopen via decrypt to edit.)
+    if pdf_engine::doc_has_password_encryption(&session.doc) {
+        return Err(NagisaError::PasswordRequired);
     }
 
     // 1. Take snapshot of current state before applying new bytes
@@ -780,9 +795,13 @@ pub async fn session_exec(
                 pdf_engine::SIGNED_PDF_MUTATION_ERROR.to_string(),
             ));
         }
+        if pdf_engine::doc_has_password_encryption(&session.doc) {
+            return Err(NagisaError::PasswordRequired);
+        }
         session.save_to_bytes()?
     };
     // 2. CPU-heavy 処理はロック外（アップロード方向のバイト転送は無い）。
+    // なお同時実行の合流は last-writer-wins（旧バイト経路と同一）。
     let desc = format!("Command {op}");
     let result = tokio::task::spawn_blocking(move || dispatch_session_op(&op, &current, &args))
         .await
@@ -875,5 +894,34 @@ mod tests {
         assert!(!out.is_empty());
         // 結果は再パース可能なPDFでなければならない（update funnel 前提）
         assert!(lopdf::Document::load_mem(&out).is_ok());
+    }
+
+    #[test]
+    fn session_exec_table_and_match_do_not_diverge() {
+        // SESSION_EXEC_OPS に載っている op は必ず dispatch の腕に到達する
+        // こと（`other` 落ち＝表と実装の乖離を検出）。空argsなので
+        // missing-arg 系エラーになるはずで、unsupported は不可。
+        let pdf = tiny_pdf();
+        for op in SESSION_EXEC_OPS {
+            let err = match dispatch_session_op(op, &pdf, &serde_json::json!({})) {
+                Ok(_) => continue, // 引数不要op（flatten等）は成功してよい
+                Err(e) => e,
+            };
+            let msg = format!("{err:?}");
+            assert!(
+                !msg.contains("unsupported op"),
+                "op '{op}' is listed but not dispatched"
+            );
+        }
+    }
+
+    #[test]
+    fn password_encryption_guard_detects_encrypt_dict() {
+        let pdf = tiny_pdf();
+        let mut doc = lopdf::Document::load_mem(&pdf).unwrap();
+        assert!(!pdf_engine::doc_has_password_encryption(&doc));
+        doc.trailer
+            .set("Encrypt", lopdf::Object::Dictionary(lopdf::Dictionary::new()));
+        assert!(pdf_engine::doc_has_password_encryption(&doc));
     }
 }

@@ -211,8 +211,7 @@ pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, Nagis
 
 /// ドキュメントオブジェクトから暗号署名の有無を検査する内部ヘルパー。
 /// ByteRange エントリ（PAdES/PKCS#7）を持つ /Sig フィールドを探す。
-pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
-    for obj in doc.objects.values() {
+pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             // /FT /Sig かつ /ByteRange を持つ → 暗号的に署名されたフィールド
             let is_sig_field = dict.get(b"FT").ok().and_then(|o| o.as_name().ok()) == Some(b"Sig");
@@ -234,6 +233,15 @@ pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
         }
     }
     false
+}
+
+/// 標準セキュリティハンドラの暗号化（/Encrypt 辞書）の有無を検査する。
+/// lopdf は暗号ストリームを復号せずにパースするため、この状態で編集系
+/// 操作をかけると暗号文を破壊して文書が開けなくなる。protect_pdf 直後の
+/// セッション等が該当し、ガード側では PasswordRequired で拒否する
+/// （復号フローへ誘導するため。一般エラーに潰さないこと）。
+pub fn doc_has_password_encryption(doc: &Document) -> bool {
+    doc.trailer.has(b"Encrypt")
 }
 
 /// 署名済みPDFに対する破壊的操作をブロックするエラーメッセージ。

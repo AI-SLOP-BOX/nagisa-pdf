@@ -48,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Error toasts show basenames only (no absolute-path leaks)
 - IPA font bundling disclosed (`THIRD-PARTY-NOTICES.md`); offline scope clarified in READMEs
 - Unsaved-changes guard (`beforeunload`) covering byte edits and overlay annotations
+- Password-encrypted sessions refuse further mutation (`PasswordRequired`, prevents ciphered-stream corruption); dispatch table/match divergence test
 
 ### Security
 - Batch/convert commands validate all input/output paths (`validate_safe_path`)
