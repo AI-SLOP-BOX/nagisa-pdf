@@ -283,6 +283,7 @@ pub async fn session_render_page_to_png(
     dpi: u32,
     manager: tauri::State<'_, crate::session::SessionManager>,
 ) -> Result<Vec<u8>, NagisaError> {
+    let dpi = dpi.clamp(24, 600);
     let session_arc = manager.get_session(&doc_id)?;
     tokio::task::spawn_blocking(move || -> Result<Vec<u8>, NagisaError> {
         // 1. Ensure cache with brief write lock (no heavy rasterization under write lock)
@@ -318,6 +319,7 @@ pub async fn session_render_color_separation(
     tac_limit: u32,
     manager: tauri::State<'_, crate::session::SessionManager>,
 ) -> Result<Vec<u8>, NagisaError> {
+    let dpi = dpi.clamp(24, 600);
     let session_arc = manager.get_session(&doc_id)?;
     tokio::task::spawn_blocking(move || -> Result<Vec<u8>, NagisaError> {
         // 1. Ensure cache with brief write lock

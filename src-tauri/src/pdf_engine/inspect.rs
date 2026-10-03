@@ -905,6 +905,16 @@ pub fn print_pdf(data: &[u8]) -> Result<(), NagisaError> {
             .map_err(|e| NagisaError::from(format!("Failed to print: {e}")))?;
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        // Android/iOS 等: 印刷バックエンドが無いのに Ok を返す偽成功に
+        // しない（.apk 配布物で無反応になる従来のバグ）。
+        return Err(NagisaError::ExternalToolMissing(format!(
+            "Printing is not supported on this platform (no handler for {}); export the PDF instead",
+            std::env::consts::OS
+        )));
+    }
+
     Ok(())
 }
 

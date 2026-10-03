@@ -76,6 +76,8 @@ pub fn get_page_dimensions(data: Vec<u8>, page_index: usize) -> Result<serde_jso
 
 #[tauri::command]
 pub async fn render_page_to_png(data: Vec<u8>, page_index: usize, dpi: u32) -> Result<Vec<u8>, NagisaError> {
+    // 巨大dpi指定でのOOMを防ぐ（サムネイル40・通常300で十分）
+    let dpi = dpi.clamp(24, 600);
     tokio::task::spawn_blocking(move || {
         pdf_engine::render_page_to_png(&data, page_index, dpi)
     })

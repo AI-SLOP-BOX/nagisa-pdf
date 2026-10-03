@@ -114,6 +114,7 @@ pub async fn render_color_separation(
     highlight_tac: bool,
     tac_limit: u32,
 ) -> Result<Vec<u8>, NagisaError> {
+    let dpi = dpi.clamp(24, 600);
     tokio::task::spawn_blocking(move || {
         pdf_engine::render_color_separation(
             &data,
