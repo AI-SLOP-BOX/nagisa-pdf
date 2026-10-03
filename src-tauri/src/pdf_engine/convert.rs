@@ -3,6 +3,7 @@ use super::*;
 use lopdf::{Dictionary, Document, Object, Stream};
 // #42: タイムアウト付き外部コマンド実行
 use crate::pdf_engine::common::{run_command_with_timeout, EXTERNAL_CMD_TIMEOUT_SECS};
+use crate::error::NagisaError;
 
 /// #46 是正: 一時ディレクトリの RAII ガード。
 ///
@@ -34,7 +35,7 @@ pub fn pdf_to_images(
     output_dir: &str,
     format: &str,
     dpi: u32,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, NagisaError> {
     pdf_to_images_ex(data, output_dir, format, dpi, None)
 }
 
@@ -46,12 +47,12 @@ pub fn pdf_to_images_ex(
     format: &str,
     dpi: u32,
     page_indexes: Option<&[usize]>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, NagisaError> {
     // Validate the selection against the real page count before doing any work.
     let selection: Option<Vec<usize>> = match page_indexes {
         None => None,
         Some(list) => {
-            let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+            let doc = load_pdf(data)?;
             let count = get_page_ids(&doc).len();
             let mut sel: Vec<usize> = list.iter().copied().filter(|&i| i < count).collect();
             sel.sort_unstable();
@@ -72,11 +73,11 @@ pub fn pdf_to_images_ex(
             .unwrap_or(0)
     );
     let tmp = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp).map_err(|e| NagisaError::from(e.to_string()))?;
     // #46 是正: RAII ガードで早期リターン時のディレクトリ残存を防止
     let _tmp_guard = TempDirGuard(tmp.clone());
     let input = tmp.join("input.pdf");
-    std::fs::write(&input, data).map_err(|e| e.to_string())?;
+    std::fs::write(&input, data).map_err(|e| NagisaError::from(e.to_string()))?;
 
     let mut cmd = find_tool_command("pdftoppm");
     cmd.arg("-r").arg(dpi.to_string());
@@ -194,7 +195,7 @@ pub fn pdf_to_images_ex(
                     Ok(output) => String::from_utf8_lossy(&output.stderr).to_string(),
                     Err(e) => format!("pdftoppm コマンドが見つからないか実行できませんでした ({e})。システムに poppler (brew install poppler 等) をインストールしてください。"),
                 };
-                return Err(err_details);
+                return Err(NagisaError::from(err_details));
             }
         } else {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -254,21 +255,28 @@ pub fn pdf_to_images_ex(
 
 // ===== IMAGE→PDF CONVERSION =====
 
-pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), String> {
+pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), NagisaError> {
+    if image_paths.is_empty() {
+        return Err(NagisaError::InvalidParameter(
+            "画像が1件も指定されていません".to_string(),
+        ));
+    }
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.add_object(Object::Dictionary(Dictionary::new())); // placeholder
 
     let mut kids = Vec::new();
 
     for path in image_paths {
-        let img_data = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-        let img = image::load_from_memory(&img_data).map_err(|e| e.to_string())?;
-        let rgb = img.to_rgb8();
+        let img_data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
+        let img = image::load_from_memory(&img_data).map_err(|e| NagisaError::from(e.to_string()))?;
+        // JPEG にアルファチャネルは存在しないため白マット合成（共通ヘルパー）
+        let rgb = flatten_alpha_to_white(&img);
         let (width, height) = rgb.dimensions();
 
         let mut jpeg_buf = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("Failed to encode image to JPEG: {e}"))?;
+        image::DynamicImage::ImageRgb8(rgb.clone())
+            .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+            .map_err(|e| NagisaError::from(format!("Failed to encode image to JPEG: {e}")))?;
         let jpeg_bytes = jpeg_buf.into_inner();
 
         // Create image XObject
@@ -352,14 +360,14 @@ pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), St
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| e.to_string())?;
-    std::fs::write(output_path, buf).map_err(|e| e.to_string())?;
+    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }
 
 // ===== HTML→PDF CONVERSION =====
 
-pub fn html_to_pdf(html_content: &str, output_path: &str) -> Result<(), String> {
+pub fn html_to_pdf(html_content: &str, output_path: &str) -> Result<(), NagisaError> {
     let unique = format!(
         "nagisa_html2pdf_{}_{}",
         std::process::id(),
@@ -369,13 +377,13 @@ pub fn html_to_pdf(html_content: &str, output_path: &str) -> Result<(), String> 
             .unwrap_or(0)
     );
     let tmp = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp).map_err(|e| NagisaError::from(e.to_string()))?;
     // #46 是正: RAII ガードで早期リターン時の一時ディレクトリ残存を防止
     let _tmp_guard = TempDirGuard(tmp.clone());
     let html_file = tmp.join("input.html");
     let pdf_file = tmp.join("output.pdf");
 
-    std::fs::write(&html_file, html_content).map_err(|e| e.to_string())?;
+    std::fs::write(&html_file, html_content).map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 1. Try Headless Chromium / Chrome / Edge browsers if installed on system
     let browser_candidates = [
@@ -551,7 +559,7 @@ pub(crate) fn extract_text_from_html(html: &str) -> String {
 }
 
 /// Helper: Generate a valid multi-page PDF document from plain text
-pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Result<(), String> {
+pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Result<(), NagisaError> {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
 
@@ -618,7 +626,7 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
             let content = lopdf::content::Content { operations };
             let content_bytes = content
                 .encode()
-                .map_err(|e| format!("Content encode: {e}"))?;
+                .map_err(|e| NagisaError::from(format!("Content encode: {e}")))?;
 
             let mut res_dict = Dictionary::new();
             let mut fonts = Dictionary::new();
@@ -720,14 +728,14 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| e.to_string())?;
-    std::fs::write(output_path, buf).map_err(|e| e.to_string())?;
+    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }
 
 // ===== PDF REPAIR =====
 
-pub fn repair_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn repair_pdf(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     // Delegate directly to repair_corrupt_pdf which salvages surviving objects
     // and reconstructs a proper /Type /Catalog and /Type /Pages tree instead of
     // erroneously pointing Root to a Page object.
@@ -736,8 +744,8 @@ pub fn repair_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
 
 // ===== QUALITY-BASED COMPRESSION =====
 
-pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| e.to_string())?;
+pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // Remove metadata if quality is low
     if quality < 50 {
@@ -763,25 +771,17 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
                 .unwrap_or(false);
 
             if is_image {
-                // Image compression handling
+                // Image compression handling: print-asset guard shared with
+                // downsample_images (SMask/Mask transparency + CMYK/Separation).
+                // compress_pdf_quality previously lacked the transparency guard.
+                if !image_safe_for_lossy_recompress(&stream.dict) {
+                    continue;
+                }
                 let filter_name = stream
                     .dict
                     .get(b"Filter")
                     .ok()
                     .and_then(|f| f.as_name().ok());
-                // Respect ColorSpace: Do not compress or forcibly convert DeviceCMYK / Separation images
-                // to RGB as this destroys print prepress color accuracy and corrupts PDF/X compliance.
-                let is_cmyk = stream
-                    .dict
-                    .get(b"ColorSpace")
-                    .ok()
-                    .and_then(|cs| cs.as_name().ok())
-                    .map(|name| name == b"DeviceCMYK" || name == b"Separation")
-                    .unwrap_or(false);
-
-                if is_cmyk {
-                    continue;
-                }
 
                 if filter_name == Some(b"DCTDecode") || filter_name.is_none() {
                     let w = stream
@@ -834,7 +834,8 @@ pub fn compress_pdf_quality(data: &[u8], quality: u8) -> Result<Vec<u8>, String>
                         };
 
                         let (new_w, new_h) = (target_img.width(), target_img.height());
-                        let rgb = target_img.to_rgb8();
+                        // JPEGにアルファはないため白マット合成（共通ヘルパー）
+                        let rgb = flatten_alpha_to_white(&target_img);
                         let mut jpeg_buf = std::io::Cursor::new(Vec::new());
                         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
                             &mut jpeg_buf,
@@ -913,8 +914,8 @@ pub fn add_page_numbers(
     position: &str, // "bottom-center", "top-right", etc.
     font_size: f32,
     start_number: usize,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| e.to_string())?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_ids = get_page_ids(&doc).clone();
 
     // Ensure /Helvetica font resource is created and referenced
@@ -1055,17 +1056,17 @@ pub struct ActionWizard {
     pub steps: Vec<ActionStep>,
 }
 
-pub fn create_action_wizard(name: &str, steps: &[ActionStep]) -> Result<String, String> {
+pub fn create_action_wizard(name: &str, steps: &[ActionStep]) -> Result<String, NagisaError> {
     let wizard = ActionWizard {
         name: name.to_string(),
         steps: steps.to_vec(),
     };
-    serde_json::to_string_pretty(&wizard).map_err(|e| e.to_string())
+    serde_json::to_string_pretty(&wizard).map_err(|e| NagisaError::from(e.to_string()))
 }
 
-pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, String> {
+pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, NagisaError> {
     let wizard: ActionWizard =
-        serde_json::from_str(wizard_json).map_err(|e| format!("Invalid wizard JSON: {e}"))?;
+        serde_json::from_str(wizard_json).map_err(|e| NagisaError::from(format!("Invalid wizard JSON: {e}")))?;
 
     let mut current_data = data.to_vec();
 
@@ -1164,7 +1165,7 @@ pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, 
                     .and_then(|v| v.as_i64())
                     .unwrap_or(90) as i32;
                 let mut temp_doc = Document::load_mem(&current_data)
-                    .map_err(|e| format!("Failed to parse PDF for rotation: {e}"))?;
+                    .map_err(|e| NagisaError::from(format!("Failed to parse PDF for rotation: {e}")))?;
                 let page_count = get_page_count(&temp_doc);
                 for p in 0..page_count {
                     super::common::rotate_page_in_doc(&mut temp_doc, p, rotation)?;
@@ -1181,7 +1182,7 @@ pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, 
                 current_data = super::scan_enhance::enhance_scanned_pdf(&current_data, &options)?;
             }
             _ => {
-                return Err(format!("Unknown action: {}", step.action_type));
+                return Err(NagisaError::from(format!("Unknown action: {}", step.action_type)));
             }
         }
     }
@@ -1194,8 +1195,8 @@ pub use super::accessibility::*;
 
 // ===== JAVASCRIPT EMBEDDING (ISO 32000-1 §12.6.4.16 & §7.7.4) =====
 
-pub fn embed_javascript(data: &[u8], script: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn embed_javascript(data: &[u8], script: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // Create JavaScript action dictionary
     let mut js_action = Dictionary::new();
@@ -1339,8 +1340,8 @@ fn build_outline_nodes(
     (node_ids, total_count)
 }
 
-pub fn add_bookmark_tree(data: &[u8], bookmarks: &[serde_json::Value]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn add_bookmark_tree(data: &[u8], bookmarks: &[serde_json::Value]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     // Ensure valid Catalog root

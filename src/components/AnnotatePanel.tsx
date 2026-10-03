@@ -43,7 +43,7 @@ export function AnnotatePanel({
 
   const loadAnnotations = async () => {
     try {
-      const bytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+      const bytes = await DocumentService.getCurrentBytes(docId, pdfData)
       if (!bytes) return
       const result = await invoke<Array<{
         id: string

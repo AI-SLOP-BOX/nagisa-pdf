@@ -11,8 +11,9 @@ pub fn add_highlight(
     width: f64,
     height: f64,
     color: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_highlight(&data, page_index, x, y, width, height, &color)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -23,8 +24,9 @@ pub fn add_underline(
     y: f64,
     width: f64,
     color: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_underline(&data, page_index, x, y, width, &color)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -35,8 +37,9 @@ pub fn add_sticky_note(
     y: f64,
     text: String,
     color: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_sticky_note(&data, page_index, x, y, &text, &color)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -50,7 +53,7 @@ pub fn add_rectangle(
     stroke_color: String,
     fill_color: String,
     stroke_width: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_rectangle(
         &data,
         page_index,
@@ -62,6 +65,7 @@ pub fn add_rectangle(
         &fill_color,
         stroke_width,
     )
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -75,7 +79,7 @@ pub fn add_circle(
     stroke_color: String,
     fill_color: String,
     stroke_width: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_circle(
         &data,
         page_index,
@@ -87,6 +91,7 @@ pub fn add_circle(
         &fill_color,
         stroke_width,
     )
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -99,8 +104,9 @@ pub fn add_line(
     y2: f64,
     color: String,
     width: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_line(&data, page_index, x1, y1, x2, y2, &color, width)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -113,7 +119,7 @@ pub fn add_watermark(
     color: String,
     all_pages: bool,
     page_indices: Vec<usize>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_watermark(
         &data,
         &text,
@@ -124,16 +130,19 @@ pub fn add_watermark(
         all_pages,
         &page_indices,
     )
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn remove_watermarks(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub fn remove_watermarks(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::remove_watermarks(&data)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn get_annotations(data: Vec<u8>) -> Result<Vec<serde_json::Value>, String> {
+pub fn get_annotations(data: Vec<u8>) -> Result<Vec<serde_json::Value>, NagisaError> {
     pdf_engine::get_annotations(&data)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -142,8 +151,9 @@ pub fn add_annotation_reply(
     annotation_id: (u32, u16),
     author: String,
     contents: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_annotation_reply(&data, annotation_id, &author, &contents)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -151,11 +161,13 @@ pub fn set_annotation_status(
     data: Vec<u8>,
     annotation_id: (u32, u16),
     status: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::set_annotation_status(&data, annotation_id, &status)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn delete_annotation(data: Vec<u8>, annotation_id: (u32, u16)) -> Result<Vec<u8>, String> {
+pub fn delete_annotation(data: Vec<u8>, annotation_id: (u32, u16)) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::delete_annotation(&data, annotation_id)
+        .map_err(NagisaError::from)
 }

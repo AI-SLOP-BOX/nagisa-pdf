@@ -55,11 +55,13 @@ export function usePDFCoordinates({
     const pdfW = scaleX > 0 ? domW / scaleX : 0
     const pdfH = scaleY > 0 ? domH / scaleY : 0
     const pdfY = scaleY > 0 ? pageHeight - ((domY + domH) / scaleY) : 0
+    // float保持: Math.round するとドラッグ往復で最大0.5ptずつドリフトする。
+    // バックエンドはf32受付のため丸め不要。表示側で丸めること。
     return {
-      x: Math.round(pdfX),
-      y: Math.round(pdfY),
-      width: Math.round(pdfW),
-      height: Math.round(pdfH),
+      x: pdfX,
+      y: pdfY,
+      width: pdfW,
+      height: pdfH,
     }
   }, [scaleX, scaleY])
 

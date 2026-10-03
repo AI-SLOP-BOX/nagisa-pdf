@@ -1,5 +1,6 @@
 use super::common::*;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== COLOR MANAGEMENT (CMYK) =====
 
@@ -34,7 +35,7 @@ pub fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> (u8, u8, u8) {
     (r as u8, g as u8, b as u8)
 }
 
-pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     // If input is a PDF document, convert embedded RGB images to CMYK and attach CMYK output intent
     if let Ok(mut doc) = Document::load_mem(data) {
         let mut images_to_convert: Vec<OID> = Vec::new();
@@ -74,7 +75,7 @@ pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
                         .or_else(|_| {
                             image::load_from_memory(&stream.content)
                                 .map(|img| img.to_rgb8().into_raw())
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| NagisaError::from(e.to_string()))
                         })
                         .unwrap_or_else(|_| stream.content.clone());
 
@@ -118,7 +119,7 @@ pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
 
     // Fallback if data is a standalone image (PNG/JPEG)
     let img = image::load_from_memory(data)
-        .map_err(|e| format!("Failed to parse as PDF or image: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to parse as PDF or image: {e}")))?;
     let rgb = img.to_rgb8();
     let (width, height) = rgb.dimensions();
 
@@ -140,8 +141,8 @@ pub fn convert_to_cmyk(data: &[u8]) -> Result<Vec<u8>, String> {
 /// Convert `rg`/`RG` (RGB fill/stroke) operators in all page content streams to `k`/`K` (CMYK).
 /// This ensures that text and vector graphics are also converted to CMYK,
 /// not just embedded raster images.
-fn convert_rgb_operators_in_streams(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+fn convert_rgb_operators_in_streams(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     for &page_id in &page_ids {
@@ -227,8 +228,8 @@ fn convert_rgb_operators_in_streams(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 // Set CMYK output intent with standard ICC Profile stream
-pub fn set_cmyk_output_intent(data: &[u8], profile_name: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn set_cmyk_output_intent(data: &[u8], profile_name: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let root_id = doc
         .trailer
@@ -287,14 +288,14 @@ pub fn set_cmyk_output_intent(data: &[u8], profile_name: &str) -> Result<Vec<u8>
 }
 
 // Alias for embed_icc_profile for backward compatibility
-pub fn embed_icc_profile(data: &[u8], profile_name: &str) -> Result<Vec<u8>, String> {
+pub fn embed_icc_profile(data: &[u8], profile_name: &str) -> Result<Vec<u8>, NagisaError> {
     set_cmyk_output_intent(data, profile_name)
 }
 
 // ===== ADVANCED PDF OPTIMIZATION =====
 
-pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let mut images_to_update: Vec<OID> = Vec::new();
 
@@ -312,16 +313,9 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
     // Process each image
     for img_id in images_to_update {
         if let Some(Object::Stream(ref mut stream)) = doc.objects.get_mut(&img_id) {
-            // #102 是正: SMask (ソフトマスク/透過レイヤー) または Mask を持つ画像、
-            // および CMYK / Separation 色空間を持つ印刷用画像は不可逆 JPEG 再圧縮で
-            // アルファ透過や色情報が破壊されるためダウンサンプルの対象から保護する。
-            if stream.dict.has(b"SMask") || stream.dict.has(b"Mask") {
+            // 印刷資産保護は共通ガードに一本化（SMask/Mask・CMYK/Separation除外）
+            if !image_safe_for_lossy_recompress(&stream.dict) {
                 continue;
-            }
-            if let Ok(Object::Name(ref name)) = stream.dict.get(b"ColorSpace") {
-                if name == b"DeviceCMYK" || name == b"Separation" {
-                    continue;
-                }
             }
 
             // Get image dimensions
@@ -472,8 +466,8 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
     save_doc(&mut doc)
 }
 
-pub fn remove_metadata(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn remove_metadata(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // Remove document info
     let info_id = doc.trailer.get(b"Info").and_then(|o| o.as_reference()).ok();
@@ -505,8 +499,8 @@ pub fn remove_metadata(data: &[u8]) -> Result<Vec<u8>, String> {
     save_doc(&mut doc)
 }
 
-pub fn flatten_content(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn flatten_content(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let page_ids = get_page_ids(&doc).clone();
 
@@ -530,7 +524,7 @@ pub fn flatten_content(data: &[u8]) -> Result<Vec<u8>, String> {
             let content = lopdf::content::Content {
                 operations: all_operations,
             };
-            let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+            let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
             let mut stream = Stream::new(Dictionary::new(), content_bytes);
             stream.dict.set("Type", Object::Name("Content".into()));
@@ -552,8 +546,8 @@ pub fn flatten_content(data: &[u8]) -> Result<Vec<u8>, String> {
 ///    ページレベルの透明度グループ（/Group << /S /Transparency >>）を無力化・除去し、
 ///    PostScript Level 3 / PDF 1.3 互換の非透明仕様へ適合させるサニタイズ処理を行います。
 ///    幾何学的ベクターパス交差計算による色ブレンド（Adobe InDesign等の高負荷平面分割）は行いません。
-pub fn flatten_transparency(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn flatten_transparency(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let page_ids = get_page_ids(&doc).clone();
 
@@ -710,8 +704,8 @@ pub use super::pdf_x::*;
 
 // ===== COLOR SEPARATION PREVIEW & TOTAL AREA COVERAGE (TAC) =====
 
-pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn preview_color_separations(data: &[u8]) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
 
     let page_ids = get_page_ids(&doc);
     let mut separations = Vec::new();
@@ -837,11 +831,11 @@ pub fn render_color_separation(
     show_k: bool,
     highlight_tac: bool,
     tac_limit: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     // 1. Render base page image using pdftoppm
     let base_png = crate::pdf_engine::inspect::render_page_to_png(data, page_index, dpi)?;
     let img = image::load_from_memory(&base_png)
-        .map_err(|e| format!("Failed to decode rendered page: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to decode rendered page: {e}")))?;
     let mut rgba = img.to_rgba8();
 
     let limit = if tac_limit == 0 { 300 } else { tac_limit };
@@ -897,7 +891,7 @@ pub fn render_color_separation(
 
     let mut out_buf = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut out_buf, image::ImageFormat::Png)
-        .map_err(|e| format!("Failed to encode separation PNG: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to encode separation PNG: {e}")))?;
     Ok(out_buf.into_inner())
 }
 

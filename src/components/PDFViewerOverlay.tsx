@@ -23,7 +23,7 @@ interface PDFViewerOverlayProps {
   pdfData: number[] | null
   docId?: string | null
   currentPage: number
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
   imgRenderedSize: { width: number; height: number }
   pageSize: { width: number; height: number }
   drawBox: { startX: number; startY: number; currentX: number; currentY: number } | null
@@ -295,16 +295,14 @@ export const PDFViewerOverlay: React.FC<PDFViewerOverlayProps> = ({
                     if (e.key === 'Enter') {
                       e.preventDefault()
                       e.stopPropagation()
-                      const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
-                      if (currentBytes && editingTextVal !== block.text) {
+                      if (editingTextVal !== block.text) {
                         try {
-                          const updated = await invoke<number[]>('edit_text_block', {
-                            data: currentBytes,
+                          const updated = await DocumentService.invokeOp('edit_text_block', docId, pdfData, {
                             pageIndex: currentPage,
                             blockId: block.id,
                             newText: editingTextVal,
                           })
-                          onPdfUpdate?.(updated)
+                          onPdfUpdate?.(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                         } catch (err) {
                           console.error('Failed to update text in-place:', err)
                         }
@@ -316,16 +314,14 @@ export const PDFViewerOverlay: React.FC<PDFViewerOverlayProps> = ({
                     }
                   }}
                   onBlur={async () => {
-                    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
-                    if (currentBytes && editingTextVal !== block.text) {
+                    if (editingTextVal !== block.text) {
                       try {
-                        const updated = await invoke<number[]>('edit_text_block', {
-                          data: currentBytes,
+                        const updated = await DocumentService.invokeOp('edit_text_block', docId, pdfData, {
                           pageIndex: currentPage,
                           blockId: block.id,
                           newText: editingTextVal,
                         })
-                        onPdfUpdate?.(updated)
+                        onPdfUpdate?.(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                       } catch (err) {
                         console.error('Failed to update text in-place:', err)
                       }

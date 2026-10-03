@@ -17,7 +17,7 @@ export function FormCreatorPanel({
   currentPage: number
   exec?: PdfExec
   showToast: (msg: string) => void
-  onPdfUpdate: (data: number[]) => void
+  onPdfUpdate: (data: number[], opts?: { synced?: boolean }) => void
 }) {
   const [fieldName, setFieldName] = useState('text_field_1')
   const [fieldType, setFieldType] = useState<'Tx' | 'Btn' | 'Ch'>('Tx')
@@ -36,12 +36,10 @@ export function FormCreatorPanel({
   // Field list
   const [existingFields, setExistingFields] = useState<Array<{ name: string; type: string; value: string }>>([])
 
-  const getCurrentBytes = useCallback(async (): Promise<number[] | null> => {
-    if (docId) {
-      return DocumentService.getSessionBytes(docId)
-    }
-    return pdfData
-  }, [docId, pdfData])
+  const getCurrentBytes = useCallback(
+    (): Promise<number[] | null> => DocumentService.getCurrentBytes(docId, pdfData),
+    [docId, pdfData],
+  )
 
   const loadFields = useCallback(async () => {
     const target = docId || pdfData

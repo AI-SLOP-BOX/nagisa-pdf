@@ -32,7 +32,7 @@ interface ToolsAdvancedEngineeringSectionProps {
   pdfData: number[] | null
   docId?: string | null
   showToast: (msg: string) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }
 
 export function ToolsAdvancedEngineeringSection({
@@ -44,12 +44,10 @@ export function ToolsAdvancedEngineeringSection({
   const [busy, setBusy] = useState(false)
   const [compareReport, setCompareReport] = useState<CompareReport | null>(null)
 
-  const getCurrentBytes = useCallback(async (): Promise<number[] | null> => {
-    if (docId) {
-      return DocumentService.getSessionBytes(docId)
-    }
-    return pdfData
-  }, [docId, pdfData])
+  const getCurrentBytes = useCallback(
+    (): Promise<number[] | null> => DocumentService.getCurrentBytes(docId, pdfData),
+    [docId, pdfData],
+  )
 
   const handleAutoRepair = async () => {
     const bytes = await getCurrentBytes()

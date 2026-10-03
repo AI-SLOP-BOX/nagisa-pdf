@@ -1,14 +1,15 @@
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb, RgbImage};
+use crate::error::NagisaError;
 
 pub fn process_scanned_images(
     paths: &[String],
     remove_shadow: bool,
     correct_perspective: bool,
     dpi: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, crate::error::NagisaError> {
     if paths.is_empty() {
-        return Err("No images provided for scan processing".to_string());
+        return Err(crate::error::NagisaError::InvalidParameter("No images provided for scan processing".to_string()));
     }
 
     let mut doc = lopdf::Document::with_version("1.7");
@@ -16,7 +17,7 @@ pub fn process_scanned_images(
     let mut kids = Vec::new();
 
     for path in paths {
-        let img = image::open(path).map_err(|e| format!("Failed to open {path}: {e}"))?;
+        let img = image::open(path).map_err(|e| NagisaError::from(format!("Failed to open {path}: {e}")))?;
 
         let mut result = img;
         if correct_perspective {
@@ -44,7 +45,7 @@ pub fn process_scanned_images(
         let mut jpeg_buf = std::io::Cursor::new(Vec::new());
         dynamic
             .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("Failed to encode image to JPEG: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to encode image to JPEG: {e}")))?;
         let jpeg_bytes = jpeg_buf.into_inner();
 
         let mut img_dict = lopdf::Dictionary::new();
@@ -108,7 +109,7 @@ pub fn process_scanned_images(
 
     let mut buf = Vec::new();
     doc.save_to(&mut buf)
-        .map_err(|e| format!("Failed to generate scanned PDF: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to generate scanned PDF: {e}")))?;
     Ok(buf)
 }
 
@@ -206,11 +207,11 @@ fn find_document_corners(
     // We compute the 5% extremal percentiles to avoid single outlier noise pixels.
     let mut sum_xy: Vec<(f64, (f64, f64))> =
         edge_points.iter().map(|&(x, y)| (x + y, (x, y))).collect();
-    sum_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    sum_xy.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let mut diff_xy: Vec<(f64, (f64, f64))> =
         edge_points.iter().map(|&(x, y)| (x - y, (x, y))).collect();
-    diff_xy.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    diff_xy.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let n = edge_points.len();
     let k = (n / 50).clamp(1, 15); // use 2% robust trimmed extremum

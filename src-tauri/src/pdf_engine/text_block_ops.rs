@@ -1,6 +1,7 @@
 use super::common::*;
 use super::reflow::get_char_metric_width;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TextBlock {
@@ -25,19 +26,134 @@ pub struct TextBlock {
 // text_buffer が空の場合はインクリメントしない（空テキストブロックを無視）。
 // ---------------------------------------------------------------------------
 
+/// 実フォント幅によるテキスト幅計測。
+/// 単純フォントの /Widths + /FirstChar、CIDフォントの /DW（DescendantFonts経由）
+/// を参照し、解決できない文字のみ get_char_metric_width のヒューリスティクスに
+/// フォールバックする。font_dict が None の場合は全面ヒューリスティクス。
+///
+/// 既知の制限: Unicodeコードポイントをそのまま /Widths 添字に使うため、
+/// /Encoding /Differences で再割当てされたフォントではずれる（Latin-1 範囲は
+/// 偶然一致することが多い）。実測化で信頼度は上がったが完全保証ではない。
+/// Differences 対応が必要になったら /Encoding 辞書の差分配列を解決すること。
+pub(crate) fn measure_text_width(
+    doc: &Document,
+    font_dict: Option<&Dictionary>,
+    text: &str,
+    font_size: f32,
+) -> f32 {
+    let heuristic: f32 = text
+        .chars()
+        .map(|c| get_char_metric_width(c, font_size))
+        .sum();
+    let fd = match font_dict {
+        Some(d) => d,
+        None => return heuristic,
+    };
+    let num = |o: &Object| -> Option<f32> {
+        match o {
+            Object::Real(v) => Some(*v),
+            Object::Integer(v) => Some(*v as f32),
+            _ => None,
+        }
+    };
+    // CID/Type0: Unicode→CID逆引きを持たないため /DW 一律が最善の近似
+    if let Ok(Object::Name(sub)) = fd.get(b"Subtype") {
+        if sub == b"Type0" {
+            if let Some(dw) = descendant_default_width(doc, fd) {
+                return text.chars().count() as f32 * dw / 1000.0 * font_size;
+            }
+            return heuristic;
+        }
+    }
+    // 単純フォント: /Widths テーブル（間接参照の場合あり）
+    let first = fd.get(b"FirstChar").ok().and_then(num).unwrap_or(32.0) as u32;
+    let widths: Vec<f32> = match fd.get(b"Widths") {
+        Ok(Object::Array(arr)) => arr.iter().filter_map(num).collect(),
+        Ok(Object::Reference(id)) => match doc.objects.get(id) {
+            Some(Object::Array(arr)) => arr.iter().filter_map(num).collect(),
+            _ => return heuristic,
+        },
+        _ => return heuristic,
+    };
+    if widths.is_empty() {
+        return heuristic;
+    }
+    let mut total = 0.0f32;
+    let mut measured = false;
+    for c in text.chars() {
+        let code = c as u32;
+        if code < 256 && code >= first {
+            if let Some(w) = widths.get((code - first) as usize) {
+                if *w > 0.0 {
+                    total += *w / 1000.0 * font_size;
+                    measured = true;
+                    continue;
+                }
+            }
+        }
+        total += get_char_metric_width(c, font_size);
+    }
+    if measured {
+        total
+    } else {
+        heuristic
+    }
+}
+
+fn descendant_default_width(doc: &Document, font_dict: &Dictionary) -> Option<f32> {
+    let arr = match font_dict.get(b"DescendantFonts").ok()? {
+        Object::Array(a) => a,
+        _ => return None,
+    };
+    let cid = match arr.first()? {
+        Object::Reference(id) => doc.objects.get(id)?.as_dict().ok()?,
+        _ => return None,
+    };
+    match cid.get(b"DW").ok()? {
+        Object::Real(v) => Some(*v),
+        Object::Integer(v) => Some(*v as f32),
+        _ => None,
+    }
+}
+
+/// ページリソース辞書からフォント辞書を解決する（間接参照対応）。
+pub(crate) fn lookup_font_dict(
+    doc: &Document,
+    res: Option<&Dictionary>,
+    key: &[u8],
+) -> Option<Dictionary> {
+    let res = res?;
+    let font_sub = match res.get(b"Font").ok()? {
+        Object::Reference(id) => doc.objects.get(id)?.as_dict().ok()?.clone(),
+        Object::Dictionary(d) => d.clone(),
+        _ => return None,
+    };
+    match font_sub.get(key).ok()? {
+        Object::Reference(id) => doc.objects.get(id)?.as_dict().ok().cloned(),
+        Object::Dictionary(d) => Some(d.clone()),
+        _ => None,
+    }
+}
+
 /// ページ上の全テキストブロックを取得する。
 /// #36 解消: Tj/TJ の生バイト列を decode_pdf_text_string に通し、
 ///           CMap/UTF-16BE/WinAnsi を正しく解決してUIに渡す。
 pub fn get_text_blocks_from_doc(
     doc: &Document,
     page_index: usize,
-) -> Result<Vec<TextBlock>, String> {
+) -> Result<Vec<TextBlock>, NagisaError> {
     let page_ids = get_page_ids(doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
+    let page_attrs = super::page_tree::materialize_inherited_page_attrs(doc, page_id);
+    let res_dict: Option<Dictionary> = page_attrs.get(b"Resources").ok().and_then(|r| match r {
+        Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()).cloned(),
+        Object::Dictionary(d) => Some(d.clone()),
+        _ => None,
+    });
     let mut blocks = Vec::new();
     let mut block_id = 0usize;
 
@@ -58,6 +174,7 @@ pub fn get_text_blocks_from_doc(
     let mut current_x = 0.0f32;
     let mut current_y = 0.0f32;
     let mut current_font = String::new();
+    let mut current_font_key: Vec<u8> = Vec::new();
     let mut current_size = 12.0f32;
     let mut current_color = "#000000".to_string();
     let mut in_text = false;
@@ -78,10 +195,9 @@ pub fn get_text_blocks_from_doc(
             }
             "ET" => {
                 if in_text && has_text_in_block {
-                    let calc_width: f32 = text_buffer
-                        .chars()
-                        .map(|c| get_char_metric_width(c, current_size))
-                        .sum();
+                    let font_dict = lookup_font_dict(doc, res_dict.as_ref(), &current_font_key);
+                    let calc_width: f32 =
+                        measure_text_width(doc, font_dict.as_ref(), &text_buffer, current_size);
                     blocks.push(TextBlock {
                         id: block_id,
                         text: text_buffer.clone(),
@@ -104,6 +220,7 @@ pub fn get_text_blocks_from_doc(
                 // フォント名はリソース名（/F1 等）。サイズのみ確実に取得する。
                 if let Some(Object::Name(font)) = op.operands.first() {
                     current_font = String::from_utf8_lossy(font).to_string();
+                    current_font_key = font.clone();
                 }
                 // サイズは Integer または Real
                 let size_obj = op.operands.get(1);
@@ -204,8 +321,8 @@ pub fn get_text_blocks_from_doc(
     Ok(blocks)
 }
 
-pub fn get_text_blocks(data: &[u8], page_index: usize) -> Result<Vec<TextBlock>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_text_blocks(data: &[u8], page_index: usize) -> Result<Vec<TextBlock>, NagisaError> {
+    let doc = load_pdf(data)?;
     get_text_blocks_from_doc(&doc, page_index)
 }
 
@@ -220,14 +337,16 @@ pub fn edit_text_block(
     page_index: usize,
     block_id: usize,
     new_text: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -256,7 +375,7 @@ pub fn edit_text_block(
     let unicode_encoder = if has_non_ascii {
         Some(
             crate::pdf_engine::font_unicode::create_unicode_font_encoder(&mut doc, new_text)
-                .map_err(|e| format!("Unicode font encoder error: {e}"))?,
+                .map_err(|e| NagisaError::from(format!("Unicode font encoder error: {e}")))?,
         )
     } else {
         None
@@ -399,7 +518,7 @@ pub fn edit_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -457,14 +576,16 @@ pub fn move_text_block(
     block_id: usize,
     new_x: f32,
     new_y: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -486,11 +607,24 @@ pub fn move_text_block(
         }
     }
 
+    let num = |o: &Object| -> f32 {
+        match o {
+            Object::Real(v) => *v,
+            Object::Integer(v) => *v as f32,
+            _ => 0.0,
+        }
+    };
+
     let mut new_operations: Vec<lopdf::content::Operation> = Vec::new();
     let mut current_block = 0usize;
     let mut in_text = false;
     let mut has_text_in_block = false;
     let mut in_target_block = false;
+    // ブロック内の2つ目以降の Tm/Td は相対送り（改行・字送り）のため、
+    // 書き換えるのは最初の位置決めオペレータのみとする。全置換は複数行
+    // ブロックを1点に潰す。Tm の a/b/c/d（回転・拡縮・傾斜）は保持し、
+    // 平行移動成分 e/f のみ new_x/new_y に差し替える。
+    let mut position_rewritten = false;
 
     for op in &all_operations {
         match op.operator.as_str() {
@@ -498,6 +632,7 @@ pub fn move_text_block(
                 in_text = true;
                 has_text_in_block = false;
                 in_target_block = current_block == block_id;
+                position_rewritten = false;
                 new_operations.push(op.clone());
             }
             "ET" => {
@@ -510,24 +645,31 @@ pub fn move_text_block(
                 new_operations.push(op.clone());
             }
             "Tm" => {
-                if in_target_block {
+                if in_target_block && !position_rewritten && op.operands.len() >= 6 {
+                    let (a, b, c, d) = (
+                        num(&op.operands[0]),
+                        num(&op.operands[1]),
+                        num(&op.operands[2]),
+                        num(&op.operands[3]),
+                    );
                     new_operations.push(lopdf::content::Operation::new(
                         "Tm",
                         vec![
-                            Object::Real(1.0),
-                            Object::Real(0.0),
-                            Object::Real(0.0),
-                            Object::Real(1.0),
+                            Object::Real(a),
+                            Object::Real(b),
+                            Object::Real(c),
+                            Object::Real(d),
                             Object::Real(new_x),
                             Object::Real(new_y),
                         ],
                     ));
+                    position_rewritten = true;
                 } else {
                     new_operations.push(op.clone());
                 }
             }
             "Td" | "TD" => {
-                if in_target_block {
+                if in_target_block && !position_rewritten {
                     // Td/TD を Tm に変換して絶対座標で移動
                     new_operations.push(lopdf::content::Operation::new(
                         "Tm",
@@ -540,6 +682,7 @@ pub fn move_text_block(
                             Object::Real(new_y),
                         ],
                     ));
+                    position_rewritten = true;
                 } else {
                     new_operations.push(op.clone());
                 }
@@ -577,7 +720,7 @@ pub fn move_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -597,14 +740,16 @@ pub fn delete_text_block(
     data: &[u8],
     page_index: usize,
     block_id: usize,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -692,7 +837,7 @@ pub fn delete_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));

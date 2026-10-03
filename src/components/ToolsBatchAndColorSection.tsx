@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { DocumentService } from '../services/documentService'
+import { safeRevokeObjectUrl } from '../utils/objectUrl'
 import { SectionTitle, AccentBtn } from './UIControls'
 import { InputDialog } from './AppDialog'
 import type { PdfExec } from '../types'
@@ -22,12 +23,8 @@ export function ToolsBatchAndColorSection({
   const [batchPaths, setBatchPaths] = useState<string[]>([])
   const [protectDialogOpen, setProtectDialogOpen] = useState(false)
 
-  const getCurrentBytes = async (): Promise<number[] | null> => {
-    if (docId) {
-      return DocumentService.getSessionBytes(docId)
-    }
-    return pdfData
-  }
+  const getCurrentBytes = (): Promise<number[] | null> =>
+    DocumentService.getCurrentBytes(docId, pdfData)
 
   const handleBatchProtect = async (password: string) => {
     setProtectDialogOpen(false)
@@ -112,6 +109,8 @@ export function ToolsBatchAndColorSection({
           a.href = url
           a.download = 'annotations.xfdf'
           a.click()
+          // ダウンロード開始後に解放（即時revokeはDLを壊すため遅延）
+          setTimeout(() => safeRevokeObjectUrl(url), 1000)
           showToast('XFDFをエクスポートしました')
         } catch (err) { showToast(`エラー: ${err}`) }
       }}>

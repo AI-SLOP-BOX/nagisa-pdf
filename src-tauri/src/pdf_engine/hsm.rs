@@ -14,6 +14,7 @@ use cryptoki::session::UserType;
 use cryptoki::types::AuthPin;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use crate::error::NagisaError;
 
 /// Candidate PKCS#11 module locations, in priority order.
 fn candidate_module_paths() -> Vec<PathBuf> {
@@ -50,7 +51,7 @@ fn candidate_module_paths() -> Vec<PathBuf> {
 }
 
 /// Load and initialise a PKCS#11 context from the first module that works.
-fn load_first_module() -> Result<Pkcs11, String> {
+fn load_first_module() -> Result<Pkcs11, NagisaError> {
     let mut last_error = "PKCS#11モジュールが見つかりません".to_string();
     for path in candidate_module_paths() {
         match Pkcs11::new(&path) {
@@ -66,7 +67,7 @@ fn load_first_module() -> Result<Pkcs11, String> {
             Err(e) => last_error = format!("{}: ロードに失敗 ({e})", path.display()),
         }
     }
-    Err(last_error)
+    Err(NagisaError::ExternalToolMissing(last_error))
 }
 /// A certificate/key pair discovered on a PKCS#11 token.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -95,24 +96,24 @@ fn hex(data: &[u8]) -> String {
 }
 
 /// Return the DER certificate bound to the selected CKA_ID.
-pub fn pkcs11_certificate_der(slot_id: u64, certificate_id: &str) -> Result<Vec<u8>, String> {
+pub fn pkcs11_certificate_der(slot_id: u64, certificate_id: &str) -> Result<Vec<u8>, NagisaError> {
     let pkcs11 = load_first_module()?;
     let slot = pkcs11
         .get_all_slots()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| NagisaError::from(e.to_string()))?
         .into_iter()
         .find(|s| s.id() == slot_id)
-        .ok_or_else(|| format!("スロット{slot_id}が見つかりません"))?;
+        .ok_or_else(|| NagisaError::from(format!("スロット{slot_id}が見つかりません")))?;
     let session = pkcs11
         .open_ro_session(slot)
-        .map_err(|e| format!("セッションのオープンに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("セッションのオープンに失敗しました: {e}")))?;
     let template = vec![
         Attribute::Class(ObjectClass::CERTIFICATE),
         Attribute::Id(hex_decode(certificate_id)?),
     ];
     for cert in session
         .find_objects(&template)
-        .map_err(|e| format!("証明書の検索に失敗しました: {e}"))?
+        .map_err(|e| NagisaError::from(format!("証明書の検索に失敗しました: {e}")))?
     {
         if let Ok(attrs) = session.get_attributes(cert, &[AttributeType::Value]) {
             if let Some(der) = attribute_bytes(&attrs, AttributeType::Value) {
@@ -125,7 +126,7 @@ pub fn pkcs11_certificate_der(slot_id: u64, certificate_id: &str) -> Result<Vec<
     Err("選択した署名証明書が見つかりません".into())
 }
 
-fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+fn hex_decode(value: &str) -> Result<Vec<u8>, NagisaError> {
     if !value.len().is_multiple_of(2) {
         return Err("証明書IDが不正です".into());
     }
@@ -154,13 +155,13 @@ fn attribute_bytes(attrs: &[Attribute], wanted: AttributeType) -> Option<Vec<u8>
 }
 
 /// Enumerate signing certificate/key pairs available on inserted PKCS#11 tokens.
-pub fn list_pkcs11_slots() -> Result<Vec<Pkcs11Slot>, String> {
+pub fn list_pkcs11_slots() -> Result<Vec<Pkcs11Slot>, NagisaError> {
     let pkcs11 = match load_first_module() {
         Ok(p) => p,
         Err(_) => return Ok(Vec::new()),
     };
     let mut result = Vec::new();
-    for slot in pkcs11.get_all_slots().map_err(|e| e.to_string())? {
+    for slot in pkcs11.get_all_slots().map_err(|e| NagisaError::from(e.to_string()))? {
         let token_info = match pkcs11.get_token_info(slot) {
             Ok(v) => v,
             Err(_) => continue,
@@ -269,11 +270,13 @@ fn openssl_fingerprint(der: &[u8]) -> String {
     if let Some(stdin) = child.stdin.as_mut() {
         let _ = stdin.write_all(der);
     }
-    let out = child
-        .wait_with_output()
-        .ok()
-        .map(|v| String::from_utf8_lossy(&v.stdout).into_owned())
-        .unwrap_or_default();
+    let out = crate::pdf_engine::common::wait_child_with_timeout(
+        child,
+        crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
+    )
+    .ok()
+    .map(|v| String::from_utf8_lossy(&v.stdout).into_owned())
+    .unwrap_or_default();
     out.lines()
         .next()
         .and_then(|v| v.split_once('=').map(|(_, h)| h.replace(':', "")))
@@ -289,21 +292,21 @@ pub fn pkcs11_raw_sign(
     certificate_id: &str,
     pin: String,
     payload: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let pkcs11 = load_first_module()?;
     let slot = pkcs11
         .get_all_slots()
-        .map_err(|e| format!("PKCS#11スロットの列挙に失敗しました: {e}"))?
+        .map_err(|e| NagisaError::from(format!("PKCS#11スロットの列挙に失敗しました: {e}")))?
         .into_iter()
         .find(|s| s.id() == slot_id)
-        .ok_or_else(|| format!("スロット{slot_id}が見つかりません"))?;
+        .ok_or_else(|| NagisaError::from(format!("スロット{slot_id}が見つかりません")))?;
 
     let session = pkcs11
         .open_rw_session(slot)
-        .map_err(|e| format!("セッションのオープンに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("セッションのオープンに失敗しました: {e}")))?;
     session
         .login(UserType::User, Some(&AuthPin::from(pin)))
-        .map_err(|e| format!("トークンへのログインに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("トークンへのログインに失敗しました: {e}")))?;
 
     let key_id = hex_decode(certificate_id)?;
     let template = vec![
@@ -314,14 +317,14 @@ pub fn pkcs11_raw_sign(
     ];
     let key = session
         .find_objects(&template)
-        .map_err(|e| format!("秘密鍵の検索に失敗しました: {e}"))?
+        .map_err(|e| NagisaError::from(format!("秘密鍵の検索に失敗しました: {e}")))?
         .into_iter()
         .next()
-        .ok_or_else(|| "選択した証明書に対応する署名鍵が見つかりません".to_string())?;
+        .ok_or_else(|| NagisaError::from("選択した証明書に対応する署名鍵が見つかりません".to_string()))?;
 
     session
         .sign(&cryptoki::mechanism::Mechanism::Sha256RsaPkcs, key, payload)
-        .map_err(|e| format!("HSM署名に失敗しました: {e}"))
+        .map_err(|e| NagisaError::from(format!("HSM署名に失敗しました: {e}")))
 }
 
 /// True when a usable PKCS#11 module can be loaded. Used by the engine health

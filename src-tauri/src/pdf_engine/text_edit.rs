@@ -1,5 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
+use lopdf::{Dictionary, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== TEXT EDITING & REFLOW =====
 
@@ -19,14 +20,16 @@ pub fn edit_text(
     _font_name: &str,
     _font_size: f32,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let apply_color = !color.trim().is_empty();
@@ -160,58 +163,59 @@ pub fn edit_text(
                     }
 
                     if let Some(Object::Array(arr)) = op.operands.first() {
-                        let mut new_arr = Vec::new();
-                        let mut combined = String::new();
+                        // 第一段階: マッチ有無のみ検査（バイト列には触れない）。
+                        // マッチしない TJ は原文のまま通す。従来は無条件で
+                        // from_utf8_lossy 再エンコードしていたため、WinAnsi等
+                        // 非UTF-8バイト列が検索対象外でも黙って破壊された。
                         let mut has_match = false;
+                        // カーニングを跨ぐ検索語にも対応するため全文結合で判定
+                        let mut whole = String::new();
+                        for item in arr {
+                            if let Object::String(bytes, _) = item {
+                                whole.push_str(&String::from_utf8_lossy(bytes));
+                            }
+                        }
+                        if whole.contains(search_text) {
+                            has_match = true;
+                        }
+                        if !has_match {
+                            new_operations.push(op.clone());
+                            continue;
+                        }
 
+                        let mut new_arr = Vec::new();
+                        let mut replaced_any = false;
+
+                        // セグメント単位で置換し、非対象セグメントは原文バイト・
+                        // 書式のまま複製する。結合・再エンコードしない。
                         for item in arr {
                             match item {
-                                Object::String(bytes, _) => {
-                                    combined.push_str(&String::from_utf8_lossy(bytes));
-                                }
-                                Object::Integer(kerning) => {
-                                    if !combined.is_empty() {
-                                        if combined.contains(search_text) {
-                                            let new_text =
-                                                combined.replace(search_text, replacement);
-                                            new_arr.push(Object::String(
-                                                new_text.into_bytes(),
-                                                lopdf::StringFormat::Literal,
-                                            ));
-                                            has_match = true;
-                                            modified = true;
-                                        } else {
-                                            new_arr.push(Object::String(
-                                                combined.as_bytes().to_vec(),
-                                                lopdf::StringFormat::Literal,
-                                            ));
-                                        }
-                                        combined.clear();
+                                Object::String(bytes, _fmt) => {
+                                    let s = String::from_utf8_lossy(bytes);
+                                    if s.contains(search_text) {
+                                        let new_text = s.replace(search_text, replacement);
+                                        new_arr.push(Object::String(
+                                            new_text.into_bytes(),
+                                            lopdf::StringFormat::Literal,
+                                        ));
+                                        replaced_any = true;
+                                        modified = true;
+                                    } else {
+                                        new_arr.push(item.clone());
                                     }
-                                    new_arr.push(Object::Integer(*kerning));
                                 }
                                 _ => new_arr.push(item.clone()),
                             }
                         }
 
-                        if !combined.is_empty() {
-                            if combined.contains(search_text) {
-                                let new_text = combined.replace(search_text, replacement);
-                                new_arr.push(Object::String(
-                                    new_text.into_bytes(),
-                                    lopdf::StringFormat::Literal,
-                                ));
-                                has_match = true;
-                                modified = true;
-                            } else {
-                                new_arr.push(Object::String(
-                                    combined.into_bytes(),
-                                    lopdf::StringFormat::Literal,
-                                ));
-                            }
+                        // 全文マッチがカーニング跨ぎのみの場合は置換不能:
+                        // 原文をそのまま通す（破壊も誤置換もしない）。
+                        if !replaced_any {
+                            new_operations.push(op.clone());
+                            continue;
                         }
 
-                        if has_match && apply_color {
+                        if apply_color {
                             new_operations.push(lopdf::content::Operation::new(
                                 "rg",
                                 vec![Object::Real(r), Object::Real(g), Object::Real(b)],
@@ -257,11 +261,11 @@ pub fn edit_text(
 pub fn get_text_positions(
     data: &[u8],
     page_index: usize,
-) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -347,15 +351,15 @@ pub fn get_text_positions(
 
 // ===== FONT EMBEDDING & SUBSETTING =====
 
-pub fn embed_font(data: &[u8], page_index: usize, font_path: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn embed_font(data: &[u8], page_index: usize, font_path: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     // Read font file
-    let font_data = std::fs::read(font_path).map_err(|e| format!("Failed to read font: {e}"))?;
+    let font_data = std::fs::read(font_path).map_err(|e| NagisaError::from(format!("Failed to read font: {e}")))?;
     let font_file_len = font_data.len();
 
     let font_name = std::path::Path::new(font_path)

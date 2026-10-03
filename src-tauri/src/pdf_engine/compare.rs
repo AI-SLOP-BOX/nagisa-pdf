@@ -1,5 +1,6 @@
 use super::common::*;
 use lopdf::{Document, Object};
+use crate::error::NagisaError;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct DiffItem {
@@ -26,11 +27,11 @@ pub struct CompareReport {
 
 /// Professional semantic & graphical document comparison.
 /// Compares text blocks across pages and detects changes, additions, and deletions.
-pub fn compare_pdf_documents(original: &[u8], revised: &[u8]) -> Result<CompareReport, String> {
+pub fn compare_pdf_documents(original: &[u8], revised: &[u8]) -> Result<CompareReport, NagisaError> {
     let doc_orig =
-        Document::load_mem(original).map_err(|e| format!("Failed to parse original PDF: {e}"))?;
+        Document::load_mem(original).map_err(|e| NagisaError::from(format!("Failed to parse original PDF: {e}")))?;
     let doc_rev =
-        Document::load_mem(revised).map_err(|e| format!("Failed to parse revised PDF: {e}"))?;
+        Document::load_mem(revised).map_err(|e| NagisaError::from(format!("Failed to parse revised PDF: {e}")))?;
 
     let orig_pages = get_page_ids(&doc_orig);
     let rev_pages = get_page_ids(&doc_rev);

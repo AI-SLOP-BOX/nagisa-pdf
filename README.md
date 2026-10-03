@@ -2,6 +2,12 @@
 
 A high-performance, professional-grade integrated PDF editor with 100% local, offline processing. Built with Tauri v2, Rust, and React.
 
+> **Note:** Core editing runs fully offline in the app. A few optional features
+> (OCR text recognition, PDF-to-image rendering at print resolution) shell out
+> to system tools such as Tesseract or Poppler when they are installed — they
+> are never required, nothing is uploaded, and the app guides you to install
+> them only if you use those features.
+
 [English](README.md) | [日本語](README.ja.md)
 
 ---
@@ -43,7 +49,7 @@ A high-performance, professional-grade integrated PDF editor with 100% local, of
 
 ### Security & Compliance
 - AES-128 / AES-256 document encryption & permission flags
-- Visual Signature Field layout & signature placeholder management (cryptographic PKCS#7 signing planned)
+- CMS/PKCS#7 cryptographic signing & verification (PAdES B-B / B-T / LTV, RFC 3161 timestamps, PKCS#11/HSM & macOS Keychain), plus visual signature field layout
 - Deep Redaction (stream de-tokenization & physical removal of text tokens from streams)
 - Document Sanitization (removal of metadata, annotations, thumbnails, and Names JavaScript/EmbeddedFiles)
 

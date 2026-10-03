@@ -12,10 +12,11 @@ interface PDFViewerSidebarProps {
   tacLimit: number
   setTacLimit: (val: number) => void
   pdfData: number[] | null
+  docId?: string | null
   pageCount: number
   currentPage: number
   goToPage: (page: number) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
   searchQuery: string
   setSearchQuery: (query: string) => void
   searchResults: SearchResult[]
@@ -32,6 +33,7 @@ export const PDFViewerSidebar: React.FC<PDFViewerSidebarProps> = ({
   tacLimit,
   setTacLimit,
   pdfData,
+  docId,
   pageCount,
   currentPage,
   goToPage,
@@ -68,6 +70,7 @@ export const PDFViewerSidebar: React.FC<PDFViewerSidebarProps> = ({
       {activePanel === 'thumbnails' && pdfData && (
         <ThumbnailsPanel
           pdfData={pdfData}
+          docId={docId}
           pageCount={pageCount}
           currentPage={currentPage}
           onGoToPage={goToPage}
@@ -87,7 +90,7 @@ export const PDFViewerSidebar: React.FC<PDFViewerSidebarProps> = ({
         <BookmarksPanel bookmarks={bookmarks} onGoToPage={goToPage} />
       )}
       {activePanel === 'forms' && pdfData && (
-        <FormsPanel fields={formFields} pdfData={pdfData} />
+        <FormsPanel fields={formFields} pdfData={pdfData} docId={docId} onPdfUpdate={onPdfUpdate} />
       )}
       {activePanel === 'info' && (
         <InfoPanel metadata={metadata} />

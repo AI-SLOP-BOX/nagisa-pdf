@@ -10,20 +10,23 @@ if (typeof window !== 'undefined') {
 }
 
 export class PDFJsEngine {
-  // LRUキャッシュ：最大4文書まで保持。キーはFNV-1aハッシュ＋バイト長の複合。
+  // LRUキャッシュ：最大4文書まで保持。キーはFNV-1a 64bitハッシュ＋バイト長の複合。
+  // 32bitでは同長別文書の衝突で誤文書を返し得るため64bitを使う。
   private static docCache = new Map<string, { doc: pdfjsLib.PDFDocumentProxy; refTime: number }>()
   private static readonly MAX_CACHE_SIZE = 4
 
-  /** byte配列からFNV-1a 32bitハッシュを計算し、キャッシュキーとして利用する。 */
+  /** byte配列からFNV-1a 64bitハッシュを計算し、キャッシュキーとして利用する。 */
   private static computeHashKey(data: Uint8Array): string {
     const len = data.length
     if (len === 0) return 'empty_0'
-    let hash = 0x811c9dc5
+    let hash = 0xcbf29ce484222325n
+    const prime = 0x100000001b3n
+    const mask = 0xffffffffffffffffn
     for (let i = 0; i < len; i++) {
-      hash ^= data[i]
-      hash = Math.imul(hash, 0x01000193)
+      hash ^= BigInt(data[i])
+      hash = (hash * prime) & mask
     }
-    return `${len}_${(hash >>> 0).toString(16)}`
+    return `${len}_${hash.toString(16)}`
   }
 
   static async getDocument(data: number[] | Uint8Array): Promise<pdfjsLib.PDFDocumentProxy> {
@@ -116,6 +119,14 @@ export function getLatestBytes(): number[] | null {
   return _latestPdfBytes
 }
 
+/**
+ * 最新バイトを破棄する。文書切替時に呼び、browser-session経路の
+ * フォールバックが旧文書バイトを誤って引くのを防ぐ。
+ */
+export function clearLatestBytes(): void {
+  _latestPdfBytes = null
+}
+
 /** PDF.js 描画失敗のユーザー通知をスロットルするための、最後に通知した時刻。 */
 let lastRenderFallbackNoticeAt = 0
 const RENDER_FALLBACK_NOTICE_INTERVAL_MS = 5000
@@ -176,9 +187,6 @@ export class DefaultRenderer implements PDFRenderer {
       _latestPdfBytes = req.pdfData
     }
 
-    // このレンダリングで作成された blob URL を追跡し、完了時に revoke する
-    const localBlobUrls: string[] = []
-
     try {
       let pngBytes: number[] | null = null
       try {
@@ -205,12 +213,13 @@ export class DefaultRenderer implements PDFRenderer {
         }
         const blob = new Blob([new Uint8Array(pngBytes)], { type: 'image/png' })
         const url = URL.createObjectURL(blob)
-        localBlobUrls.push(url)
         return this.trackUrl(url)
       }
 
       // Real PDF client rendering via PDF.js
       const sourceBytes = (req.pdfData && req.pdfData.length > 0) ? req.pdfData : _latestPdfBytes
+      // 描画失敗時はプレースホルダに失敗表示を入れて白紙PDFと区別する
+      let renderFailed = false
       if (sourceBytes && sourceBytes.length > 0) {
         try {
           const pdfDoc = await PDFJsEngine.getDocument(sourceBytes)
@@ -241,7 +250,6 @@ export class DefaultRenderer implements PDFRenderer {
             canvas.toBlob((blob) => {
               if (blob) {
                 const url = URL.createObjectURL(blob)
-                localBlobUrls.push(url)
                 resolve(this.trackUrl(url))
               } else {
                 resolve('')
@@ -252,6 +260,7 @@ export class DefaultRenderer implements PDFRenderer {
           console.warn('PDF.js rendering fallback encountered error, rendering placeholder:', pdfErr)
           // ユーザーには空白ページの理由が分からないため、1回だけ通知する
           notifyRenderFallback(req.pageIndex + 1, pdfErr)
+          renderFailed = true
         }
       }
 
@@ -263,22 +272,27 @@ export class DefaultRenderer implements PDFRenderer {
       canvas.width = width
       canvas.height = height
       const ctx = canvas.getContext('2d')
+      const k = req.dpi / 72
       if (ctx) {
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(0, 0, width, height)
-        ctx.strokeStyle = '#e2e8f0'
-        ctx.lineWidth = 1
+        ctx.strokeStyle = renderFailed ? '#e3b341' : '#e2e8f0'
+        ctx.lineWidth = renderFailed ? 3 : 1
         ctx.strokeRect(1, 1, width - 2, height - 2)
         ctx.fillStyle = '#0f172a'
-        ctx.font = `bold ${20 * (req.dpi / 72)}px -apple-system, BlinkMacSystemFont, sans-serif`
-        ctx.fillText('Nagisa PDF Preview', 40 * (req.dpi / 72), 80 * (req.dpi / 72))
+        ctx.font = `bold ${20 * k}px -apple-system, BlinkMacSystemFont, sans-serif`
+        ctx.fillText('Nagisa PDF Preview', 40 * k, 80 * k)
+        if (renderFailed) {
+          ctx.fillStyle = '#92600a'
+          ctx.font = `${14 * k}px -apple-system, BlinkMacSystemFont, sans-serif`
+          ctx.fillText(`ページ ${req.pageIndex + 1} の描画に失敗しました`, 40 * k, 110 * k)
+        }
       }
 
       return new Promise<string>((resolve) => {
         canvas.toBlob((blob) => {
           if (blob) {
             const url = URL.createObjectURL(blob)
-            localBlobUrls.push(url)
             resolve(this.trackUrl(url))
           } else {
             resolve('')
@@ -288,10 +302,9 @@ export class DefaultRenderer implements PDFRenderer {
     } finally {
       req.signal?.removeEventListener('abort', abortHandler)
       this.activeTokens.delete(token)
-      // このレンダリングで作成された blob URL をすべて revoke する
-      for (const url of localBlobUrls) {
-        safeRevokeObjectUrl(url)
-      }
+      // 注意: 返却した blob URL をここで revoke してはならない。
+      // 寿命は trackUrl/createdUrls（上限50・cancelAll）と呼出側の
+      // prevUrl 管理に委ねる。revoke-then-return は描画破壊になる。
     }
   }
 

@@ -3,7 +3,7 @@ use super::compare::compare_pdf_documents;
 use super::convert::pdf_to_images;
 use super::inspect::get_page_text;
 use super::text_block_ops::get_text_blocks_from_doc;
-use lopdf::Document;
+use crate::error::NagisaError;
 fn base64_encode(data: &[u8]) -> String {
     const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -38,13 +38,13 @@ fn html_escape(s: &str) -> String {
 
 // ===== CONTENT COMPARISON (Visual & Semantic Diff) =====
 
-pub fn visual_diff(data1: &[u8], data2: &[u8], output_path: &str) -> Result<(), String> {
+pub fn visual_diff(data1: &[u8], data2: &[u8], output_path: &str) -> Result<(), NagisaError> {
     // 1. Run semantic block-level comparison
     let report = compare_pdf_documents(data1, data2)?;
 
     // 2. Render side-by-side raster images if pdftoppm is available
     let tmp_dir = std::env::temp_dir().join(format!("nagisa_vdiff_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| NagisaError::from(e.to_string()))?;
 
     let imgs1 = pdf_to_images(data1, &tmp_dir.join("orig").to_string_lossy(), "png", 100)
         .unwrap_or_default();
@@ -163,7 +163,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     html.push_str("</body></html>");
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    std::fs::write(output_path, html).map_err(|e| e.to_string())?;
+    std::fs::write(output_path, html).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }
 
@@ -173,8 +173,8 @@ pub fn ocr_with_layout(
     data: &[u8],
     language: &str,
     preserve_layout: bool,
-) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     let lang = if language.is_empty() {
         "jpn+eng"
@@ -300,9 +300,9 @@ pub fn ocr_with_layout(
 
 // ===== SEARCHABLE PDF GENERATOR =====
 
-pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result<Vec<u8>, String> {
+pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result<Vec<u8>, NagisaError> {
     let tmp_dir = std::env::temp_dir().join(format!("searchable_pdf_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| NagisaError::from(e.to_string()))?;
 
     // Render scanned pages to images
     let images = pdf_to_images(data, &tmp_dir.to_string_lossy(), "png", 200)?;
@@ -335,7 +335,7 @@ pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result
         &output_pdf.to_string_lossy(),
     )?;
 
-    let result_bytes = std::fs::read(&output_pdf).map_err(|e| e.to_string())?;
+    let result_bytes = std::fs::read(&output_pdf).map_err(|e| NagisaError::from(e.to_string()))?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(result_bytes)
 }

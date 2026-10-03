@@ -2,10 +2,11 @@ use super::common::*;
 use super::*;
 use lopdf::{Dictionary, Document, Object, Stream};
 use sha2::{Digest, Sha256};
+use crate::error::NagisaError;
 
 // ===== BATCH PROCESSING =====
 
-pub fn batch_merge_pdfs(paths: &[String], output_path: &str) -> Result<(), String> {
+pub fn batch_merge_pdfs(paths: &[String], output_path: &str) -> Result<(), NagisaError> {
     batch_merge_pdfs_with_options(paths, output_path, &MergeOptions::default())
 }
 
@@ -62,9 +63,14 @@ fn collect_outlines_with_offset(doc: &Document, page_offset: usize) -> Vec<serde
         page_ids: &[OID],
         page_offset: usize,
         out: &mut Vec<serde_json::Value>,
+        visited: &mut std::collections::HashSet<OID>,
     ) {
         let mut cur = Some(start);
         while let Some(id) = cur {
+            // 循環 /Next・/First 参照を持つ細工PDFでの無限ループ・再帰爆発を遮断
+            if !visited.insert(id) {
+                break;
+            }
             let dict = match doc.objects.get(&id).and_then(|o| o.as_dict().ok()) {
                 Some(d) => d,
                 None => break,
@@ -105,7 +111,7 @@ fn collect_outlines_with_offset(doc: &Document, page_offset: usize) -> Vec<serde
             out.push(serde_json::json!({ "title": title, "page": page }));
 
             if let Ok(Object::Reference(child)) = dict.get(b"First") {
-                walk(doc, *child, page_ids, page_offset, out);
+                walk(doc, *child, page_ids, page_offset, out, visited);
             }
             cur = dict.get(b"Next").ok().and_then(|o| o.as_reference().ok());
         }
@@ -113,6 +119,7 @@ fn collect_outlines_with_offset(doc: &Document, page_offset: usize) -> Vec<serde
 
     let page_ids = get_page_ids(doc);
     let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
     if let Ok(root_ref) = doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         if let Some(root) = doc.objects.get(&root_ref).and_then(|o| o.as_dict().ok()) {
             let outlines_id = match root.get(b"Outlines").ok() {
@@ -122,7 +129,7 @@ fn collect_outlines_with_offset(doc: &Document, page_offset: usize) -> Vec<serde
             if let Some(oid) = outlines_id {
                 if let Some(outlines) = doc.objects.get(&oid).and_then(|o| o.as_dict().ok()) {
                     if let Ok(Object::Reference(first)) = outlines.get(b"First") {
-                        walk(doc, *first, &page_ids, page_offset, &mut out);
+                        walk(doc, *first, &page_ids, page_offset, &mut out, &mut visited);
                     }
                 }
             }
@@ -140,7 +147,7 @@ fn path_display_name(path: &str) -> String {
 }
 
 /// Build a single separator page (optionally labelled) used between merged files.
-fn build_separator_page(width: f64, height: f64, text: &str) -> Result<Vec<u8>, String> {
+fn build_separator_page(width: f64, height: f64, text: &str) -> Result<Vec<u8>, NagisaError> {
     let blank = create_blank_pdf(width, height, 1)?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -162,7 +169,7 @@ pub fn batch_merge_pdfs_with_options(
     paths: &[String],
     output_path: &str,
     opts: &MergeOptions,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     if paths.is_empty() {
         return Err("No files to merge".into());
     }
@@ -175,16 +182,16 @@ pub fn batch_merge_pdfs_with_options(
     for (idx, path) in paths.iter().enumerate() {
         let name = path_display_name(path);
         let bytes =
-            std::fs::read(path).map_err(|e| format!("ファイルを読み込めません: {name}: {e}"))?;
+            std::fs::read(path).map_err(|e| NagisaError::from(format!("ファイルを読み込めません: {name}: {e}")))?;
         let mut doc =
-            Document::load_mem(&bytes).map_err(|e| format!("PDFを開けません: {name}: {e}"))?;
+            Document::load_mem(&bytes).map_err(|e| NagisaError::from(format!("PDFを開けません: {name}: {e}")))?;
 
         let encrypted = doc.trailer.has(b"Encrypt");
         if encrypted {
             if !opts.handle_password {
-                return Err(format!(
+                return Err(NagisaError::from(format!(
                     "パスワード保護されたPDFが含まれます: {name}（「パスワード付きPDFの扱い」を有効にするか、事前にロック解除してください）"
-                ));
+                )));
             }
             // Try the user-supplied password first, then the empty user password
             // (covers permission-restricted PDFs — owner password set, user password
@@ -240,7 +247,7 @@ pub fn batch_merge_pdfs_with_options(
         merged = add_bookmark_tree(&merged, &all_bookmarks)?;
     }
 
-    std::fs::write(output_path, merged).map_err(|e| format!("Failed to write output: {e}"))
+    std::fs::write(output_path, merged).map_err(|e| NagisaError::from(format!("Failed to write output: {e}")))
 }
 
 pub fn batch_add_watermark(
@@ -250,10 +257,10 @@ pub fn batch_add_watermark(
     rotation: f32,
     font_size: f32,
     color: &str,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Vec<Vec<u8>>, NagisaError> {
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path))?;
+        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
         let watermarked =
             add_watermark(&data, text, opacity, rotation, font_size, color, true, &[])?;
         results.push(watermarked);
@@ -261,24 +268,24 @@ pub fn batch_add_watermark(
     Ok(results)
 }
 
-pub fn batch_protect(paths: &[String], password: &str) -> Result<Vec<Vec<u8>>, String> {
+pub fn batch_protect(paths: &[String], password: &str) -> Result<Vec<Vec<u8>>, NagisaError> {
     if password.is_empty() {
         return Err("パスワードを指定してください".into());
     }
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let encrypted = crate::pdf_engine::encrypt::encrypt_pdf(&data, password, password)
-            .map_err(|e| format!("{path}: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("{path}: {e}")))?;
         results.push(encrypted);
     }
     Ok(results)
 }
 
-pub fn batch_optimize(paths: &[String]) -> Result<Vec<Vec<u8>>, String> {
+pub fn batch_optimize(paths: &[String]) -> Result<Vec<Vec<u8>>, NagisaError> {
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path))?;
+        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
         let optimized = optimize_pdf(&data)?;
         results.push(optimized);
     }
@@ -287,8 +294,8 @@ pub fn batch_optimize(paths: &[String]) -> Result<Vec<Vec<u8>>, String> {
 
 // ===== PDF/A COMPLIANCE =====
 
-pub fn convert_to_pdfa(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn convert_to_pdfa(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // PDF/A-1 requirement: All fonts MUST be embedded
     let mut uncompressed_non_embedded = Vec::new();
@@ -330,10 +337,10 @@ pub fn convert_to_pdfa(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     if !uncompressed_non_embedded.is_empty() {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "PDF/A 規格への変換エラー: 以下のフォントが完全に埋め込まれていません (ISO 19005-1 適合性要件): {}",
             uncompressed_non_embedded.join(", ")
-        ));
+        )));
     }
 
     // ISO 19005-1 requirement: OutputIntent GTS_PDFA1 MUST have an embedded DestOutputProfile ICC stream
@@ -456,8 +463,8 @@ pub struct PdfaValidationReport {
 pub fn validate_pdfa_compliance(
     data: &[u8],
     target_conformance: &str,
-) -> Result<PdfaValidationReport, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to parse PDF: {e}"))?;
+) -> Result<PdfaValidationReport, NagisaError> {
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
 
     let conformance = match target_conformance.to_ascii_uppercase().as_str() {
         "A" | "A1" | "A2" => "A",
@@ -555,7 +562,7 @@ pub fn validate_pdfa_compliance(
     // 3. OutputIntent with GTS_PDFA1 subtype and an embedded ICC profile.
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         Ok(id) => id,
-        Err(e) => return Err(format!("PDF Root Catalog not found: {}", e)),
+        Err(e) => return Err(NagisaError::from(format!("PDF Root Catalog not found: {}", e))),
     };
 
     let mut has_pdfa_intent = false;
@@ -869,8 +876,8 @@ pub fn add_header_footer(
     footer_text: &str,
     font_size: f32,
     margin: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc).clone();
 
     // Check if CJK characters are present
@@ -970,7 +977,7 @@ pub fn add_header_footer(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));
@@ -1003,11 +1010,11 @@ pub fn add_header_footer(
 
 // ===== BOOKMARKS =====
 
-pub fn add_bookmark(data: &[u8], title: &str, page_index: usize) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn add_bookmark(data: &[u8], title: &str, page_index: usize) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -1109,8 +1116,8 @@ pub fn add_bates_number(
     start_number: usize,
     font_size: f32,
     margin: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc).clone();
 
     let has_cjk = !prefix.is_ascii();
@@ -1172,7 +1179,7 @@ pub fn add_bates_number(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

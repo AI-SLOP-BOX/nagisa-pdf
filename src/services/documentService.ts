@@ -32,6 +32,8 @@ export interface TextBlock {
 export interface PageDimensions {
   width: number
   height: number
+  /** /Rotate 適用後の表示回転角（0/90/180/270）。欠番時は0扱い。 */
+  rotation?: number
 }
 
 export interface SearchResult {
@@ -123,6 +125,58 @@ export class DocumentService {
   }
 
   /**
+   * ネイティブセッション判定。`docId` の有無ではなくこの判定で分岐する
+   * こと（browser-session-* に getSessionBytes 等を投げると SessionNotFound）。
+   */
+  static isNativeDoc(docId: string | null | undefined): docId is string {
+    return !!docId && !docId.startsWith('browser-session-')
+  }
+
+  /**
+   * 突然変異系コマンドの共通入口。ネイティブ時は `session_exec`
+   * （args のみ IPC 越し・文書バイト転送なし・戻り1往復）、
+   * プレビュー時は旧バイト経路。戻りは新バイト列。
+   */
+  static async invokeOp(
+    op: string,
+    docId: string | null | undefined,
+    pdfData: number[] | null,
+    args: Record<string, unknown>,
+  ): Promise<number[]> {
+    const native = docId && !docId.startsWith('browser-session-') ? docId : null
+    if (native) {
+      return invoke<number[]>('session_exec', { docId: native, op, args })
+    }
+    const bytes =
+      pdfData && pdfData.length > 0
+        ? pdfData
+        : await DocumentService.requirePreviewBytes().catch(() => null)
+    if (!bytes) throw new Error('対象PDFデータがありません')
+    return invoke<number[]>(op, { data: bytes, ...args })
+  }
+
+  /**
+   * セッション優先で現行バイトを取得する共通入口。browser-session-* には
+   * Rustセッションが無いため手元バイトにフォールバックする。各パネルの
+   * `docId ? getSessionBytes : pdfData` をこれに統一し、プレビュー時の
+   * SessionNotFound 全滅を防ぐ。取得失敗時は null（呼出側で無操作）。
+   */
+  static async getCurrentBytes(
+    docId: string | null | undefined,
+    pdfData: number[] | null,
+  ): Promise<number[] | null> {
+    if (docId && !docId.startsWith('browser-session-')) {
+      try {
+        return await DocumentService.getSessionBytes(docId)
+      } catch (err) {
+        console.error(`[DocumentService.getCurrentBytes] セッション読込失敗 (docId=${docId}):`, err)
+        return null
+      }
+    }
+    return pdfData
+  }
+
+  /**
    * Rotate a page using a lightweight delta command.
    */
   static async rotatePage(docId: string, pageIndex: number, degrees: number): Promise<void> {
@@ -181,6 +235,7 @@ export class DocumentService {
    * Session-based Inspection & Query (Zero IPC byte passing)
    */
   static async getPageCount(docIdOrData: string | number[]): Promise<number> {
+    let lastErr: unknown = null
     try {
       if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
         return await invoke<number>('session_get_page_count', { docId: docIdOrData })
@@ -190,6 +245,7 @@ export class DocumentService {
           return await invoke<number>('get_page_count', { data: docIdOrData })
         } catch (err) {
           console.error('[DocumentService.getPageCount] セッションのページ数取得失敗, PDF.jsフォールバック:', err)
+          lastErr = err
           const doc = await PDFJsEngine.getDocument(docIdOrData)
           return doc.numPages
         }
@@ -202,9 +258,11 @@ export class DocumentService {
         }
       }
     } catch (e) {
-      console.error('[DocumentService.getPageCount] 予期しないエラー, デフォルト1を返します:', e)
+      console.error('[DocumentService.getPageCount] 予期しないエラー:', e)
+      lastErr = e
     }
-    return 1
+    // 全経路失敗を「1ページ」偽装しない。呼出側でcatchし空表示と区別する。
+    throw lastErr instanceof Error ? lastErr : new Error(`ページ数の取得に失敗しました: ${String(lastErr)}`)
   }
 
   static async getPageDimensions(docIdOrData: string | number[], pageIndex: number): Promise<PageDimensions> {
@@ -234,6 +292,7 @@ export class DocumentService {
   }
 
   static async getTextBlocks(docIdOrData: string | number[], pageIndex: number): Promise<TextBlock[]> {
+    let lastErr: unknown = null
     if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       try {
         return await invoke<TextBlock[]>('session_get_text_blocks', {
@@ -242,6 +301,7 @@ export class DocumentService {
         })
       } catch (err) {
         console.error(`[DocumentService.getTextBlocks] セッションのテキストブロック取得失敗 (docId=${docIdOrData}, pageIndex=${pageIndex}):`, err)
+        lastErr = err
       }
     }
     const sourceBytes = Array.isArray(docIdOrData) ? docIdOrData : PDFJsEngine.getLatestBytes()
@@ -276,61 +336,105 @@ export class DocumentService {
         })
       } catch (err) {
         console.error('[DocumentService.getTextBlocks] PDF.jsによるテキストブロック取得失敗:', err)
+        lastErr = err
       }
     }
-    return []
+    // 全経路失敗を「空ページ」偽装しない。正常な空ページは上流で [] が返る。
+    throw lastErr instanceof Error ? lastErr : new Error(`テキストブロックの取得に失敗しました: ${String(lastErr)}`)
   }
 
   static async getPdfMetadata(docIdOrData: string | number[]): Promise<Record<string, unknown>> {
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       return invoke<Record<string, unknown>>('session_get_metadata', { docId: docIdOrData })
+    }
+    if (typeof docIdOrData === 'string') {
+      return invoke<Record<string, unknown>>('get_pdf_metadata', {
+        data: await DocumentService.requirePreviewBytes(),
+      })
     }
     return invoke<Record<string, unknown>>('get_pdf_metadata', { data: docIdOrData })
   }
 
   static async getBookmarks(docIdOrData: string | number[]): Promise<Bookmark[]> {
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       return invoke<Bookmark[]>('session_get_bookmarks', { docId: docIdOrData })
+    }
+    if (typeof docIdOrData === 'string') {
+      return invoke<Bookmark[]>('get_bookmarks', {
+        data: await DocumentService.requirePreviewBytes(),
+      })
     }
     return invoke<Bookmark[]>('get_bookmarks', { data: docIdOrData })
   }
 
+  /**
+   * browser-session 経路の投機バイトを取り出す。文書オープン時に
+   * clearLatestBytes() で破棄されるため残差レースは残るが、旧文書の
+   * 誤読よりは「無い」と明示する方がまし、という判断。
+   */
+  private static async requirePreviewBytes(): Promise<number[]> {
+    const latest = PDFJsEngine.getLatestBytes()
+    if (!latest || latest.length === 0) {
+      throw new Error('プレビュー文書のデータがありません（再読み込みしてください）')
+    }
+    return latest
+  }
+
   static async getFormFields(docIdOrData: string | number[]): Promise<FormField[]> {
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       return invoke<FormField[]>('session_get_form_fields', { docId: docIdOrData })
+    }
+    if (typeof docIdOrData === 'string') {
+      const latest = PDFJsEngine.getLatestBytes()
+      if (latest) return invoke<FormField[]>('get_form_fields', { data: latest })
+      throw new Error('フォーム取得対象のPDFデータがありません')
     }
     return invoke<FormField[]>('get_form_fields', { data: docIdOrData })
   }
 
   static async searchPdf(docIdOrData: string | number[], query: string): Promise<SearchResult[]> {
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       return invoke<SearchResult[]>('session_search_text', { docId: docIdOrData, query })
+    }
+    if (typeof docIdOrData === 'string') {
+      return invoke<SearchResult[]>('search_text', {
+        data: await DocumentService.requirePreviewBytes(),
+        query,
+      })
     }
     return invoke<SearchResult[]>('search_text', { data: docIdOrData, query })
   }
 
   static async verifySignatures(docIdOrData: string | number[]): Promise<{ signatures?: SignatureInfo[]; count?: number }> {
+    const isPreviewString =
+      typeof docIdOrData === 'string' && docIdOrData.startsWith('browser-session-')
     let rawResult: { signatures?: SignatureInfo[]; count?: number } = { signatures: [], count: 0 }
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !isPreviewString) {
       try {
         rawResult = await invoke<{ signatures?: SignatureInfo[]; count?: number }>('session_verify_signature', { docId: docIdOrData })
       } catch (err) {
         console.error('[DocumentService.verifySignatures] セッション署名検証失敗:', err)
-        return { signatures: [], count: 0 }
+        // 検証失敗を「署名なし」と偽装しない。呼び出し側のcatchで検証エラー表示へ。
+        throw err
       }
     } else {
       try {
-        rawResult = await invoke<{ signatures?: SignatureInfo[]; count?: number }>('verify_signature', { data: docIdOrData, signatureIndex: 0 })
+        const data =
+          typeof docIdOrData === 'string' ? await DocumentService.requirePreviewBytes() : docIdOrData
+        rawResult = await invoke<{ signatures?: SignatureInfo[]; count?: number }>('verify_signature', { data, signatureIndex: 0 })
       } catch (err) {
         console.error('[DocumentService.verifySignatures] 直接署名検証失敗:', err)
-        return { signatures: [], count: 0 }
+        // 検証失敗を「署名なし」と偽装しない。呼び出し側のcatchで検証エラー表示へ。
+        throw err
       }
     }
 
     // Try full CMS cryptographic verification for signed signatures
     let bytes: number[] | null = null
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !isPreviewString) {
       bytes = await DocumentService.getSessionBytes(docIdOrData)
+    } else if (typeof docIdOrData === 'string') {
+      bytes = await DocumentService.requirePreviewBytes()
     } else {
       bytes = docIdOrData
     }
@@ -442,8 +546,11 @@ export class DocumentService {
 
 
   static async printPdf(docIdOrData: string | number[]): Promise<void> {
-    if (typeof docIdOrData === 'string') {
+    if (typeof docIdOrData === 'string' && !docIdOrData.startsWith('browser-session-')) {
       return invoke<void>('session_print_pdf', { docId: docIdOrData })
+    }
+    if (typeof docIdOrData === 'string') {
+      return invoke<void>('print_pdf', { data: await DocumentService.requirePreviewBytes() })
     }
     return invoke<void>('print_pdf', { data: docIdOrData })
   }

@@ -14,7 +14,7 @@ interface AccessibilitySectionProps {
   pdfData: number[] | null
   accessReport: AccessibilityReport | null
   setAccessReport: (report: AccessibilityReport | null) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
   showToast: (msg: string) => void
 }
 

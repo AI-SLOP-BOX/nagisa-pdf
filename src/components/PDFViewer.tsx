@@ -1,7 +1,8 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { DocumentService } from '../services/documentService'
 import { defaultRenderer } from '../services/pdfRenderer'
 import { safeRevokeObjectUrl } from '../utils/objectUrl'
+import { pdfBoxToVisual, visualBoxToPdf, visualPointToPdf, unrotatedSize } from '../utils/rotation'
 import { FileIcon } from './Icons'
 import {
   SearchResult, Bookmark, FormField,
@@ -48,7 +49,7 @@ export interface PDFViewerProps {
   onSelectTextBlock?: (block: TextBlock | null) => void
   onMoveTextBlock?: (blockId: number, newX: number, newY: number) => void
   onDrawRectComplete?: (rect: { x: number; y: number; width: number; height: number; page: number }) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
   hideToolbar?: boolean
   hideBottomThumbnails?: boolean
   hideFloatingHUD?: boolean
@@ -123,9 +124,13 @@ export default function PDFViewer({
   const [editingBlockId, setEditingBlockId] = useState<number | null>(null)
   const [editingTextVal, setEditingTextVal] = useState('')
 
-  // Text blocks & Page dimensions for interactive canvas overlay
+  // Text blocks & Page dimensions for interactive canvas overlay.
+  // pageSize は視覚寸法（回転適用済み、レンダー画素と一致）。
+  // textBlocks はバックエンド空間（非回転・左下原点）のまま保持し、
+  // 表示用には displayBlocks（視覚空間）へ写像する。
   const [textBlocks, setTextBlocks] = useState<TextBlock[]>([])
   const [pageSize, setPageSize] = useState<{ width: number; height: number }>({ width: 595, height: 842 })
+  const [pageRotation, setPageRotation] = useState(0)
   const [imgRenderedSize, setImgRenderedSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
 
   // 前のページの blob URL を保持し、ページ変更時に revoke する（メモリリーク防止）
@@ -219,8 +224,10 @@ export default function PDFViewer({
         if (dims && dims.width && dims.height) {
           setPageSize(dims)
         }
+        setPageRotation(dims?.rotation ?? 0)
       } catch {
         setPageSize({ width: 595, height: 842 })
+        setPageRotation(0)
       }
 
       try {
@@ -440,6 +447,75 @@ export default function PDFViewer({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [currentPage, goToPage])
 
+  // --- Rotation-aware coordinate spaces ---
+  // pageSize は視覚寸法。非回転寸法はここから復元する。
+  // textBlocks（バックエンド空間）の表示・操作はすべて視覚空間で行い、
+  // バックエンド境界でのみ非回転空間へ戻す。回転0では全変換が恒等。
+  const unrotSize = useMemo(
+    () => unrotatedSize(pageSize.width, pageSize.height, pageRotation),
+    [pageSize, pageRotation],
+  )
+
+  // 表示用ブロック（視覚・左下原点）。選択コールバックには元ブロックを返す。
+  const displayBlocks = useMemo(
+    () =>
+      textBlocks.map(b => {
+        const v = pdfBoxToVisual(
+          { x: b.x, y: b.y, width: b.width, height: b.height },
+          unrotSize.width,
+          unrotSize.height,
+          pageRotation,
+        )
+        return {
+          ...b,
+          x: v.x,
+          y: pageSize.height - v.y - v.height,
+          width: v.width,
+          height: v.height,
+        }
+      }),
+    [textBlocks, unrotSize, pageSize.height, pageRotation],
+  )
+
+  const resolveOriginalBlock = useCallback(
+    (id: number) => textBlocks.find(b => b.id === id),
+    [textBlocks],
+  )
+
+  const handleSelectTextBlockRotated = useCallback(
+    (block: TextBlock | null) => {
+      if (!block) {
+        onSelectTextBlock?.(null)
+        return
+      }
+      onSelectTextBlock?.(resolveOriginalBlock(block.id) ?? block)
+    },
+    [onSelectTextBlock, resolveOriginalBlock],
+  )
+
+  const handleMoveTextBlockRotated = useCallback(
+    (blockId: number, newX: number, newY: number) => {
+      const p = visualPointToPdf(newX, newY, unrotSize.width, unrotSize.height, pageRotation)
+      onMoveTextBlock?.(blockId, p.x, p.y)
+    },
+    [onMoveTextBlock, unrotSize, pageRotation],
+  )
+
+  const handleDrawRectCompleteRotated = useCallback(
+    (rect: { x: number; y: number; width: number; height: number; page: number }) => {
+      // rect は視覚・左下原点箱。左上原点化してから非回転空間へ戻す。
+      const topLeft = {
+        x: rect.x,
+        y: pageSize.height - rect.y - rect.height,
+        width: rect.width,
+        height: rect.height,
+      }
+      const back = visualBoxToPdf(topLeft, unrotSize.width, unrotSize.height, pageRotation)
+      onDrawRectComplete?.({ ...back, page: rect.page })
+    },
+    [onDrawRectComplete, pageSize.height, unrotSize, pageRotation],
+  )
+
   // --- Interactive Canvas Calculations & Mouse Handlers Hook ---
   const {
     scaleX,
@@ -454,7 +530,7 @@ export default function PDFViewer({
     pageSize,
     zoom,
     interactiveMode,
-    textBlocks,
+    textBlocks: displayBlocks,
     draggingBlockId,
     setDraggingBlockId,
     tempBlockPos,
@@ -463,9 +539,9 @@ export default function PDFViewer({
     drawBox,
     setDrawBox,
     currentPage,
-    onSelectTextBlock,
-    onMoveTextBlock,
-    onDrawRectComplete,
+    onSelectTextBlock: handleSelectTextBlockRotated,
+    onMoveTextBlock: handleMoveTextBlockRotated,
+    onDrawRectComplete: handleDrawRectCompleteRotated,
   })
 
   return (
@@ -494,6 +570,7 @@ export default function PDFViewer({
           tacLimit={tacLimit}
           setTacLimit={setTacLimit}
           pdfData={pdfData}
+          docId={docId}
           pageCount={pageCount}
           currentPage={currentPage}
           goToPage={goToPage}
@@ -557,10 +634,10 @@ export default function PDFViewer({
                 <PDFViewerOverlay
                   interactiveMode={interactiveMode}
                   selectedTextBlockId={selectedTextBlockId}
-                  textBlocks={textBlocks}
+                  textBlocks={displayBlocks}
                   tempBlockPos={tempBlockPos}
                   pdfToDom={pdfToDom}
-                  onSelectTextBlock={onSelectTextBlock}
+                  onSelectTextBlock={handleSelectTextBlockRotated}
                   setDraggingBlockId={setDraggingBlockId}
                   setBlockDragOffset={setBlockDragOffset}
                   setTempBlockPos={setTempBlockPos}

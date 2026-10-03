@@ -3,6 +3,7 @@ use super::font_unicode::parse_tounicode_cmap;
 use super::page_tree::materialize_inherited_page_attrs;
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::collections::HashMap;
+use crate::error::NagisaError;
 
 #[derive(Clone, Default)]
 struct FontInfo {
@@ -104,6 +105,15 @@ fn extract_font_infos(res_dict: Option<&Dictionary>, doc: &Document) -> HashMap<
 
 // ===== REDACTION =====
 
+/// Visual-only cover rectangle (NOT compliance redaction).
+/// Draws an opaque box over the area without deleting text, images,
+/// annotations or form values underneath. The covered data stays recoverable
+/// via text extraction or object inspection. UI must route destructive flows
+/// to `deep_redact`; this function remains only for legacy visual markup.
+#[deprecated(
+    since = "1.1.0",
+    note = "Visual-only cover leaves recoverable data. Use deep_redact for compliance redaction."
+)]
 pub fn redact_area(
     data: &[u8],
     page_index: usize,
@@ -112,11 +122,11 @@ pub fn redact_area(
     width: f64,
     height: f64,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -134,7 +144,13 @@ pub fn redact_area(
             };
             for cid in &content_ids {
                 if let Some(Object::Stream(ref stream)) = doc.objects.get(cid) {
-                    if let Ok(c) = lopdf::content::Content::decode(&stream.content) {
+                    // 圧縮ストリームは必ず解凍してから復号する。生バイトのまま
+                    // decode すると Flate ストリームで Err となり、if let Ok で
+                    // 無言スキップ→ページ内容の全損につながる。
+                    let raw = stream
+                        .decompressed_content()
+                        .unwrap_or_else(|_| stream.content.clone());
+                    if let Ok(c) = lopdf::content::Content::decode(&raw) {
                         operations.extend(c.operations);
                     }
                 }
@@ -161,7 +177,7 @@ pub fn redact_area(
     operations.push(lopdf::content::Operation::new("Q", vec![]));
 
     let content = lopdf::content::Content { operations };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -181,8 +197,8 @@ pub fn redact_area(
     save_doc(&mut doc)
 }
 
-pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc).clone();
 
     // 1. Modify existing annotations containing the search text
@@ -402,14 +418,14 @@ pub fn has_active_signature(data: &[u8]) -> bool {
 /// no way back. Acrobat rejects applying redactions to signed documents for
 /// the same reason; we mirror that behaviour instead of silently corrupting
 /// the signature.
-pub fn guard_not_signed(data: &[u8]) -> Result<(), String> {
+pub fn guard_not_signed(data: &[u8]) -> Result<(), NagisaError> {
     if has_active_signature(data) {
-        return Err(
+        return Err(NagisaError::SignedPdfMutationBlocked(
             "このPDFには適用済みのデジタル署名があります。redaction はファイル全体を書き換えるため、\
              署名の署名済みバイト列が壊れて署名が二度と検証できなくなります。\n\
              先に署名を除去するか、署名前にこの操作を行ってください。"
                 .to_string(),
-        );
+        ));
     }
     Ok(())
 }
@@ -439,36 +455,72 @@ fn field_tree_intersects(
     width: f64,
     height: f64,
 ) -> bool {
-    if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
-        if let Ok(Object::Array(rect)) = dict.get(b"Rect") {
-            if rect_array_intersects(rect, x, y, width, height) {
-                return true;
+    fn rec(
+        doc: &Document,
+        id: lopdf::ObjectId,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        visited: &mut std::collections::HashSet<lopdf::ObjectId>,
+    ) -> bool {
+        // 循環 /Kids 参照を持つ細工PDFでの無限再帰を遮断
+        if !visited.insert(id) {
+            return false;
+        }
+        if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
+            if let Ok(Object::Array(rect)) = dict.get(b"Rect") {
+                if rect_array_intersects(rect, x, y, width, height) {
+                    return true;
+                }
+            }
+            if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+                for kid in kids {
+                    if let Ok(kid_id) = kid.as_reference() {
+                        if rec(doc, kid_id, x, y, width, height, visited) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
-        if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
-            for kid in kids {
-                if let Ok(kid_id) = kid.as_reference() {
-                    if field_tree_intersects(doc, kid_id, x, y, width, height) {
-                        return true;
+        false
+    }
+    rec(
+        doc,
+        id,
+        x,
+        y,
+        width,
+        height,
+        &mut std::collections::HashSet::new(),
+    )
+}
+
+fn collect_field_tree_ids(doc: &Document, id: lopdf::ObjectId) -> Vec<lopdf::ObjectId> {
+    fn rec(
+        doc: &Document,
+        id: lopdf::ObjectId,
+        ids: &mut Vec<lopdf::ObjectId>,
+        visited: &mut std::collections::HashSet<lopdf::ObjectId>,
+    ) {
+        // 循環 /Kids 参照を持つ細工PDFでの無限再帰を遮断
+        if !visited.insert(id) {
+            return;
+        }
+        ids.push(id);
+        if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
+            if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+                for kid in kids {
+                    if let Ok(kid_id) = kid.as_reference() {
+                        rec(doc, kid_id, ids, visited);
                     }
                 }
             }
         }
     }
-    false
-}
-
-fn collect_field_tree_ids(doc: &Document, id: lopdf::ObjectId) -> Vec<lopdf::ObjectId> {
-    let mut ids = vec![id];
-    if let Some(Object::Dictionary(dict)) = doc.objects.get(&id) {
-        if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
-            for kid in kids {
-                if let Ok(kid_id) = kid.as_reference() {
-                    ids.extend(collect_field_tree_ids(doc, kid_id));
-                }
-            }
-        }
-    }
+    let mut ids = Vec::new();
+    rec(doc, id, &mut ids, &mut std::collections::HashSet::new());
     ids
 }
 
@@ -480,11 +532,11 @@ pub fn deep_redact(
     width: f64,
     height: f64,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -511,6 +563,72 @@ pub fn deep_redact(
 
     let mut new_operations = Vec::new();
 
+    // フォント情報を解決し、Tj/TJ 幅による現在位置の前進を推定する。
+    // 従来は Tm/Td/TD のみで位置更新し、連続 Tj が同一座標と判定される問題があった。
+    let page_attrs = materialize_inherited_page_attrs(&doc, page_id);
+    let res_dict = page_attrs.get(b"Resources").ok().and_then(|r| match r {
+        Object::Reference(id) => doc.objects.get(id).and_then(|o| o.as_dict().ok()),
+        Object::Dictionary(d) => Some(d),
+        _ => None,
+    });
+    let font_map = extract_font_infos(res_dict, &doc);
+
+    // テキスト前進幅: /Widths・CID/DW の実フォント幅を優先し、Tc/Tw/Tz を
+    // 加味する。辞書解決不可時のみヒューリスティクスに沈む（measure_text_width
+    // が内部フォールバックを持つ）。旧0.5固定より境界判定が正確になる。
+    // フォント辞書の小キャッシュ: 大文書の連続Tjで毎回 lookup+clone+Widths確保
+    // するとホットループになる。フォント切替は稀なためキー単位で保持する。
+    let font_dict_cache: std::cell::RefCell<
+        std::collections::HashMap<Vec<u8>, Option<Dictionary>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    let estimate_advance = |bytes: &[u8],
+                            fi: Option<&FontInfo>,
+                            font_key: &[u8],
+                            font_size: f32,
+                            char_spacing: f32,
+                            word_spacing: f32,
+                            h_scale: f32|
+     -> f32 {
+        let text = if let Some(info) = fi {
+            let s = info.decode(bytes);
+            if s.is_empty() {
+                String::from_utf8_lossy(bytes).to_string()
+            } else {
+                s
+            }
+        } else {
+            String::from_utf8_lossy(bytes).to_string()
+        };
+        let font_dict = {
+            let mut cache = font_dict_cache.borrow_mut();
+            if !cache.contains_key(font_key) {
+                cache.insert(
+                    font_key.to_vec(),
+                    super::text_block_ops::lookup_font_dict(&doc, res_dict, font_key),
+                );
+            }
+            cache.get(font_key).cloned().flatten()
+        };
+        let base =
+            super::text_block_ops::measure_text_width(&doc, font_dict.as_ref(), &text, font_size);
+        let n_chars = text.chars().count() as f32;
+        let spaces = text.chars().filter(|&c| c == ' ').count() as f32;
+        (base + n_chars * char_spacing + spaces * word_spacing) * (h_scale / 100.0)
+    };
+
+    // テキストラン（始点〜前進幅）と墨消し矩形の重なり判定。
+    // 起点のみの判定では、矩形左外から始まり矩形下に延びるランが残り、
+    // 不透明ボックス下に復元可能テキストとして残存する（偽装redact）。
+    // yはベースライン点判定のまま（行送り・回転extentの厳密解決は将来案件）。
+    let text_run_hits = |start_x: f32, adv: f32, base_y: f32| -> bool {
+        let rx0 = x as f32;
+        let rx1 = (x + width) as f32;
+        let ry0 = y as f32;
+        let ry1 = (y + height) as f32;
+        let run_end = start_x + adv;
+        start_x < rx1 && run_end > rx0 && base_y >= ry0 && base_y <= ry1
+    };
+
     for cid in &content_ids {
         if let Some(Object::Stream(stream)) = doc.objects.get(cid) {
             let stream_bytes = stream
@@ -520,6 +638,13 @@ pub fn deep_redact(
                 let mut current_x = 0.0f32;
                 let mut current_y = 0.0f32;
                 let mut in_text = false;
+                let mut current_font_info: Option<&FontInfo> = None;
+                let mut current_font_key: Vec<u8> = Vec::new();
+                let mut font_size = 12.0f32;
+                let mut char_spacing = 0.0f32;
+                let mut word_spacing = 0.0f32;
+                let mut h_scale = 100.0f32;
+                let mut leading = 0.0f32;
 
                 let as_num = |obj: &Object| -> Option<f32> {
                     match obj {
@@ -533,10 +658,46 @@ pub fn deep_redact(
                     match op.operator.as_str() {
                         "BT" => {
                             in_text = true;
+                            current_x = 0.0;
+                            current_y = 0.0;
                             new_operations.push(op.clone());
                         }
                         "ET" => {
                             in_text = false;
+                            new_operations.push(op.clone());
+                        }
+                        "Tf" => {
+                            if let Some(Object::Name(fname)) = op.operands.first() {
+                                current_font_info = font_map.get(fname);
+                                current_font_key = fname.clone();
+                            }
+                            if let Some(sz) = op.operands.get(1).and_then(as_num) {
+                                font_size = sz;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "Tc" => {
+                            if let Some(v) = op.operands.first().and_then(as_num) {
+                                char_spacing = v;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "Tw" => {
+                            if let Some(v) = op.operands.first().and_then(as_num) {
+                                word_spacing = v;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "Tz" => {
+                            if let Some(v) = op.operands.first().and_then(as_num) {
+                                h_scale = v;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "TL" => {
+                            if let Some(v) = op.operands.first().and_then(as_num) {
+                                leading = v;
+                            }
                             new_operations.push(op.clone());
                         }
                         "Tm" => {
@@ -563,21 +724,123 @@ pub fn deep_redact(
                             ) {
                                 current_x += dx;
                                 current_y += dy;
+                                if op.operator.as_str() == "TD" {
+                                    leading = -dy;
+                                }
                             }
                             new_operations.push(op.clone());
                         }
-                        "Tj" | "TJ" => {
-                            if in_text {
-                                // Check if text is in redacted area
-                                let text_in_area = current_x >= x as f32
-                                    && current_x <= (x + width) as f32
-                                    && current_y >= y as f32
-                                    && current_y <= (y + height) as f32;
-
-                                if text_in_area {
-                                    // Skip this text operation (remove it completely)
-                                    continue;
+                        "T*" => {
+                            current_y -= leading;
+                            new_operations.push(op.clone());
+                        }
+                        "Tj" => {
+                            let mut adv = 0.0f32;
+                            if let Some(Object::String(bytes, _)) = op.operands.first() {
+                                adv = estimate_advance(
+                                    bytes,
+                                    current_font_info,
+                                    &current_font_key,
+                                    font_size,
+                                    char_spacing,
+                                    word_spacing,
+                                    h_scale,
+                                );
+                            }
+                            // 除去時も位置は進める（後続opの座標追跡を壊さない）
+                            let remove =
+                                in_text && text_run_hits(current_x, adv, current_y);
+                            current_x += adv;
+                            if remove {
+                                // このテキスト操作を完全に除去する
+                                continue;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "TJ" => {
+                            let mut adv = 0.0f32;
+                            if let Some(Object::Array(arr)) = op.operands.first() {
+                                for item in arr {
+                                    match item {
+                                        Object::String(bytes, _) => {
+                                            adv += estimate_advance(
+                                                bytes,
+                                                current_font_info,
+                                                &current_font_key,
+                                                font_size,
+                                                char_spacing,
+                                                word_spacing,
+                                                h_scale,
+                                            );
+                                        }
+                                        Object::Real(k) => {
+                                            adv -= *k / 1000.0 * font_size * (h_scale / 100.0)
+                                        }
+                                        Object::Integer(k) => {
+                                            adv -=
+                                                *k as f32 / 1000.0 * font_size * (h_scale / 100.0)
+                                        }
+                                        _ => {}
+                                    }
                                 }
+                            }
+                            let remove =
+                                in_text && text_run_hits(current_x, adv, current_y);
+                            current_x += adv;
+                            if remove {
+                                continue;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "'" => {
+                            let mut adv = 0.0f32;
+                            if let Some(Object::String(bytes, _)) = op.operands.first() {
+                                adv = estimate_advance(
+                                    bytes,
+                                    current_font_info,
+                                    &current_font_key,
+                                    font_size,
+                                    char_spacing,
+                                    word_spacing,
+                                    h_scale,
+                                );
+                            }
+                            let remove =
+                                in_text && text_run_hits(current_x, adv, current_y);
+                            current_x += adv;
+                            current_y -= leading;
+                            if remove {
+                                continue;
+                            }
+                            new_operations.push(op.clone());
+                        }
+                        "\"" => {
+                            let mut adv = 0.0f32;
+                            if op.operands.len() >= 3 {
+                                if let (Some(w), Some(c)) =
+                                    (as_num(&op.operands[0]), as_num(&op.operands[1]))
+                                {
+                                    word_spacing = w;
+                                    char_spacing = c;
+                                }
+                                if let Some(Object::String(bytes, _)) = op.operands.get(2) {
+                                    adv = estimate_advance(
+                                        bytes,
+                                        current_font_info,
+                                        &current_font_key,
+                                        font_size,
+                                        char_spacing,
+                                        word_spacing,
+                                        h_scale,
+                                    );
+                                }
+                            }
+                            let remove =
+                                in_text && text_run_hits(current_x, adv, current_y);
+                            current_x += adv;
+                            current_y -= leading;
+                            if remove {
+                                continue;
                             }
                             new_operations.push(op.clone());
                         }
@@ -625,7 +888,7 @@ pub fn deep_redact(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -794,8 +1057,8 @@ pub fn deep_redact(
 
 // ===== REDACTION WITH TEXT SEARCH =====
 
-pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let (_r, _g, _b) = parse_hex_color(color, (0.0, 0.0, 0.0));
 
@@ -936,7 +1199,7 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
         let content = lopdf::content::Content {
             operations: new_operations,
         };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

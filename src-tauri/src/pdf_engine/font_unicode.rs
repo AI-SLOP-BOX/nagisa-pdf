@@ -1,5 +1,6 @@
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::collections::{BTreeMap, HashMap};
+use crate::error::NagisaError;
 
 /// Representation of a parsed TrueType font for embedding and CID mapping.
 pub struct ParsedTrueTypeFont {
@@ -16,7 +17,7 @@ pub struct ParsedTrueTypeFont {
 
 impl ParsedTrueTypeFont {
     /// Parses essential tables (head, hhea, hmtx, cmap, OS/2) from TrueType byte data.
-    pub fn parse(font_data: Vec<u8>, font_name: &str) -> Result<Self, String> {
+    pub fn parse(font_data: Vec<u8>, font_name: &str) -> Result<Self, NagisaError> {
         if font_data.len() < 12 {
             return Err("TTF data too short".into());
         }
@@ -254,7 +255,7 @@ const EMBEDDED_IPAEXG_TTF: &[u8] = include_bytes!("../../../assets/fonts/ipaexg.
 /// Primary CJK font loader:
 /// 1. Uses the embedded IPAexGothic TTF compiled directly into the binary (guaranteed cross-platform, zero runtime dependency)
 /// 2. If an override or external font is needed, checks relative runtime paths and OS fonts.
-pub fn load_primary_cjk_font() -> Result<ParsedTrueTypeFont, String> {
+pub fn load_primary_cjk_font() -> Result<ParsedTrueTypeFont, NagisaError> {
     // 1. Check if application has an external override font in runtime resource paths
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
@@ -323,7 +324,7 @@ pub fn load_primary_cjk_font() -> Result<ParsedTrueTypeFont, String> {
 pub fn embed_and_encode_unicode_text(
     doc: &mut Document,
     text: &str,
-) -> Result<((u32, u16), Vec<u8>), String> {
+) -> Result<((u32, u16), Vec<u8>), NagisaError> {
     let font = load_primary_cjk_font()?;
 
     // 1. Build distinct glyph/character mapping for this text
@@ -507,7 +508,7 @@ impl UnicodeFontEncoder {
 pub fn create_unicode_font_encoder(
     doc: &mut Document,
     all_text: &str,
-) -> Result<UnicodeFontEncoder, String> {
+) -> Result<UnicodeFontEncoder, NagisaError> {
     let font = load_primary_cjk_font()?;
 
     let mut char_to_cid: HashMap<char, u16> = HashMap::new();

@@ -125,7 +125,8 @@ pub fn run() {
             ocr_image_blocks,
             create_epub,
             create_searchable_pdf,
-            redact_area,
+            // 注意: 視覚専用の redact_area（黒四角の上描き・下層データ残存）は
+            // 誤用防止のため IPC 公開しない。破壊的フローは deep_redact 系を使用。
             redact_text,
             deep_redact,
             deep_redact_scanned_pdf,
@@ -198,6 +199,7 @@ pub fn run() {
             session_undo,
             session_redo,
             session_update_bytes,
+            session_exec,
             session_get_history_status,
             session_get_page_count,
             session_get_page_dimensions,

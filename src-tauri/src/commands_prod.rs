@@ -3,12 +3,13 @@ use super::*;
 // ===== PRO PRODUCTION, COLOR, AND COMPLIANCE TAURI COMMANDS =====
 
 #[tauri::command]
-pub async fn convert_to_pdfx(data: Vec<u8>, output_intent: String) -> Result<Vec<u8>, String> {
+pub async fn convert_to_pdfx(data: Vec<u8>, output_intent: String) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::convert_to_pdfx(&data, &output_intent)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -16,24 +17,26 @@ pub async fn convert_to_pdfx_standard(
     data: Vec<u8>,
     standard: String,
     output_intent: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::convert_to_pdfx_standard(&data, &standard, &output_intent)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub async fn validate_pdfx_compliance(
     data: Vec<u8>,
     target_standard: String,
-) -> Result<pdf_engine::PdfxValidationReport, String> {
+) -> Result<pdf_engine::PdfxValidationReport, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::validate_pdfx_compliance(&data, &target_standard)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 /// Inspect a PDF for PDF/A (ISO 19005) conformance without modifying it.
@@ -41,38 +44,42 @@ pub async fn validate_pdfx_compliance(
 pub async fn validate_pdfa_compliance(
     data: Vec<u8>,
     target_conformance: String,
-) -> Result<pdf_engine::PdfaValidationReport, String> {
+) -> Result<pdf_engine::PdfaValidationReport, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::validate_pdfa_compliance(&data, &target_conformance)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn check_accessibility(data: Vec<u8>) -> Result<serde_json::Value, String> {
+pub fn check_accessibility(data: Vec<u8>) -> Result<serde_json::Value, NagisaError> {
     pdf_engine::check_accessibility(&data)
+        .map_err(NagisaError::from)
 }
 
 /// Acrobat Pro 相当のプリフライト検査: フォント埋め込み・カラースペース・
 /// 画像解像度・インク被覆率・ページ寸法を総合診断しスコアを返す。
 #[tauri::command]
-pub async fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightResult, String> {
+pub async fn run_preflight(data: Vec<u8>) -> Result<pdf_engine::preflight::PreflightResult, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::preflight::preflight_check(&data)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 /// 指定ページのCMYKインク被覆率(%)を実測する。
 #[tauri::command]
-pub async fn check_ink_coverage(data: Vec<u8>, page_index: usize) -> Result<serde_json::Value, String> {
+pub async fn check_ink_coverage(data: Vec<u8>, page_index: usize) -> Result<serde_json::Value, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::preflight::check_ink_coverage(&data, page_index)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -80,17 +87,19 @@ pub async fn fix_accessibility_issues(
     data: Vec<u8>,
     default_title: String,
     default_lang: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::fix_accessibility_issues(&data, &default_title, &default_lang)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn preview_color_separations(data: Vec<u8>) -> Result<serde_json::Value, String> {
+pub fn preview_color_separations(data: Vec<u8>) -> Result<serde_json::Value, NagisaError> {
     pdf_engine::preview_color_separations(&data)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -104,7 +113,7 @@ pub async fn render_color_separation(
     show_k: bool,
     highlight_tac: bool,
     tac_limit: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::render_color_separation(
             &data,
@@ -119,96 +128,106 @@ pub async fn render_color_separation(
         )
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn convert_to_cmyk(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn convert_to_cmyk(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::convert_to_cmyk(&data)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn embed_icc_profile(data: Vec<u8>, profile_name: String) -> Result<Vec<u8>, String> {
+pub fn embed_icc_profile(data: Vec<u8>, profile_name: String) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::embed_icc_profile(&data, &profile_name)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn rgb_to_cmyk(r: u8, g: u8, b: u8) -> Result<serde_json::Value, String> {
+pub fn rgb_to_cmyk(r: u8, g: u8, b: u8) -> Result<serde_json::Value, NagisaError> {
     let (c, m, y, k) = pdf_engine::rgb_to_cmyk(r, g, b);
     Ok(serde_json::json!({"c": c, "m": m, "y": y, "k": k}))
 }
 
 #[tauri::command]
-pub fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> Result<serde_json::Value, String> {
+pub fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> Result<serde_json::Value, NagisaError> {
     let (r, g, b) = pdf_engine::cmyk_to_rgb(c, m, y, k);
     Ok(serde_json::json!({"r": r, "g": g, "b": b}))
 }
 
 #[tauri::command]
-pub async fn flatten_transparency(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn flatten_transparency(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::flatten_transparency(&data)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn flatten_content(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn flatten_content(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::flatten_content(&data)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn downsample_images(data: Vec<u8>, target_dpi: u32, quality: u8) -> Result<Vec<u8>, String> {
+pub async fn downsample_images(data: Vec<u8>, target_dpi: u32, quality: u8) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::downsample_images(&data, target_dpi, quality)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn remove_metadata(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub fn remove_metadata(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::remove_metadata(&data)
+        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn repair_corrupt_pdf(data: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn repair_corrupt_pdf(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::repair_corrupt_pdf(&data)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub async fn enhance_scanned_pdf(
     data: Vec<u8>,
     options: pdf_engine::ScanEnhanceOptions,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::enhance_scanned_pdf(&data, &options)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub async fn compare_pdf_documents(
     original: Vec<u8>,
     revised: Vec<u8>,
-) -> Result<pdf_engine::CompareReport, String> {
+) -> Result<pdf_engine::CompareReport, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::compare_pdf_documents(&original, &revised)
     })
     .await
-    .map_err(|e| format!("Task failed: {e}"))?
+    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
+    .map_err(NagisaError::from)
 }

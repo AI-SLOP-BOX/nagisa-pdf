@@ -1,5 +1,6 @@
 use super::common::*;
-use lopdf::{Document, Object};
+use lopdf::Object;
+use crate::error::NagisaError;
 
 #[derive(serde::Serialize)]
 pub struct PreflightIssue {
@@ -45,8 +46,8 @@ pub struct ImageCheck {
 }
 
 // Preflight check for print production
-pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, NagisaError> {
+    let doc = load_pdf(data)?;
 
     let mut issues = Vec::new();
     let mut total_fonts = 0;
@@ -111,7 +112,10 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
 
     for obj in doc.objects.values() {
         if let Object::Stream(stream) = obj {
-            if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
+            let raw = stream
+                .decompressed_content()
+                .unwrap_or_else(|_| stream.content.clone());
+            if let Ok(content) = lopdf::content::Content::decode(&raw) {
                 for op in &content.operations {
                     match op.operator.as_str() {
                         "rg" | "RG" => uses_rgb = true,
@@ -200,7 +204,10 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
 
             for cid in content_ids {
                 if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
-                    if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
+                    let raw = stream
+                        .decompressed_content()
+                        .unwrap_or_else(|_| stream.content.clone());
+                    if let Ok(content) = lopdf::content::Content::decode(&raw) {
                         let mut current_matrix = (1.0f32, 0.0f32, 0.0f32, 1.0f32); // [a, b, c, d]
                         for op in &content.operations {
                             if op.operator == "cm" && op.operands.len() >= 4 {
@@ -414,11 +421,11 @@ pub fn preflight_check(data: &[u8]) -> Result<PreflightResult, String> {
 }
 
 // Check ink coverage for CMYK
-pub fn check_ink_coverage(data: &[u8], page_index: usize) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn check_ink_coverage(data: &[u8], page_index: usize) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -434,7 +441,10 @@ pub fn check_ink_coverage(data: &[u8], page_index: usize) -> Result<serde_json::
 
         for cid in content_ids {
             if let Some(Object::Stream(stream)) = doc.objects.get(&cid) {
-                if let Ok(content) = lopdf::content::Content::decode(&stream.content) {
+                let raw = stream
+                    .decompressed_content()
+                    .unwrap_or_else(|_| stream.content.clone());
+                if let Ok(content) = lopdf::content::Content::decode(&raw) {
                     for op in &content.operations {
                         match op.operator.as_str() {
                             "k" | "K" if op.operands.len() >= 4 => {
@@ -476,7 +486,7 @@ pub fn check_ink_coverage(data: &[u8], page_index: usize) -> Result<serde_json::
 }
 
 // Convert fonts to outlines (Text to Vector Paths)
-pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -487,7 +497,7 @@ pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
     let temp_ps = temp_dir.join(format!("nagisa_outline_mid_{pid}_{id}.ps"));
     let temp_out = temp_dir.join(format!("nagisa_outline_out_{pid}_{id}.pdf"));
 
-    std::fs::write(&temp_input, data).map_err(|e| format!("Failed to write temp PDF: {e}"))?;
+    std::fs::write(&temp_input, data).map_err(|e| NagisaError::from(format!("Failed to write temp PDF: {e}")))?;
 
     let cairo_status = find_tool_command("pdftocairo")
         .args([
@@ -515,7 +525,7 @@ pub fn convert_fonts_to_outlines(data: &[u8]) -> Result<Vec<u8>, String> {
             if let Ok(back_out) = convert_back {
                 if back_out.status.success() && temp_out.exists() {
                     let outlined_bytes = std::fs::read(&temp_out)
-                        .map_err(|e| format!("Failed to read outlined PDF: {e}"))?;
+                        .map_err(|e| NagisaError::from(format!("Failed to read outlined PDF: {e}")))?;
                     let _ = std::fs::remove_file(&temp_out);
                     return Ok(outlined_bytes);
                 }

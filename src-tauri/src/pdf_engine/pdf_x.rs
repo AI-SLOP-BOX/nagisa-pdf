@@ -1,6 +1,7 @@
 use super::common::*;
 use super::page_tree::materialize_inherited_page_attrs;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PdfxValidationReport {
@@ -16,8 +17,8 @@ pub struct PdfxValidationReport {
 pub fn validate_pdfx_compliance(
     data: &[u8],
     target_standard: &str,
-) -> Result<PdfxValidationReport, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to parse PDF: {e}"))?;
+) -> Result<PdfxValidationReport, NagisaError> {
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
 
     let is_x1a = target_standard.to_lowercase().contains("x-1a")
         || target_standard.to_lowercase().contains("x1a");
@@ -37,7 +38,7 @@ pub fn validate_pdfx_compliance(
         .get(b"Root")
         .and_then(|o| o.as_reference())
         .ok()
-        .ok_or_else(|| "PDF Root Catalog not found".to_string())?;
+        .ok_or_else(|| NagisaError::from("PDF Root Catalog not found".to_string()))?;
 
     let mut has_valid_output_intent = false;
     let mut has_dest_output_profile = false;
@@ -246,7 +247,10 @@ pub fn validate_pdfx_compliance(
             };
             for cid in content_ids {
                 if let Some(Object::Stream(ref stream)) = doc.objects.get(&cid) {
-                    if let Ok(c) = lopdf::content::Content::decode(&stream.content) {
+                    let raw = stream
+                        .decompressed_content()
+                        .unwrap_or_else(|_| stream.content.clone());
+                    if let Ok(c) = lopdf::content::Content::decode(&raw) {
                         for op in &c.operations {
                             if is_x1a && (op.operator == "rg" || op.operator == "RG") {
                                 prohibited_rgb.push(format!(
@@ -357,7 +361,7 @@ pub fn convert_to_pdfx_standard(
     data: &[u8],
     standard: &str,
     output_intent: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let is_x1a =
         standard.to_lowercase().contains("x-1a") || standard.to_lowercase().contains("x1a");
 
@@ -371,7 +375,7 @@ pub fn convert_to_pdfx_standard(
     };
 
     let mut doc =
-        Document::load_mem(&prepared_data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+        load_pdf(&prepared_data)?;
 
     let standard_id = if is_x1a {
         "PDF/X-1a:2001"
@@ -581,7 +585,7 @@ pub fn convert_to_pdfx_standard(
     save_doc(&mut doc)
 }
 
-pub fn convert_to_pdfx(data: &[u8], output_intent: &str) -> Result<Vec<u8>, String> {
+pub fn convert_to_pdfx(data: &[u8], output_intent: &str) -> Result<Vec<u8>, NagisaError> {
     convert_to_pdfx_standard(data, "PDF/X-1a:2001", output_intent)
 }
 

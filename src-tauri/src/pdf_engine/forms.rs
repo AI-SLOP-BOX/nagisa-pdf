@@ -1,6 +1,7 @@
 use super::common::*;
 use super::*;
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Object};
+use crate::error::NagisaError;
 
 // ===== ADVANCED FORM =====
 
@@ -14,7 +15,7 @@ pub fn add_form_field(
     width: f64,
     height: f64,
     default_value: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let config = FormFieldConfig {
         field_type: field_type.to_string(),
         name: field_name.to_string(),
@@ -44,11 +45,11 @@ pub fn add_calculated_field(
     y: f64,
     width: f64,
     height: f64,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     // Create field with JavaScript calculation
@@ -187,8 +188,8 @@ fn xml_escape(input: &str) -> String {
     out
 }
 
-pub fn export_xfdf(data: &[u8]) -> Result<String, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn export_xfdf(data: &[u8]) -> Result<String, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     let mut xfdf = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -327,8 +328,8 @@ pub fn export_xfdf(data: &[u8]) -> Result<String, String> {
     Ok(xfdf)
 }
 
-pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     // Standard-compliant XML streaming parser using quick-xml
@@ -578,11 +579,11 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(format!(
+                return Err(NagisaError::from(format!(
                     "XFDF XML parsing error at position {}: {:?}",
                     reader.buffer_position(),
                     e
-                ))
+                )))
             }
             _ => {}
         }
@@ -829,11 +830,11 @@ pub fn import_xfdf(data: &[u8], xfdf_content: &str) -> Result<Vec<u8>, String> {
 
 // ===== FORM DATA AGGREGATION =====
 
-pub fn aggregate_form_data(pdf_paths: &[String]) -> Result<serde_json::Value, String> {
+pub fn aggregate_form_data(pdf_paths: &[String]) -> Result<serde_json::Value, NagisaError> {
     let mut all_data = Vec::new();
 
     for path in pdf_paths {
-        let data = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let fields = get_form_fields(&data)?;
 
         let mut file_data = serde_json::Map::new();

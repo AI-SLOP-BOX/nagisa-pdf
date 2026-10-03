@@ -1,11 +1,12 @@
 use super::common::*;
 use lopdf::{Document, Object};
+use crate::error::NagisaError;
 
 // ===== FONT & STYLING MANAGEMENT =====
 
 // Get font information from PDF
-pub fn get_fonts(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_fonts(data: &[u8]) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
 
     let mut fonts = Vec::new();
 
@@ -53,8 +54,8 @@ pub fn get_fonts(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
 ///   本APIは同一メトリクス互換フォントファミリー間（例: Helvetica と Arial、または同系スタイルのエイリアス）の
 ///   標準BaseFont置換をサポートします。CID/Type0コンポジットフォントや文字幅の異なる異種フォント間での
 ///   単純な名前書き換えは、文字重なり・文字化け等の重大なレンダリング破綻を招くため安全に拒絶します。
-pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let target_old = old_font.trim().trim_start_matches('/');
     let target_new = new_font.trim().trim_start_matches('/');
@@ -74,9 +75,9 @@ pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u
                     // Check if font has complex Type0 / CIDToGIDMap
                     if let Ok(Object::Name(subtype)) = dict.get(b"Subtype") {
                         if subtype == b"Type0" {
-                            return Err(format!(
+                            return Err(NagisaError::from(format!(
                                 "フォント '{old_font}' はCID/Type0コンポジットフォントです。CIDToGIDMapやエンコーディングの再構成を伴わない単純置換はPDFの重大な文字化け・構造破損を招くため安全に中止しました。"
-                            ));
+                            )));
                         }
                     }
 
@@ -84,9 +85,9 @@ pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u
                     // If /Widths array is present, changing to a font with different glyph metrics causes severe glyph overlapping.
                     // Only allow replacement if explicitly safe or if font dictionary is un-embedded standard 14 font.
                     if dict.has(b"Widths") && !is_metric_compatible(target_old, target_new) {
-                        return Err(format!(
+                        return Err(NagisaError::from(format!(
                             "フォント '{old_font}' から '{new_font}' への置換は拒否されました。元のフォントには独自の文字幅配列（/Widths）が定義されており、メトリクス非互換フォントへの単純置換は文字重なり・レイアウト崩れを引き起こします。"
-                        ));
+                        )));
                     }
 
                     dict.set("BaseFont", Object::Name(target_new.as_bytes().to_vec()));
@@ -97,9 +98,9 @@ pub fn replace_font(data: &[u8], old_font: &str, new_font: &str) -> Result<Vec<u
     }
 
     if replaced_count == 0 {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "指定されたフォント '{old_font}' はドキュメント内で見つかりませんでした。"
-        ));
+        )));
     }
 
     save_doc(&mut doc)
@@ -145,11 +146,11 @@ pub fn change_text_color(
     page_index: usize,
     old_color: &str,
     new_color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -291,11 +292,11 @@ pub fn change_font_size(
     page_index: usize,
     old_size: f32,
     new_size: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];

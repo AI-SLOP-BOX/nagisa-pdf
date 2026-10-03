@@ -13,6 +13,7 @@
 
 use lopdf::{Document, Object, StringFormat};
 use sha2::{Digest, Sha256, Sha384, Sha512};
+use crate::error::NagisaError;
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
@@ -74,30 +75,30 @@ impl PermissionFlags {
 
 // ===== raw AES block primitives (CBC / ECB, no external modes crate) =====
 
-fn encrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
+fn encrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), NagisaError> {
     match key.len() {
         16 => Aes128::new(GenericArray::from_slice(key))
             .encrypt_block(GenericArray::from_mut_slice(block)),
         32 => Aes256::new(GenericArray::from_slice(key))
             .encrypt_block(GenericArray::from_mut_slice(block)),
-        n => return Err(format!("AES key length {n} is not 128 or 256 bits")),
+        n => return Err(NagisaError::from(format!("AES key length {n} is not 128 or 256 bits"))),
     }
     Ok(())
 }
 
-fn decrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), String> {
+fn decrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), NagisaError> {
     match key.len() {
         16 => Aes128::new(GenericArray::from_slice(key))
             .decrypt_block(GenericArray::from_mut_slice(block)),
         32 => Aes256::new(GenericArray::from_slice(key))
             .decrypt_block(GenericArray::from_mut_slice(block)),
-        n => return Err(format!("AES key length {n} is not 128 or 256 bits")),
+        n => return Err(NagisaError::from(format!("AES key length {n} is not 128 or 256 bits"))),
     }
     Ok(())
 }
 
 /// AES-CBC without padding; `data` must be a multiple of 16 bytes.
-fn cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
+fn cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     if !data.len().is_multiple_of(16) {
         return Err("CBC input length must be a multiple of 16".into());
     }
@@ -116,7 +117,7 @@ fn cbc_encrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String
 }
 
 /// AES-CBC without padding.
-fn cbc_decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
+fn cbc_decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     if !data.len().is_multiple_of(16) {
         return Err("CBC input length must be a multiple of 16".into());
     }
@@ -134,7 +135,7 @@ fn cbc_decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String
     Ok(out)
 }
 
-fn ecb_encrypt_256(key: &[u8], data: &[u8; 16]) -> Result<[u8; 16], String> {
+fn ecb_encrypt_256(key: &[u8], data: &[u8; 16]) -> Result<[u8; 16], NagisaError> {
     let mut block = *data;
     encrypt_block(key, &mut block)?;
     Ok(block)
@@ -148,11 +149,11 @@ fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn pkcs7_unpad(data: &[u8]) -> Result<Vec<u8>, String> {
+fn pkcs7_unpad(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     if data.is_empty() || !data.len().is_multiple_of(16) {
         return Err("AES暗号ブロックが壊れています".into());
     }
-    let pad = *data.last().unwrap() as usize;
+    let pad = *data.last().ok_or("AES暗号ブロックが空です")? as usize;
     if pad == 0 || pad > 16 || !data.ends_with(&vec![pad as u8; pad]) {
         return Err("AESパディング検証に失敗しました（パスワードまたはデータ不一致）".into());
     }
@@ -211,14 +212,14 @@ fn encode_password(password: &str) -> Vec<u8> {
     bytes
 }
 
-fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
+fn random_bytes<const N: usize>() -> Result<[u8; N], NagisaError> {
     let mut buf = [0u8; N];
-    getrandom::getrandom(&mut buf).map_err(|e| format!("乱数生成に失敗しました: {e}"))?;
+    getrandom::getrandom(&mut buf).map_err(|e| NagisaError::from(format!("乱数生成に失敗しました: {e}")))?;
     Ok(buf)
 }
 
 /// Algorithm 3.8: U (48 bytes: hash + validation salt + key salt) and UE.
-fn build_u(revision: i64, password: &[u8], file_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn build_u(revision: i64, password: &[u8], file_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
     let salts = random_bytes::<16>()?;
     let (val_salt, key_salt) = (&salts[0..8], &salts[8..16]);
     let h = calculate_hash(revision, password, val_salt, &[]);
@@ -234,7 +235,7 @@ fn build_o(
     password: &[u8],
     file_key: &[u8],
     u: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), String> {
+) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
     let salts = random_bytes::<16>()?;
     let (val_salt, key_salt) = (&salts[0..8], &salts[8..16]);
     let h = calculate_hash(revision, password, val_salt, u);
@@ -245,7 +246,7 @@ fn build_o(
 }
 
 /// Algorithm 3.10: encrypted permissions blob (16 bytes, AES-256-ECB).
-fn build_perms(file_key: &[u8], p: i32, encrypt_metadata: bool) -> Result<Vec<u8>, String> {
+fn build_perms(file_key: &[u8], p: i32, encrypt_metadata: bool) -> Result<Vec<u8>, NagisaError> {
     let mut block = [0u8; 16];
     block[0..4].copy_from_slice(&(p as u32).to_le_bytes());
     block[4..8].copy_from_slice(&[0xFF; 4]);
@@ -290,7 +291,7 @@ fn derive_file_key(
 }
 
 /// AES-256-CBC + PKCS#7 with a random 16-byte IV prefix (ISO 32000-1 §7.6.4).
-fn aes_object_encrypt(key: &[u8], plain: &[u8]) -> Result<Vec<u8>, String> {
+fn aes_object_encrypt(key: &[u8], plain: &[u8]) -> Result<Vec<u8>, NagisaError> {
     let iv = random_bytes::<16>()?;
     let ct = cbc_encrypt(key, &iv, &pkcs7_pad(plain))?;
     let mut out = Vec::with_capacity(16 + ct.len());
@@ -299,12 +300,12 @@ fn aes_object_encrypt(key: &[u8], plain: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn aes_object_decrypt(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
+fn aes_object_decrypt(key: &[u8], payload: &[u8]) -> Result<Vec<u8>, NagisaError> {
     if payload.len() < 32 || !(payload.len() - 16).is_multiple_of(16) {
         return Err("AES暗号ペイロード長が不正です".into());
     }
     let (iv, ct) = payload.split_at(16);
-    let iv: [u8; 16] = iv.try_into().expect("16 bytes");
+    let iv: [u8; 16] = iv.try_into().map_err(|_| "AES暗号ペイロード長が不正です")?;
     let padded = cbc_decrypt(key, &iv, ct)?;
     pkcs7_unpad(&padded)
 }
@@ -316,7 +317,7 @@ fn walk_crypt(
     key: &[u8],
     encrypt: bool,
     encrypt_metadata: bool,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     match obj {
         Object::String(data, format) => {
             if encrypt {
@@ -371,15 +372,15 @@ fn walk_crypt(
     }
 }
 
-fn dict_str(dict: &lopdf::Dictionary, key: &[u8]) -> Result<Vec<u8>, String> {
+fn dict_str(dict: &lopdf::Dictionary, key: &[u8]) -> Result<Vec<u8>, NagisaError> {
     let name = String::from_utf8_lossy(key);
     let value = dict
         .get(key)
-        .map_err(|_| format!("暗号化辞書の /{name} が存在しません"))?;
+        .map_err(|_| NagisaError::from(format!("暗号化辞書の /{name} が存在しません")))?;
     value
         .as_str()
         .map(|s| s.to_vec())
-        .map_err(|_| format!("暗号化辞書の /{name} が不正です"))
+        .map_err(|_| NagisaError::from(format!("暗号化辞書の /{name} が不正です")))
 }
 
 /// Encrypt a PDF with the Standard Security Handler, AES-256 (V=5 / R=6).
@@ -392,7 +393,7 @@ pub fn encrypt_pdf(
     data: &[u8],
     user_password: &str,
     owner_password: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     encrypt_pdf_with_permissions(
         data,
         user_password,
@@ -406,14 +407,14 @@ pub fn encrypt_pdf_with_permissions(
     user_password: &str,
     owner_password: &str,
     permissions: PermissionFlags,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     if user_password.is_empty() {
         return Err(
             "開くためのユーザーパスワードを指定してください（空パスワードでは暗号化できません）"
                 .into(),
         );
     }
-    let mut doc = Document::load_mem(data).map_err(|e| format!("PDF解析に失敗しました: {e}"))?;
+    let mut doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
     if doc.is_encrypted() {
         return Err("このPDFは既に暗号化されています".into());
     }
@@ -482,7 +483,7 @@ pub fn encrypt_pdf_with_permissions(
 
     let mut out = Vec::new();
     doc.save_to(&mut out)
-        .map_err(|e| format!("暗号化PDFの書き出しに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("暗号化PDFの書き出しに失敗しました: {e}")))?;
     Ok(out)
 }
 
@@ -496,8 +497,8 @@ pub fn is_encrypted(data: &[u8]) -> bool {
 /// Decrypt a password-protected PDF. Supports R=5/R=6 (native) and
 /// R=2..=4 (RC4 / AESV2, delegated to lopdf). Already-plaintext input is
 /// returned unchanged.
-pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("PDF解析に失敗しました: {e}"))?;
+pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
     if !doc.is_encrypted() {
         return Ok(data.to_vec());
     }
@@ -528,10 +529,10 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
             .as_name()
             .map_err(|_| "暗号化辞書の /Filter が不正です".to_string())?;
         if filter != b"Standard" {
-            return Err(format!(
+            return Err(NagisaError::from(format!(
                 "未対応のセキュリティハンドラです: /{}（Standardのみ対応）",
                 String::from_utf8_lossy(filter)
-            ));
+            )));
         }
         let encrypt_metadata = dict
             .get(b"EncryptMetadata")
@@ -562,7 +563,7 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
     if revision >= 5 {
         let pw = encode_password(password);
         let file_key = derive_file_key(revision, &pw, &o, &oe, &u, &ue)
-            .ok_or_else(|| "パスワードが正しくありません".to_string())?;
+            .ok_or_else(|| NagisaError::from("パスワードが正しくありません".to_string()))?;
         for (&oid, obj) in doc.objects.iter_mut() {
             if oid == encrypt_id {
                 continue;
@@ -587,6 +588,6 @@ pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, String> {
 
     let mut out = Vec::new();
     doc.save_to(&mut out)
-        .map_err(|e| format!("復号PDFの書き出しに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("復号PDFの書き出しに失敗しました: {e}")))?;
     Ok(out)
 }

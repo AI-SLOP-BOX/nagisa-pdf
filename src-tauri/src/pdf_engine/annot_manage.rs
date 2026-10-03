@@ -1,6 +1,7 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Object};
 use std::collections::HashSet;
+use crate::error::NagisaError;
 
 // ===== ANNOTATION MANAGEMENT =====
 
@@ -27,8 +28,8 @@ pub struct AnnotationReply {
     pub created: String,
 }
 
-pub fn get_annotations(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_annotations(data: &[u8]) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     let mut annotations = Vec::new();
 
@@ -230,8 +231,8 @@ pub fn add_annotation_reply(
     annotation_id: (u32, u16),
     author: &str,
     contents: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // ISO 32000-1 §12.5.6.3: Inherit bounding rect from parent annotation if available
     let parent_rect =
@@ -315,10 +316,10 @@ pub fn add_annotation_reply(
     }
 
     if !attached_to_page {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "親注釈（ID: {}:{}）がPDF内のいずれのページにも見つかりませんでした。孤立した注釈返信の生成を防ぐため処理を中断しました。",
             annotation_id.0, annotation_id.1
-        ));
+        )));
     }
 
     save_doc(&mut doc)
@@ -328,8 +329,8 @@ pub fn set_annotation_status(
     data: &[u8],
     annotation_id: (u32, u16),
     status: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     if let Some(Object::Dictionary(ref mut annot_dict)) = doc.objects.get_mut(&annotation_id) {
         // ISO 32000-1 §12.5.6.3:
@@ -350,8 +351,8 @@ pub fn set_annotation_status(
     save_doc(&mut doc)
 }
 
-pub fn delete_annotation(data: &[u8], annotation_id: (u32, u16)) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn delete_annotation(data: &[u8], annotation_id: (u32, u16)) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // 1. Identify parent annotation and all hierarchical replies (transitive IRT)
     // #41 是正: 訪問済みIDを HashSet で管理し、IRTがループしている悉意のPDFで無限ループに降るかのサイクルガード。

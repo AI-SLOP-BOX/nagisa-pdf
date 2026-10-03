@@ -1,5 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
+use lopdf::{Dictionary, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== JIS X 4051 準拠 日本語禁則判定 & プロポーショナルグリフ幅 =====
 
@@ -78,7 +79,30 @@ pub(crate) fn is_kinsoku_line_end(c: char) -> bool {
     )
 }
 
+/// 組み込みIPAexフォントの実グリフ幅キャッシュ。CJK出力（リフロー・テキスト
+/// 編集の日本語フォント）はこのIPAexで描画されるため、固定係数より実測が正確。
+/// ASCII（Helvetica出力）には適用しない。取得失敗時はヒューリスティクスに
+/// フォールバックする。
+static CJK_METRICS: std::sync::OnceLock<Option<super::font_unicode::ParsedTrueTypeFont>> =
+    std::sync::OnceLock::new();
+
+fn cjk_real_advance(c: char, font_size: f32) -> Option<f32> {
+    if c.is_ascii() {
+        return None;
+    }
+    let slot = CJK_METRICS.get_or_init(|| super::font_unicode::load_primary_cjk_font().ok());
+    let font = slot.as_ref()?;
+    let gid = font.get_gid(c);
+    if gid == 0 {
+        return None;
+    }
+    Some(font.get_glyph_width_1000(gid) as f32 / 1000.0 * font_size)
+}
+
 pub fn get_char_metric_width(c: char, font_size: f32) -> f32 {
+    if let Some(w) = cjk_real_advance(c, font_size) {
+        return w;
+    }
     let scale = font_size;
     match c {
         // 半角スペース
@@ -130,11 +154,11 @@ pub fn reflow_text(
     font_size: f32,
     line_height: f32,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -314,7 +338,7 @@ pub fn reflow_text(
         let content = lopdf::content::Content {
             operations: all_ops,
         };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));
@@ -387,7 +411,7 @@ pub fn reflow_text(
         let content = lopdf::content::Content {
             operations: all_ops,
         };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

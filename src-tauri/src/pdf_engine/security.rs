@@ -1,5 +1,6 @@
 use super::common::*;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== DIGITAL SIGNATURE =====
 
@@ -16,11 +17,14 @@ pub fn add_digital_signature(
     signer_name: &str,
     reason: &str,
     certificate_data: Option<&[u8]>,
-) -> Result<Vec<u8>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(NagisaError::InvalidParameter(format!(
+            "Page index {page_index} out of range (total pages: {})",
+            page_ids.len()
+        )));
     }
 
     // Check if the document already contains cryptographic signatures (ByteRange)
@@ -31,9 +35,9 @@ pub fn add_digital_signature(
                 sig.get("status").and_then(|st| st.as_str()) == Some("signed_unverified_cms")
             });
             if has_signed {
-                return Err(
+                return Err(NagisaError::SignedPdfMutationBlocked(
                     "Document already contains cryptographically signed fields. Adding new signature fields via standard rewrite would invalidate existing signatures. Incremental update support is required to preserve existing signatures.".to_string()
-                );
+                ));
             }
         }
     }
@@ -200,8 +204,8 @@ fn unix_timestamp_to_utc(duration_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 /// - `Ok(false)`: 署名なし（安全に編集可能）
 /// - `Ok(true)`: 署名あり（編集すると署名が無効になる）
 /// - `Err(...)`: PDF解析エラー
-pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, NagisaError> {
+    let doc = load_pdf(data)?;
     Ok(doc_has_cryptographic_signatures(&doc))
 }
 
@@ -241,7 +245,7 @@ pub const SIGNED_PDF_MUTATION_ERROR: &str = "このPDFには有効なデジタ�
      編集する場合は署名フィールドを削除してから行うか、\
      署名者に署名前の原本ファイルへの編集を依頼してください。";
 
-pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, String> {
+pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, NagisaError> {
     // Find signature fields and extract actual dictionary metadata
     let mut signatures = Vec::new();
 
@@ -366,8 +370,8 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Stri
     }))
 }
 
-pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
     let val = verify_signature_in_doc(&doc)?;
 
     // If a specific signature_index is requested, focus/filter the output
@@ -382,10 +386,10 @@ pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_jso
                 "total_count": sigs.len(),
             }));
         } else if signature_index >= sigs.len() && !sigs.is_empty() {
-            return Err(format!(
+            return Err(NagisaError::from(format!(
                 "Signature index {signature_index} out of bounds (found {} signatures)",
                 sigs.len()
-            ));
+            )));
         }
     }
 
@@ -396,8 +400,8 @@ pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_jso
 
 // ===== PDF UNLOCK (PASSWORD REMOVAL) =====
 
-pub fn unlock_pdf(data: &[u8], _password: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn unlock_pdf(data: &[u8], _password: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // Check if the document truly has an Encrypt dictionary
     if doc.trailer.has(b"Encrypt") {
@@ -422,9 +426,9 @@ pub struct SanitizeSummary {
     pub thumbnails_purged: usize,
 }
 
-pub fn sanitize_document(data: &[u8]) -> Result<(Vec<u8>, SanitizeSummary), String> {
+pub fn sanitize_document(data: &[u8]) -> Result<(Vec<u8>, SanitizeSummary), NagisaError> {
     let mut doc = Document::load_mem(data)
-        .map_err(|e| format!("Failed to load PDF for sanitization: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to load PDF for sanitization: {e}")))?;
 
     let mut summary = SanitizeSummary {
         metadata_removed: false,
@@ -590,7 +594,7 @@ pub struct DigitalID {
     pub key_usage: Vec<String>,
 }
 
-pub fn list_digital_ids() -> Result<Vec<DigitalID>, String> {
+pub fn list_digital_ids() -> Result<Vec<DigitalID>, NagisaError> {
     // Honest: Return empty list when no OS digital identity / Keychain certificate is enrolled
     Ok(Vec::new())
 }
@@ -612,8 +616,8 @@ pub struct TimestampResult {
 /// RFC 3161 token is embedded in /Contents with a matching /ByteRange, so
 /// `verify_timestamp` can later recompute and cryptographically confirm the
 /// binding. Refuses to pretend a local-clock placeholder is a timestamp.
-pub fn add_timestamp(data: &[u8], timestamp_authority: &str) -> Result<Vec<u8>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn add_timestamp(data: &[u8], timestamp_authority: &str) -> Result<Vec<u8>, NagisaError> {
+    let doc = load_pdf(data)?;
     if signature_entries_present(&doc) {
         return Err("このPDFには既に電子署名があります。既存署名を無効化しないよう、DocTimeStampは追加できません。".into());
     }
@@ -642,8 +646,8 @@ fn signature_entries_present(doc: &Document) -> bool {
 /// TSA-asserted genTime and TSA subject. Entries without /Contents (e.g. the
 /// legacy local-clock placeholder produced by older builds) are honestly
 /// reported as unverifiable instead of being marked valid.
-pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn verify_timestamp(data: &[u8]) -> Result<TimestampResult, NagisaError> {
+    let doc = load_pdf(data)?;
     let mut result = TimestampResult {
         timestamp: "DocTimeStampなし".into(),
         authority: "未指定のTSA".into(),
@@ -777,15 +781,15 @@ pub struct Certificate {
 }
 
 // List system certificates
-pub fn list_certificates() -> Result<Vec<Certificate>, String> {
+pub fn list_certificates() -> Result<Vec<Certificate>, NagisaError> {
     // Honest: No mock certificates returned
     Ok(Vec::new())
 }
 
 // Import certificate from file
-pub fn import_certificate(cert_path: &str) -> Result<Certificate, String> {
+pub fn import_certificate(cert_path: &str) -> Result<Certificate, NagisaError> {
     let _cert_data = std::fs::read(cert_path)
-        .map_err(|e| format!("証明書ファイルの読み込みに失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("証明書ファイルの読み込みに失敗しました: {e}")))?;
 
     Err("X.509証明書の完全なDER/PEMパースおよび暗号鍵インポートには外部ASN.1/PKIライブラリの連携が必要です。".into())
 }

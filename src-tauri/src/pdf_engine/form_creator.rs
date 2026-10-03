@@ -1,5 +1,6 @@
 use super::common::*;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== INTERACTIVE FORM CREATION (ISO 32000 Compliant) =====
 
@@ -23,7 +24,7 @@ pub struct FormFieldConfig {
 pub(crate) fn ensure_acroform_with_resources(
     doc: &mut Document,
     field_id: lopdf::ObjectId,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     let root_id = doc
         .trailer
         .get(b"Root")
@@ -233,11 +234,11 @@ pub fn create_form_field(
     data: &[u8],
     page_index: usize,
     config: &FormFieldConfig,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let page_id = page_ids[page_index];
@@ -408,7 +409,7 @@ pub fn create_checkbox(
     x: f32,
     y: f32,
     checked: bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let config = FormFieldConfig {
         field_type: "Btn".into(),
         name: name.to_string(),
@@ -435,15 +436,15 @@ pub fn create_radio_button(
     options: &[String],
     x: f32,
     y: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     if options.is_empty() {
         return Ok(data.to_vec());
     }
 
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
     let page_id = page_ids[page_index];
 
@@ -546,7 +547,7 @@ pub fn create_text_field(
     width: f32,
     height: f32,
     max_length: Option<u32>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let config = FormFieldConfig {
         field_type: "Tx".into(),
         name: name.to_string(),
@@ -572,7 +573,7 @@ pub fn create_signature_field(
     y: f32,
     width: f32,
     height: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let config = FormFieldConfig {
         field_type: "Sig".into(),
         name: name.to_string(),
@@ -599,7 +600,7 @@ pub fn create_dropdown(
     y: f32,
     width: f32,
     height: f32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, NagisaError> {
     let config = FormFieldConfig {
         field_type: "Ch".into(),
         name: name.to_string(),

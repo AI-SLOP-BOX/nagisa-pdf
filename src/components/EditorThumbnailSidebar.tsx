@@ -1,7 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react'
-import { PDFJsEngine } from '../services/pdfRenderer'
-import { invoke } from '@tauri-apps/api/core'
-import { safeRevokeObjectUrl } from '../utils/objectUrl'
+import React, { useEffect, useRef } from 'react'
+import { usePageThumbnails } from '../hooks/usePageThumbnails'
 
 interface EditorThumbnailSidebarProps {
   pageCount: number
@@ -22,116 +20,43 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
   pdfData,
   docId,
 }) => {
-  const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map())
-  const [detectedPageCount, setDetectedPageCount] = useState<number>(0)
-  const blobUrlsRef = useRef<Set<string>>(new Set())
+  // 共有フックで遅延読込（可視範囲のみ描画・上限なし・URL寿命管理込み）
+  const { thumbnails, detectedPageCount, requestPage } = usePageThumbnails({
+    pdfData,
+    docId,
+    pageCount,
+  })
+  const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
 
-  // Revoke any still-tracked blob URLs on unmount
+  const effectiveCount = Math.max(pageCount, detectedPageCount, thumbnails.size, 1)
+
+  // 可視アイテムのみ描画要求（スクロール遅延読込）。当面ページは即時要求。
   useEffect(() => {
-    return () => {
-      for (const url of blobUrlsRef.current) {
-        safeRevokeObjectUrl(url)
-      }
-      blobUrlsRef.current.clear()
+    requestPage(currentPage)
+    if (typeof IntersectionObserver === 'undefined') {
+      for (let i = 0; i < effectiveCount; i++) requestPage(i)
+      return
     }
-  }, [])
-
-  // Prune blob URLs that are no longer referenced by the active thumbnail map.
-  // Runs after `thumbnails` state has committed so the DOM never points at a revoked URL.
-  useEffect(() => {
-    const activeUrls = new Set(thumbnails.values())
-    for (const url of Array.from(blobUrlsRef.current)) {
-      if (!activeUrls.has(url)) {
-        safeRevokeObjectUrl(url)
-        blobUrlsRef.current.delete(url)
-      }
-    }
-  }, [thumbnails])
-
-  // Generate real thumbnail images for all pages
-  useEffect(() => {
-    let isCancelled = false
-    const sourceBytes = (pdfData && pdfData.length > 0) ? pdfData : PDFJsEngine.getLatestBytes()
-
-    const loadRealThumbnails = async () => {
-      const newMap = new Map<number, string>()
-
-      // 1. Try PDF.js client rendering (works in browser & preview)
-      if (sourceBytes && sourceBytes.length > 0) {
-        try {
-          const doc = await PDFJsEngine.getDocument(sourceBytes)
-          const total = Math.max(pageCount, doc.numPages)
-          if (!isCancelled) setDetectedPageCount(total)
-
-          for (let i = 0; i < total; i++) {
-            if (isCancelled) return
-            try {
-              const page = await doc.getPage(i + 1)
-              const vp = page.getViewport({ scale: 0.18 }) // ~100px width for A4
-              const canvas = document.createElement('canvas')
-              canvas.width = Math.max(1, Math.round(vp.width))
-              canvas.height = Math.max(1, Math.round(vp.height))
-              const ctx = canvas.getContext('2d')
-              if (ctx) {
-                ctx.fillStyle = '#ffffff'
-                ctx.fillRect(0, 0, canvas.width, canvas.height)
-                await page.render({ canvasContext: ctx, viewport: vp }).promise
-                newMap.set(i, canvas.toDataURL('image/jpeg', 0.85))
-              }
-            } catch (pageErr) {
-              console.warn(`Failed to render thumbnail for page ${i + 1}:`, pageErr)
-            }
-          }
-
-          if (!isCancelled) {
-            setThumbnails(new Map(newMap))
-          }
-          return
-        } catch (pdfErr) {
-          console.warn('PDF.js thumbnail extraction failed:', pdfErr)
-        }
-      }
-
-      // 2. Tauri native backend rendering fallback
-      if (docId && !docId.startsWith('browser-session-')) {
-        const count = pageCount || 1
-        for (let i = 0; i < count; i++) {
-          if (isCancelled) return
-          try {
-            const pngBytes = await invoke<number[]>('session_render_page_to_png', {
-              docId,
-              pageIndex: i,
-              dpi: 40,
-            })
-            if (pngBytes && pngBytes.length > 0) {
-              const blob = new Blob([new Uint8Array(pngBytes)], { type: 'image/png' })
-              const url = URL.createObjectURL(blob)
-              blobUrlsRef.current.add(url)
-              newMap.set(i, url)
-            }
-          } catch (err) {
-            console.warn(`[EditorThumbnailSidebar] ページ ${i + 1}のサムネイル生成失敗:`, err)
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const idx = Number((entry.target as HTMLElement).dataset.pageIndex)
+            if (!Number.isNaN(idx)) requestPage(idx)
           }
         }
-        if (!isCancelled) {
-          setThumbnails(new Map(newMap))
-        }
-      }
-    }
-
-    loadRealThumbnails()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [pdfData, docId, pageCount])
+      },
+      { rootMargin: '400px' },
+    )
+    for (const el of itemRefs.current.values()) observer.observe(el)
+    return () => observer.disconnect()
+  }, [effectiveCount, currentPage, requestPage])
 
   if (collapsed) {
     return (
       <div
         onClick={onToggleCollapse}
-        title="サムネイルを表示"
-        style={{
+        title="サムネイルを表示"        style={{
           width: 36,
           height: '100%',
           background: '#ffffff',
@@ -148,8 +73,6 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
       </div>
     )
   }
-
-  const effectiveCount = Math.max(pageCount, detectedPageCount, thumbnails.size, 1)
 
   return (
     <div
@@ -205,6 +128,11 @@ export const EditorThumbnailSidebar: React.FC<EditorThumbnailSidebarProps> = ({
           return (
             <div
               key={idx}
+              data-page-index={idx}
+              ref={el => {
+                if (el) itemRefs.current.set(idx, el)
+                else itemRefs.current.delete(idx)
+              }}
               onClick={() => onSelectPage(idx)}
               style={{
                 display: 'flex',

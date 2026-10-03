@@ -49,7 +49,7 @@ interface ToolsPreflightSectionProps {
   pdfData: number[] | null
   docId?: string | null
   showToast: (msg: string) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }
 
 export function ToolsPreflightSection({ pdfData, docId, showToast, onPdfUpdate }: ToolsPreflightSectionProps) {
@@ -61,10 +61,10 @@ export function ToolsPreflightSection({ pdfData, docId, showToast, onPdfUpdate }
   const [pdfaReport, setPdfaReport] = useState<PdfaReport | null>(null)
   const [pdfaBusy, setPdfaBusy] = useState(false)
 
-  const getCurrentBytes = useCallback(async (): Promise<number[] | null> => {
-    if (docId) return DocumentService.getSessionBytes(docId)
-    return pdfData
-  }, [docId, pdfData])
+  const getCurrentBytes = useCallback(
+    (): Promise<number[] | null> => DocumentService.getCurrentBytes(docId, pdfData),
+    [docId, pdfData],
+  )
 
   const validatePdfa = async () => {
     setPdfaBusy(true)

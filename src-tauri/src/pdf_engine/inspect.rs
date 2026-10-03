@@ -1,13 +1,14 @@
 use super::common::*;
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== BATCH PROCESSING & PAGE FORMATTING (Separated to batch_ops.rs) =====
 pub use super::batch_ops::*;
 
 // ===== OPTIMIZE =====
 
-pub fn optimize_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn optimize_pdf(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     // Safe and standard PDF optimization:
     // 1. Recompress FlateDecode streams with maximum compression where beneficial
@@ -70,9 +71,9 @@ pub struct CompareResult {
     pub modified_size: usize,
 }
 
-pub fn compare_pdfs(data1: &[u8], data2: &[u8]) -> Result<CompareResult, String> {
-    let doc1 = Document::load_mem(data1).map_err(|e| format!("Failed to load PDF1: {e}"))?;
-    let doc2 = Document::load_mem(data2).map_err(|e| format!("Failed to load PDF2: {e}"))?;
+pub fn compare_pdfs(data1: &[u8], data2: &[u8]) -> Result<CompareResult, NagisaError> {
+    let doc1 = Document::load_mem(data1).map_err(|e| NagisaError::from(format!("Failed to load PDF1: {e}")))?;
+    let doc2 = Document::load_mem(data2).map_err(|e| NagisaError::from(format!("Failed to load PDF2: {e}")))?;
 
     let pages1 = get_page_ids(&doc1);
     let pages2 = get_page_ids(&doc2);
@@ -133,21 +134,32 @@ fn resolve_page_content_bytes(doc: &Document, page_id: OID) -> Vec<u8> {
 
 // ===== PDF RENDERING =====
 
-pub fn get_page_count_from_data(data: &[u8]) -> Result<usize, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_page_count_from_data(data: &[u8]) -> Result<usize, NagisaError> {
+    let doc = load_pdf(data)?;
     Ok(get_page_ids(&doc).len())
 }
 
-pub fn get_page_dimensions_from_data(data: &[u8], page_index: usize) -> Result<(f32, f32), String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_page_dimensions_from_data(data: &[u8], page_index: usize) -> Result<(f32, f32), NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
     Ok(get_page_dimensions(&doc, page_ids[page_index]))
 }
 
-pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Vec<u8>, String> {
+/// 表示用ビューポート（視覚寸法＋回転角）を返す。IPC のページ寸法は
+/// 回転適用済みのこちらを使い、オーバーレイとレンダー画素を一致させる。
+pub fn get_page_viewport_from_data(data: &[u8], page_index: usize) -> Result<(f32, f32, i32), NagisaError> {
+    let doc = load_pdf(data)?;
+    let page_ids = get_page_ids(&doc);
+    if page_index >= page_ids.len() {
+        return Err(page_range_err(page_index, page_ids.len()));
+    }
+    Ok(get_page_viewport(&doc, page_ids[page_index]))
+}
+
+pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Vec<u8>, NagisaError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -157,7 +169,7 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
     let temp_pdf = temp_dir.join(format!("nagisa_{pid}_{id}.pdf"));
     let temp_prefix = temp_dir.join(format!("nagisa_page_{pid}_{id}"));
 
-    std::fs::write(&temp_pdf, data).map_err(|e| format!("Failed to write temp PDF: {e}"))?;
+    std::fs::write(&temp_pdf, data).map_err(|e| NagisaError::from(format!("Failed to write temp PDF: {e}")))?;
 
     let output = find_tool_command("pdftoppm")
         .args([
@@ -178,15 +190,15 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
     let output = match output {
         Ok(out) => out,
         Err(e) => {
-            return Err(format!(
+            return Err(NagisaError::from(format!(
                 "Failed to execute pdftoppm: {e}. Ensure poppler is installed."
-            ))
+            )))
         }
     };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("pdftoppm failed: {stderr}"));
+        return Err(NagisaError::from(format!("pdftoppm failed: {stderr}")));
     }
 
     // Match output file (pdftoppm creates format: prefix-1.png, prefix-01.png, or prefix-000001.png)
@@ -210,9 +222,9 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
     }
 
     let png_path = found_file
-        .ok_or_else(|| "Failed to locate rendered PNG output from pdftoppm".to_string())?;
+        .ok_or_else(|| NagisaError::from("Failed to locate rendered PNG output from pdftoppm".to_string()))?;
     let png_data =
-        std::fs::read(&png_path).map_err(|e| format!("Failed to read rendered PNG: {e}"))?;
+        std::fs::read(&png_path).map_err(|e| NagisaError::from(format!("Failed to read rendered PNG: {e}")))?;
     let _ = std::fs::remove_file(&png_path);
 
     Ok(png_data)
@@ -282,11 +294,11 @@ pub fn page_text_from_doc(doc: &Document, page_id: lopdf::ObjectId) -> String {
     text
 }
 
-pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
     Ok(page_text_from_doc(&doc, page_ids[page_index]))
 }
@@ -294,8 +306,8 @@ pub fn get_page_text(data: &[u8], page_index: usize) -> Result<String, String> {
 /// 全ページのテキストを1回のパースで抽出する。
 /// `get_page_text` を全ページ分ループするとページ毎に全文書を再パースして
 /// O(ページ数²) になり、1000ページ級のPDFで実質ハングするためのバッチ版。
-pub fn extract_all_text(data: &[u8]) -> Result<Vec<String>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn extract_all_text(data: &[u8]) -> Result<Vec<String>, NagisaError> {
+    let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     Ok(page_ids
         .iter()
@@ -303,7 +315,7 @@ pub fn extract_all_text(data: &[u8]) -> Result<Vec<String>, String> {
         .collect())
 }
 
-pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json::Value>, String> {
+pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json::Value>, NagisaError> {
     let page_ids = get_page_ids(doc);
     let mut results = Vec::new();
 
@@ -323,12 +335,12 @@ pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json:
     Ok(results)
 }
 
-pub fn search_text(data: &[u8], query: &str) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn search_text(data: &[u8], query: &str) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
     search_text_in_doc(&doc, query)
 }
 
-pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, String> {
+pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, NagisaError> {
     let mut bookmarks = Vec::new();
 
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
@@ -353,11 +365,17 @@ pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, 
                     };
 
                     let mut queue = Vec::new();
+                    // 循環 /First・/Next 参照を持つ細工PDFでの無限ループ・
+                    // メモリ爆発を遮断
+                    let mut visited = std::collections::HashSet::new();
                     if let Some(f_id) = first_item {
                         queue.push(f_id);
                     }
 
                     while let Some(item_id) = queue.pop() {
+                        if !visited.insert(item_id) {
+                            continue;
+                        }
                         if let Some(Object::Dictionary(item)) = doc.objects.get(&item_id) {
                             let title = item
                                 .get(b"Title")
@@ -416,12 +434,12 @@ pub fn get_bookmarks_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, 
     Ok(bookmarks)
 }
 
-pub fn get_bookmarks(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_bookmarks(data: &[u8]) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
     get_bookmarks_from_doc(&doc)
 }
 
-pub fn get_form_fields_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, String> {
+pub fn get_form_fields_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>, NagisaError> {
     let mut fields = Vec::new();
 
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
@@ -496,13 +514,13 @@ pub fn get_form_fields_from_doc(doc: &Document) -> Result<Vec<serde_json::Value>
     Ok(fields)
 }
 
-pub fn get_form_fields(data: &[u8]) -> Result<Vec<serde_json::Value>, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_form_fields(data: &[u8]) -> Result<Vec<serde_json::Value>, NagisaError> {
+    let doc = load_pdf(data)?;
     get_form_fields_from_doc(&doc)
 }
 
-pub fn set_form_field(data: &[u8], field_name: &str, value: &str) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn set_form_field(data: &[u8], field_name: &str, value: &str) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         Ok(id) => id,
@@ -549,10 +567,10 @@ pub fn set_form_field(data: &[u8], field_name: &str, value: &str) -> Result<Vec<
     save_doc(&mut doc)
 }
 
-pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     // Real flattening: bake each widget annotation's Appearance Stream (/AP /N)
     // into the page content, then remove the widget annotation and /AcroForm.
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    let mut doc = load_pdf(data)?;
 
     let page_ids = get_page_ids(&doc);
 
@@ -701,7 +719,7 @@ pub fn flatten_form(data: &[u8]) -> Result<Vec<u8>, String> {
                 };
                 let flat_bytes = flat_content
                     .encode()
-                    .map_err(|e| format!("Flatten encode error: {e}"))?;
+                    .map_err(|e| NagisaError::from(format!("Flatten encode error: {e}")))?;
                 let flat_stream = Stream::new(Dictionary::new(), flat_bytes);
                 let flat_id = doc.add_object(flat_stream);
                 append_page_content(&mut doc, page_id, flat_id)?;
@@ -737,11 +755,11 @@ pub fn add_stamp(
     rotation: f32,
     color: &str,
     font_size: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (1.0, 0.0, 0.0));
@@ -789,7 +807,7 @@ pub fn add_stamp(
     ];
 
     let content = lopdf::content::Content { operations };
-    let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -832,22 +850,43 @@ pub fn add_stamp(
     save_doc(&mut doc)
 }
 
-pub fn print_pdf(data: &[u8]) -> Result<(), String> {
-    let temp_dir = std::env::temp_dir();
-    let temp_pdf = temp_dir.join("nagisa_print.pdf");
+pub fn print_pdf(data: &[u8]) -> Result<(), NagisaError> {
+    // 固定名 temp ファイルは並行印刷の衝突・symlink 差替え・印刷物残留の
+    // 温床になるため、pid + 時刻 + カウンタで一意化する。印刷要求は非同期
+    // spool のため即時削除できないが、遅延クリーンで残留 PDF を best-effort
+    // 除去する（印刷内容のディスク残留はプライバシーリスク）。
+    static PRINT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let uniq = PRINT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let temp_pdf = std::env::temp_dir().join(format!(
+        "nagisa_print_{}_{}_{}.pdf",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        uniq
+    ));
 
-    std::fs::write(&temp_pdf, data).map_err(|e| format!("Failed to write temp: {e}"))?;
+    std::fs::write(&temp_pdf, data).map_err(|e| NagisaError::from(format!("Failed to write temp: {e}")))?;
+
+    // 10分後に残っていたら消す（印刷スプーラ読込後の残留対策）。
+    // スプーラ未読の稀なケースでは印刷失敗になり得るが、残留全文書よりまし。
+    let cleanup_path = temp_pdf.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(600));
+        let _ = std::fs::remove_file(&cleanup_path);
+    });
 
     let pdf_str = temp_pdf
         .to_str()
-        .ok_or_else(|| "Invalid temp path".to_string())?;
+        .ok_or_else(|| NagisaError::from("Invalid temp path".to_string()))?;
 
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .args(["-p", pdf_str])
             .spawn()
-            .map_err(|e| format!("Failed to print: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to print: {e}")))?;
     }
 
     #[cfg(target_os = "windows")]
@@ -855,7 +894,7 @@ pub fn print_pdf(data: &[u8]) -> Result<(), String> {
         std::process::Command::new("cmd")
             .args(["/c", "start", "", "/p", pdf_str])
             .spawn()
-            .map_err(|e| format!("Failed to print: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to print: {e}")))?;
     }
 
     #[cfg(target_os = "linux")]
@@ -863,13 +902,13 @@ pub fn print_pdf(data: &[u8]) -> Result<(), String> {
         std::process::Command::new("lp")
             .arg(pdf_str)
             .spawn()
-            .map_err(|e| format!("Failed to print: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to print: {e}")))?;
     }
 
     Ok(())
 }
 
-pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, String> {
+pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, NagisaError> {
     let page_count = get_page_ids(doc).len();
 
     let mut title = String::new();
@@ -908,8 +947,8 @@ pub fn get_pdf_metadata_from_doc(doc: &Document) -> Result<serde_json::Value, St
     }))
 }
 
-pub fn get_pdf_metadata(data: &[u8]) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn get_pdf_metadata(data: &[u8]) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
     let mut val = get_pdf_metadata_from_doc(&doc)?;
     if let Some(obj) = val.as_object_mut() {
         obj.insert("size".to_string(), serde_json::json!(data.len()));

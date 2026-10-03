@@ -3,6 +3,7 @@ use super::*;
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::io::Write;
 use zip::write::SimpleFileOptions;
+use crate::error::NagisaError;
 
 /// #45 是正: OOXML XML文字列のサニタイザー。
 ///
@@ -22,7 +23,7 @@ fn xml_sanitize(text: &str) -> String {
 
 /// Resolve a caller-supplied 0-based page selection against the document,
 /// returning sorted unique in-range indexes (None ⇒ all pages).
-fn select_pages(total: usize, page_indexes: Option<&[usize]>) -> Result<Vec<usize>, String> {
+fn select_pages(total: usize, page_indexes: Option<&[usize]>) -> Result<Vec<usize>, NagisaError> {
     match page_indexes {
         None => Ok((0..total).collect()),
         Some(list) => {
@@ -43,7 +44,7 @@ fn select_pages(total: usize, page_indexes: Option<&[usize]>) -> Result<Vec<usiz
 fn ocr_text_for_pages(
     data: &[u8],
     candidates: &[usize],
-) -> Result<std::collections::HashMap<usize, String>, String> {
+) -> Result<std::collections::HashMap<usize, String>, NagisaError> {
     let mut out = std::collections::HashMap::new();
     if candidates.is_empty() {
         return Ok(out);
@@ -57,8 +58,8 @@ fn ocr_text_for_pages(
             .unwrap_or(0)
     );
     let tmp = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let run = (|| -> Result<(), String> {
+    std::fs::create_dir_all(&tmp).map_err(|e| NagisaError::from(e.to_string()))?;
+    let run = (|| -> Result<(), NagisaError> {
         // candidates must be sorted to align with pdf_to_images_ex's numeric order.
         let imgs = super::convert::pdf_to_images_ex(
             data,
@@ -68,15 +69,15 @@ fn ocr_text_for_pages(
             Some(candidates),
         )?;
         if imgs.len() != candidates.len() {
-            return Err(format!(
+            return Err(NagisaError::from(format!(
                 "OCR用ページ画像の生成に失敗しました（{}/{}ページ）。pdftoppm(poppler)が必要です。",
                 imgs.len(),
                 candidates.len()
-            ));
+            )));
         }
         for (idx, &p) in candidates.iter().enumerate() {
             let (text, _, _, _) = crate::ocr_engine::run_tesseract(&imgs[idx], "jpn+eng")
-                .map_err(|e| format!("OCRに失敗しました（{}ページ目）: {e}", p + 1))?;
+                .map_err(|e| NagisaError::from(format!("OCRに失敗しました（{}ページ目）: {e}", p + 1)))?;
             if !text.trim().is_empty() {
                 out.insert(p, text);
             }
@@ -259,7 +260,7 @@ fn build_docx_table(blocks: &[crate::pdf_engine::text_block_ops::TextBlock]) -> 
     Some(xml)
 }
 
-pub fn pdf_to_word(data: &[u8], output_path: &str) -> Result<(), String> {
+pub fn pdf_to_word(data: &[u8], output_path: &str) -> Result<(), NagisaError> {
     pdf_to_word_ex(data, output_path, None, false, false, false)
 }
 
@@ -272,8 +273,8 @@ pub fn pdf_to_word_ex(
     keep_images: bool,
     editable_tables: bool,
     run_ocr: bool,
-) -> Result<(), String> {
-    let doc = Document::load_mem(data).map_err(|e| e.to_string())?;
+) -> Result<(), NagisaError> {
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_ids = get_page_ids(&doc);
     let selected = select_pages(page_ids.len(), page_indexes)?;
 
@@ -308,7 +309,7 @@ pub fn pdf_to_word_ex(
 
     // Build genuine Office Open XML (.docx) ZIP structure
     let file = std::fs::File::create(output_path)
-        .map_err(|e| format!("Failed to create output file: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to create output file: {e}")))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -316,7 +317,7 @@ pub fn pdf_to_word_ex(
 
     // 1. [Content_Types].xml
     zip.start_file("[Content_Types].xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -325,20 +326,20 @@ pub fn pdf_to_word_ex(
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>"#;
     zip.write_all(content_types.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 2. _rels/.rels
     zip.start_file("_rels/.rels", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. word/document.xml with intelligent paragraph flow reconstruction
     zip.start_file("word/document.xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let mut doc_xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
@@ -389,7 +390,10 @@ pub fn pdf_to_word_ex(
             let mut paragraphs: Vec<Vec<crate::pdf_engine::text_block_ops::TextBlock>> = Vec::new();
             for block in sorted_blocks {
                 if let Some(last_para) = paragraphs.last_mut() {
-                    let prev_block = last_para.last().unwrap();
+                    let Some(prev_block) = last_para.last() else {
+                        last_para.push(block);
+                        continue;
+                    };
                     let line_pitch = prev_block.y - block.y; // Positive if moving downwards
                     let font_size = prev_block.font_size.max(block.font_size).max(10.0);
                     let prev_text = prev_block.text.trim();
@@ -598,12 +602,12 @@ pub fn pdf_to_word_ex(
     );
 
     zip.write_all(doc_xml.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 4. word/_rels/document.xml.rels + word/media/* (only when images exist)
     if !image_rels.is_empty() {
         zip.start_file("word/_rels/document.xml.rels", options)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NagisaError::from(e.to_string()))?;
         let mut img_rels_xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -617,21 +621,21 @@ pub fn pdf_to_word_ex(
         }
         img_rels_xml.push_str("</Relationships>");
         zip.write_all(img_rels_xml.as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NagisaError::from(e.to_string()))?;
 
         for (name, bytes) in &media {
             zip.start_file(format!("word/media/{name}"), options)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(bytes).map_err(|e| e.to_string())?;
+                .map_err(|e| NagisaError::from(e.to_string()))?;
+            zip.write_all(bytes).map_err(|e| NagisaError::from(e.to_string()))?;
         }
     }
 
     zip.finish()
-        .map_err(|e| format!("Failed to finalize docx zip archive: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to finalize docx zip archive: {e}")))?;
     Ok(())
 }
 
-pub fn pdf_to_excel(data: &[u8], output_path: &str) -> Result<(), String> {
+pub fn pdf_to_excel(data: &[u8], output_path: &str) -> Result<(), NagisaError> {
     pdf_to_excel_ex(data, output_path, None, true, false)
 }
 
@@ -644,8 +648,8 @@ pub fn pdf_to_excel_ex(
     page_indexes: Option<&[usize]>,
     editable_tables: bool,
     run_ocr: bool,
-) -> Result<(), String> {
-    let doc = Document::load_mem(data).map_err(|e| e.to_string())?;
+) -> Result<(), NagisaError> {
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_ids = get_page_ids(&doc);
     let selected = select_pages(page_ids.len(), page_indexes)?;
 
@@ -673,7 +677,7 @@ pub fn pdf_to_excel_ex(
 
     // Build genuine Office Open XML (.xlsx) ZIP structure
     let file = std::fs::File::create(output_path)
-        .map_err(|e| format!("Failed to create output file: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to create output file: {e}")))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -681,7 +685,7 @@ pub fn pdf_to_excel_ex(
 
     // 1. [Content_Types].xml
     zip.start_file("[Content_Types].xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -690,30 +694,30 @@ pub fn pdf_to_excel_ex(
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 </Types>"#;
     zip.write_all(content_types.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 2. _rels/.rels
     zip.start_file("_rels/.rels", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. xl/_rels/workbook.xml.rels
     zip.start_file("xl/_rels/workbook.xml.rels", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let wb_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>"#;
     zip.write_all(wb_rels.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 4. xl/workbook.xml
     zip.start_file("xl/workbook.xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
           xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -722,11 +726,11 @@ pub fn pdf_to_excel_ex(
   </sheets>
 </workbook>"#;
     zip.write_all(workbook.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 5. xl/worksheets/sheet1.xml
     zip.start_file("xl/worksheets/sheet1.xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let mut sheet_xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -915,13 +919,13 @@ pub fn pdf_to_excel_ex(
     );
 
     zip.write_all(sheet_xml.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     zip.finish()
-        .map_err(|e| format!("Failed to finalize xlsx zip archive: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to finalize xlsx zip archive: {e}")))?;
     Ok(())
 }
 
-pub fn pdf_to_powerpoint(data: &[u8], output_path: &str) -> Result<(), String> {
+pub fn pdf_to_powerpoint(data: &[u8], output_path: &str) -> Result<(), NagisaError> {
     pdf_to_powerpoint_ex(data, output_path, None, false)
 }
 
@@ -932,8 +936,8 @@ pub fn pdf_to_powerpoint_ex(
     output_path: &str,
     page_indexes: Option<&[usize]>,
     run_ocr: bool,
-) -> Result<(), String> {
-    let doc = Document::load_mem(data).map_err(|e| e.to_string())?;
+) -> Result<(), NagisaError> {
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_ids = get_page_ids(&doc);
 
     if page_ids.is_empty() {
@@ -949,7 +953,7 @@ pub fn pdf_to_powerpoint_ex(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp).map_err(|e| NagisaError::from(e.to_string()))?;
 
     let selected = select_pages(page_ids.len(), page_indexes)?;
 
@@ -974,7 +978,7 @@ pub fn pdf_to_powerpoint_ex(
             .unwrap_or_default();
 
     let file = std::fs::File::create(output_path)
-        .map_err(|e| format!("Failed to create output file: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to create output file: {e}")))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -984,7 +988,7 @@ pub fn pdf_to_powerpoint_ex(
 
     // 1. [Content_Types].xml
     zip.start_file("[Content_Types].xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let mut content_types = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -1002,20 +1006,20 @@ pub fn pdf_to_powerpoint_ex(
     }
     content_types.push_str("</Types>");
     zip.write_all(content_types.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 2. _rels/.rels
     zip.start_file("_rels/.rels", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| e.to_string())?;
+    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. ppt/_rels/presentation.xml.rels
     zip.start_file("ppt/_rels/presentation.xml.rels", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let mut pres_rels = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -1029,11 +1033,11 @@ pub fn pdf_to_powerpoint_ex(
     }
     pres_rels.push_str("</Relationships>");
     zip.write_all(pres_rels.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 4. ppt/presentation.xml (Standard 16:9 widescreen 12192000 x 6858000 EMUs)
     zip.start_file("ppt/presentation.xml", options)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let mut pres_xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -1057,7 +1061,7 @@ pub fn pdf_to_powerpoint_ex(
 </p:presentation>"#,
     );
     zip.write_all(pres_xml.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 5. Slides and media
     for (slide_idx, &orig_page) in selected.iter().enumerate() {
@@ -1068,8 +1072,8 @@ pub fn pdf_to_powerpoint_ex(
         if let Some(img_path) = rendered_images.get(slide_idx) {
             if let Ok(img_bytes) = std::fs::read(img_path) {
                 zip.start_file(format!("ppt/media/{img_filename}"), options)
-                    .map_err(|e| e.to_string())?;
-                zip.write_all(&img_bytes).map_err(|e| e.to_string())?;
+                    .map_err(|e| NagisaError::from(e.to_string()))?;
+                zip.write_all(&img_bytes).map_err(|e| NagisaError::from(e.to_string()))?;
             }
         }
 
@@ -1078,7 +1082,7 @@ pub fn pdf_to_powerpoint_ex(
             format!("ppt/slides/_rels/slide{slide_num}.xml.rels"),
             options,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| NagisaError::from(e.to_string()))?;
         let mut slide_rel = String::from(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -1092,7 +1096,7 @@ pub fn pdf_to_powerpoint_ex(
         }
         slide_rel.push_str("</Relationships>");
         zip.write_all(slide_rel.as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NagisaError::from(e.to_string()))?;
 
         // Extract text for notes/searchable overlay
         let mut page_text = get_page_text(data, orig_page).unwrap_or_default();
@@ -1121,7 +1125,7 @@ pub fn pdf_to_powerpoint_ex(
 
         // slide{N}.xml
         zip.start_file(format!("ppt/slides/slide{slide_num}.xml"), options)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NagisaError::from(e.to_string()))?;
         let mut slide_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -1204,16 +1208,16 @@ pub fn pdf_to_powerpoint_ex(
 </p:sld>"#,
         );
         zip.write_all(slide_xml.as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| NagisaError::from(e.to_string()))?;
     }
 
     let _ = std::fs::remove_dir_all(&tmp);
     zip.finish()
-        .map_err(|e| format!("Failed to finalize pptx zip archive: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to finalize pptx zip archive: {e}")))?;
     Ok(())
 }
 
-pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<(), String> {
+pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<(), NagisaError> {
     let mut doc = Document::with_version("1.7");
     let mut files = Vec::new();
 
@@ -1224,7 +1228,7 @@ pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into());
 
-        let file_data = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let file_data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let file_size = file_data.len() as i64;
 
         let mut embed_dict = Dictionary::new();
@@ -1352,7 +1356,7 @@ pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| e.to_string())?;
-    std::fs::write(output_path, buf).map_err(|e| e.to_string())?;
+    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }

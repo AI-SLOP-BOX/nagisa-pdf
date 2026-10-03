@@ -1,6 +1,7 @@
-use super::common::{save_doc, OID};
+use super::common::{load_pdf, save_doc, OID};
 use lopdf::{Dictionary, Document, Object};
 use std::collections::{HashMap, HashSet};
+use crate::error::NagisaError;
 
 /// Attributes that can be inherited through intermediate `/Pages` nodes in a PDF Page Tree (ISO 32000-1 §7.7.3.3).
 pub const INHERITABLE_PAGE_ATTRS: &[&[u8]] = &[
@@ -321,7 +322,7 @@ fn remap_and_copy_children(
 /// Ensures each Page's `/Parent` points directly to the newly unified `/Pages` node,
 /// materializes all inherited properties (MediaBox, Resources, Rotate, CropBox, etc.)
 /// onto each page dictionary prior to flattening, and updates `/Count` to match the exact number of pages.
-pub fn rebuild_flat_page_tree(doc: &mut Document, ordered_page_ids: &[OID]) -> Result<(), String> {
+pub fn rebuild_flat_page_tree(doc: &mut Document, ordered_page_ids: &[OID]) -> Result<(), NagisaError> {
     let (_, pages_id) = ensure_catalog_and_pages_root(doc);
 
     // 1. Mandatory rule: Materialize inherited attributes onto each remaining page BEFORE severing the tree
@@ -363,9 +364,9 @@ pub fn rebuild_flat_page_tree(doc: &mut Document, ordered_page_ids: &[OID]) -> R
 /// - Materializes inherited page properties (Resources, MediaBox, CropBox, Rotate)
 /// - Deep copies the complete object graph reachable from each extracted page
 /// - Sets up clean, valid `/Kids` and `/Parent` relationships
-pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, String> {
+pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, NagisaError> {
     let src_doc =
-        Document::load_mem(data).map_err(|e| format!("Failed to load source PDF: {e}"))?;
+        Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to load source PDF: {e}")))?;
     let src_page_ids = get_logical_page_ids(&src_doc);
 
     let mut dest_doc = Document::with_version("1.7");
@@ -397,7 +398,7 @@ pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, S
     }
 
     if dest_page_ids.is_empty() {
-        return Err("No valid pages selected for extraction".to_string());
+        return Err(NagisaError::from("No valid pages selected for extraction".to_string()));
     }
 
     // 5. Finalize flat page tree
@@ -411,7 +412,7 @@ pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, S
 /// - Deep copies each page and its reachable object graph into the unified document
 /// - Constructs a single, clean flat Page Tree where every Page's `/Parent` points to `/Pages`
 /// - Eliminates dangling or circular Pages nodes
-pub fn merge_pdfs_robust(paths: &[String]) -> Result<Vec<u8>, String> {
+pub fn merge_pdfs_robust(paths: &[String]) -> Result<Vec<u8>, NagisaError> {
     if paths.is_empty() {
         return Err("No files to merge".into());
     }
@@ -421,7 +422,7 @@ pub fn merge_pdfs_robust(paths: &[String]) -> Result<Vec<u8>, String> {
     let mut dest_page_ids = Vec::new();
 
     for path in paths {
-        let other_doc = Document::load(path).map_err(|e| format!("Failed to load {path}: {e}"))?;
+        let other_doc = Document::load(path).map_err(|e| NagisaError::from(format!("Failed to load {path}: {e}")))?;
         let other_page_ids = get_logical_page_ids(&other_doc);
 
         let mut id_map = HashMap::new();
@@ -445,7 +446,7 @@ pub fn merge_pdfs_robust(paths: &[String]) -> Result<Vec<u8>, String> {
 }
 
 /// Robust PDF merge from in-memory byte buffers:
-pub fn merge_pdf_buffers_robust(buffers: &[&[u8]]) -> Result<Vec<u8>, String> {
+pub fn merge_pdf_buffers_robust(buffers: &[&[u8]]) -> Result<Vec<u8>, NagisaError> {
     if buffers.is_empty() {
         return Err("No buffers to merge".into());
     }
@@ -455,7 +456,7 @@ pub fn merge_pdf_buffers_robust(buffers: &[&[u8]]) -> Result<Vec<u8>, String> {
     let mut dest_page_ids = Vec::new();
 
     for buf in buffers {
-        let other_doc = Document::load_mem(buf).map_err(|e| format!("Failed to load PDF: {e}"))?;
+        let other_doc = load_pdf(buf)?;
         let other_page_ids = get_logical_page_ids(&other_doc);
 
         let mut id_map = HashMap::new();
@@ -482,22 +483,24 @@ pub fn merge_pdf_buffers_robust(buffers: &[&[u8]]) -> Result<Vec<u8>, String> {
 /// - Resolves logical page IDs across any nested Page Tree
 /// - Removes the requested page
 /// - Flattens and rebuilds the remaining pages with valid `/Parent`, `/Kids`, and `/Count`
-pub fn delete_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn delete_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if page_index >= page_ids.len() {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "Page index {page_index} out of range (total pages: {})",
             page_ids.len()
-        ));
+        )));
     }
 
     if page_ids.len() <= 1 {
-        return Err("Cannot delete the only remaining page in the document".to_string());
+        return Err(NagisaError::from("Cannot delete the only remaining page in the document".to_string()));
     }
 
     // Remove logical page
@@ -519,18 +522,20 @@ pub fn reorder_pages_robust(
     data: &[u8],
     from_index: usize,
     to_index: usize,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if from_index >= page_ids.len() || to_index >= page_ids.len() {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "Page index out of range: from={from_index}, to={to_index}, total={}",
             page_ids.len()
-        ));
+        )));
     }
 
     // Materialize inherited attributes for all pages before restructuring
@@ -558,18 +563,20 @@ pub fn reorder_pages_robust(
 /// - Deep copies its content and resources
 /// - Inserts duplicate right after the original
 /// - Rebuilds flat tree
-pub fn duplicate_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn duplicate_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let mut page_ids = get_logical_page_ids(&doc);
 
     if page_index >= page_ids.len() {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "Page index {page_index} out of range (total pages: {})",
             page_ids.len()
-        ));
+        )));
     }
 
     let src_pid = page_ids[page_index];

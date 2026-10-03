@@ -37,14 +37,12 @@ export function ToolsPanel({
   setRedactReplacement: (v: string) => void
   showToast: (msg: string) => void
   onActivateDrawRedact?: () => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }) {
-  const getCurrentBytes = useCallback(async (): Promise<number[] | null> => {
-    if (docId) {
-      return DocumentService.getSessionBytes(docId)
-    }
-    return pdfData
-  }, [docId, pdfData])
+  const getCurrentBytes = useCallback(
+    (): Promise<number[] | null> => DocumentService.getCurrentBytes(docId, pdfData),
+    [docId, pdfData],
+  )
 
   const [compressQuality, setCompressQuality] = useState(85)
   const [outlineBusy, setOutlineBusy] = useState(false)
@@ -56,11 +54,11 @@ export function ToolsPanel({
     setJsDialogOpen(false)
     if (!script.trim()) return
     try {
-      const bytes = await getCurrentBytes()
-      if (!bytes) return
-      const updated = await invoke<number[]>('embed_javascript', { data: bytes, script })
+      // ネイティブ時は invokeOp がセッション引き当てする（事前DL不要）。
+      // pdfData が null のプレビュー時は投機バイトにフォールバックする。
+      const updated = await DocumentService.invokeOp('embed_javascript', docId, pdfData, { script })
       if (onPdfUpdate) {
-        await onPdfUpdate(updated)
+        await onPdfUpdate(updated, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       }
       showToast('JavaScriptを埋め込みました')
     } catch (err) { showToast(`エラー: ${err}`) }
@@ -72,6 +70,14 @@ export function ToolsPanel({
     try {
       const bytes = await getCurrentBytes()
       if (!bytes) return
+      // 暗号化の有無を先に確認する。unlock_pdf は Encrypt 辞書つき文書を
+      // 破損防止で拒否するため、暗号PDFでは100%エラーになる。
+      // 未暗号なら解除不要、暗号なら試行して正直なエラーを表示する。
+      const encrypted = await DocumentService.isEncrypted(bytes).catch(() => true)
+      if (!encrypted) {
+        showToast('このPDFはパスワード保護されていません')
+        return
+      }
       const unlocked = await invoke<number[]>('unlock_pdf', { data: bytes, password })
       if (onPdfUpdate) {
         await onPdfUpdate(unlocked)
@@ -172,7 +178,7 @@ export function ToolsPanel({
         ＊エリア黒塗りは「ドラッグ黒塗り描画」経由です（固定座標デモボタンは撤去済み）
       </div>
       <AccentBtn onClick={() => exec('redact_text', { searchText: redactSearchText, replacement: redactReplacement })}>
-        テキスト検索＆黒塗り
+        テキスト検索＆置換
       </AccentBtn>
       <AccentBtn onClick={() => exec('redact_text_deep', { searchText: redactSearchText, color: redactColor })} style={{ background: 'var(--red)' }}>
         テキスト完全消去（データ削除）

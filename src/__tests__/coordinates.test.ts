@@ -38,6 +38,15 @@ describe('usePDFCoordinates 座標変換契約 (TextBlock = 下原点)', () => {
     expect(back).toEqual({ x: 100, y: 700, width: 50, height: 20 })
   })
 
+  it('domToPdf は丸めない（float保持・ドリフト防止）', () => {
+    const { result } = renderHook(() => usePDFCoordinates(baseParams))
+    const back = result.current.domToPdf(100.4, 700.6, 50.2, 20.8, 842)
+    expect(back.x).toBeCloseTo(100.4, 5)
+    expect(back.y).toBeCloseTo(120.6, 5)
+    expect(back.width).toBeCloseTo(50.2, 5)
+    expect(back.height).toBeCloseTo(20.8, 5)
+  })
+
   it('PDF下端寄りのブロックはDOMでは画面上部、上端寄りは下部に描画される', () => {
     const { result } = renderHook(() => usePDFCoordinates(baseParams))
     const nearBottom = result.current.pdfToDom(0, 10, 100, 20, 842) // PDF y=10 ≒ 下端

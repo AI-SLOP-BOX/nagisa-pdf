@@ -38,7 +38,7 @@ pub struct OCRResult {
     pub suspects: Vec<OCRSuspect>,
 }
 
-pub fn ocr_files(paths: &[String], language: &str) -> Result<OCRResult, String> {
+pub fn ocr_files(paths: &[String], language: &str) -> Result<OCRResult, NagisaError> {
     let tess_lang = match language {
         "jpn" => "jpn",
         "eng" => "eng",
@@ -169,7 +169,7 @@ pub fn parse_tsv_words(tsv_content: &str) -> (String, f64, Vec<OCRSuspect>, Vec<
 pub fn run_tesseract(
     image_path: &str,
     language: &str,
-) -> Result<(String, f64, Vec<OCRSuspect>, Vec<OCRWordBox>), String> {
+) -> Result<(String, f64, Vec<OCRSuspect>, Vec<OCRWordBox>), NagisaError> {
     // Single tesseract invocation in TSV mode to get text, geometry, and confidence in one pass
     // #42 是正: run_command_with_timeout でハング（DoS）防止
     let output = crate::pdf_engine::common::run_command_with_timeout(
@@ -197,7 +197,7 @@ pub fn run_tesseract(
     })?;
 
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        return Err(NagisaError::from(String::from_utf8_lossy(&output.stderr).to_string()));
     }
 
     let tsv_content = String::from_utf8_lossy(&output.stdout);
@@ -205,6 +205,7 @@ pub fn run_tesseract(
 }
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use crate::error::NagisaError;
 
 pub struct AutoCleanupDir(pub std::path::PathBuf);
 
@@ -216,7 +217,7 @@ impl Drop for AutoCleanupDir {
 
 static OCR_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), String> {
+fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), NagisaError> {
     let count = OCR_TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique_name = format!(
         "nagisa_ocr_{}_{}_{}",
@@ -228,7 +229,7 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Strin
             .unwrap_or(0)
     );
     let dir = std::env::temp_dir().join(unique_name);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| NagisaError::from(format!("Failed to create temp dir: {e}")))?;
     let cleanup_guard = AutoCleanupDir(dir.clone());
 
     let prefix = dir.join("page").to_string_lossy().to_string();
@@ -248,10 +249,10 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Strin
         },
         crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
     )
-    .map_err(|e| format!("Failed to run pdftoppm (install: brew install poppler): {e}"))?;
+    .map_err(|e| NagisaError::from(format!("Failed to run pdftoppm (install: brew install poppler): {e}")))?;
 
     if !cmd.status.success() {
-        return Err(String::from_utf8_lossy(&cmd.stderr).to_string());
+        return Err(NagisaError::from(String::from_utf8_lossy(&cmd.stderr).to_string()));
     }
 
     let mut images = Vec::new();
@@ -267,20 +268,20 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Strin
     Ok((cleanup_guard, images))
 }
 
-pub fn create_epub(text: &str, output_path: &str, title: &str) -> Result<(), String> {
+pub fn create_epub(text: &str, output_path: &str, title: &str) -> Result<(), NagisaError> {
     use epub_builder::EpubBuilder;
     use epub_builder::ZipLibrary;
     use std::fs::File;
 
-    let mut file = File::create(output_path).map_err(|e| format!("Failed to create file: {e}"))?;
+    let mut file = File::create(output_path).map_err(|e| NagisaError::from(format!("Failed to create file: {e}")))?;
 
-    let zip = ZipLibrary::new().map_err(|e| format!("Failed to create zip library: {e}"))?;
+    let zip = ZipLibrary::new().map_err(|e| NagisaError::from(format!("Failed to create zip library: {e}")))?;
     let mut builder =
-        EpubBuilder::new(zip).map_err(|e| format!("Failed to create EPUB builder: {e}"))?;
+        EpubBuilder::new(zip).map_err(|e| NagisaError::from(format!("Failed to create EPUB builder: {e}")))?;
 
     builder
         .metadata("title", title)
-        .map_err(|e| format!("Failed to set metadata: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to set metadata: {e}")))?;
 
     let paragraphs: Vec<&str> = text.split("\n\n").collect();
     let mut chapter_num = 0;
@@ -311,12 +312,12 @@ pub fn create_epub(text: &str, output_path: &str, title: &str) -> Result<(), Str
 
         builder
             .add_content(content)
-            .map_err(|e| format!("Failed to add chapter: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to add chapter: {e}")))?;
     }
 
     builder
         .generate(&mut file)
-        .map_err(|e| format!("Failed to generate EPUB: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to generate EPUB: {e}")))?;
 
     Ok(())
 }
@@ -332,7 +333,7 @@ pub fn create_searchable_pdf(
     original_paths: &[String],
     ocr_text: &str,
     output_path: &str,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     use lopdf::content::{Content, Operation};
     use lopdf::{Dictionary, Document, Object, Stream};
 
@@ -380,7 +381,7 @@ pub fn create_searchable_pdf(
 
     if !original_paths.is_empty() {
         for (page_idx, path) in original_paths.iter().enumerate() {
-            let img = image::open(path).map_err(|e| format!("Failed to open image {path}: {e}"))?;
+            let img = image::open(path).map_err(|e| NagisaError::from(format!("Failed to open image {path}: {e}")))?;
             let rgb = img.to_rgb8();
             let (width, height) = rgb.dimensions();
             let pt_w = (width as f32 * 72.0 / 300.0).max(1.0);
@@ -388,7 +389,7 @@ pub fn create_searchable_pdf(
 
             let mut jpeg_buf = std::io::Cursor::new(Vec::new());
             img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
-                .map_err(|e| format!("Failed to encode image to JPEG: {e}"))?;
+                .map_err(|e| NagisaError::from(format!("Failed to encode image to JPEG: {e}")))?;
             let jpeg_bytes = jpeg_buf.into_inner();
 
             let mut img_dict = Dictionary::new();
@@ -521,7 +522,7 @@ pub fn create_searchable_pdf(
             }
 
             let content = Content { operations };
-            let content_bytes = content.encode().map_err(|e| e.to_string())?;
+            let content_bytes = content.encode().map_err(|e| NagisaError::from(e.to_string()))?;
             let content_id = doc.add_object(Object::Stream(Stream::new(
                 Dictionary::new(),
                 content_bytes,
@@ -604,7 +605,7 @@ pub fn create_searchable_pdf(
             }
 
             let content = Content { operations };
-            let content_bytes = content.encode().map_err(|e| e.to_string())?;
+            let content_bytes = content.encode().map_err(|e| NagisaError::from(e.to_string()))?;
             let content_id = doc.add_object(Object::Stream(Stream::new(
                 Dictionary::new(),
                 content_bytes,
@@ -649,13 +650,13 @@ pub fn create_searchable_pdf(
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| e.to_string())?;
-    std::fs::write(output_path, &buf).map_err(|e| format!("Failed to write file: {e}"))?;
+    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    std::fs::write(output_path, &buf).map_err(|e| NagisaError::from(format!("Failed to write file: {e}")))?;
 
     Ok(())
 }
 
-pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLineBlock>, String> {
+pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLineBlock>, NagisaError> {
     use std::io::Write;
 
     let tess_lang = match language {
@@ -685,17 +686,19 @@ pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLin
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn tesseract: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to spawn tesseract: {e}")))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(image_bytes)
-            .map_err(|e| format!("Failed to write to tesseract stdin: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("Failed to write to tesseract stdin: {e}")))?;
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to wait for tesseract output: {e}"))?;
+    let output = crate::pdf_engine::common::wait_child_with_timeout(
+        child,
+        crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
+    )
+    .map_err(|e| NagisaError::from(format!("Failed to wait for tesseract output: {e}")))?;
 
     let tsv_content = String::from_utf8_lossy(&output.stdout);
 
@@ -827,18 +830,18 @@ pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLin
 }
 
 /// Page height in points (needed to flip OCR top-down coords to PDF bottom-up).
-fn page_height_pt(data: &[u8], page_index: usize) -> Result<f64, String> {
-    let doc = lopdf::Document::load_mem(data).map_err(|e| e.to_string())?;
+fn page_height_pt(data: &[u8], page_index: usize) -> Result<f64, NagisaError> {
+    let doc = lopdf::Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_ids = crate::pdf_engine::get_page_ids(&doc);
     let page_id = *page_ids
         .get(page_index)
-        .ok_or_else(|| "Page index out of range".to_string())?;
+        .ok_or_else(|| NagisaError::from("Page index out of range".to_string()))?;
     let dict = doc
         .objects
         .get(&page_id)
-        .ok_or_else(|| "Page object missing".to_string())?
+        .ok_or_else(|| NagisaError::from("Page object missing".to_string()))?
         .as_dict()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| NagisaError::from(e.to_string()))?
         .clone();
     let mb: Vec<lopdf::Object> = dict
         .get(b"MediaBox")
@@ -865,27 +868,39 @@ pub fn deep_redact_scanned_all(
     search_text: &str,
     language: &str,
     color: &str,
-) -> Result<(Vec<u8>, usize), String> {
+) -> Result<(Vec<u8>, usize), NagisaError> {
     if search_text.trim().is_empty() {
-        return Err("検索語が空です".to_string());
+        return Err(NagisaError::from("検索語が空です".to_string()));
     }
     const DPI: u32 = 200;
     let scale = DPI as f64 / 72.0;
     let needle = search_text.to_lowercase();
-    let doc = lopdf::Document::load_mem(data).map_err(|e| e.to_string())?;
+    let doc = lopdf::Document::load_mem(data).map_err(|e| NagisaError::from(e.to_string()))?;
     let page_count = crate::pdf_engine::get_page_ids(&doc).len();
     drop(doc);
 
     let mut current = data.to_vec();
     let mut hits = 0usize;
+    // fail-closed: レンダリング/OCRに失敗したページを黙って飛ばすと、
+    // 残存する機密データを「消去済み」と誤認させる。失敗ページを記録し、
+    // 最後に正直なエラーで全体を中止する（部分的成功の偽装を防止）。
+    let mut failed_pages: Vec<usize> = Vec::new();
     for page_index in 0..page_count {
         let png = match crate::pdf_engine::render_page_to_png(&current, page_index, DPI) {
             Ok(p) => p,
-            Err(_) => continue,
+            Err(e) => {
+                failed_pages.push(page_index);
+                eprintln!("page {} render failed, will abort: {e}", page_index + 1);
+                continue;
+            }
         };
         let blocks = match ocr_image_blocks(&png, language) {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(e) => {
+                failed_pages.push(page_index);
+                eprintln!("page {} OCR failed, will abort: {e}", page_index + 1);
+                continue;
+            }
         };
         let page_h = page_height_pt(&current, page_index)?;
         for b in &blocks {
@@ -908,11 +923,21 @@ pub fn deep_redact_scanned_all(
             hits += 1;
         }
     }
+    if !failed_pages.is_empty() {
+        let pages = failed_pages
+            .iter()
+            .map(|i| (i + 1).to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(NagisaError::from(format!(
+            "ページ {pages} のレンダリング/OCRに失敗したため中断しました。             部分的な消去結果は返しません（{hits}件は検出済みでしたが未確定です）。             スキャン品質・言語設定・外部ツールを確認してください。"
+        )));
+    }
     if hits == 0 {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "OCR で '{}' を含む行を検出しませんでした（スキャン品質・言語設定を確認してください）",
             search_text
-        ));
+        )));
     }
     Ok((current, hits))
 }

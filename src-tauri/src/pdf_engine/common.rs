@@ -1,4 +1,5 @@
 use lopdf::{Dictionary, Document, Object, Stream};
+use crate::error::NagisaError;
 
 pub type OID = (u32, u16);
 
@@ -22,57 +23,148 @@ pub fn find_tool_command(name: &str) -> std::process::Command {
 /// `cmd.output()` はブロッキングかつタイムアウトがないため、
 /// 細工されたPDFでプロセスが無限待機するDoS脆弱性がある。
 /// 本関数では子プロセスを spawn し `timeout_secs` 以内に完了しなければ
-/// 強制 kill して Err を返す。
+/// ハンドル経由で強制 kill して Err を返す。
 pub fn run_command_with_timeout(
     mut cmd: std::process::Command,
     timeout_secs: u64,
-) -> Result<std::process::Output, String> {
+) -> Result<std::process::Output, NagisaError> {
     let child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn process: {e}"))?;
-
-    let child_id = child.id();
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let (tx, rx) = std::sync::mpsc::channel::<Result<std::process::Output, std::io::Error>>();
-
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(format!("Process I/O error: {e}")),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            // タイムアウト: プラットフォーム別の強制終了
-            #[cfg(unix)]
-            {
-                // safety: kill(2) はスレッドセーフな POSIX syscall
-                unsafe {
-                    libc::kill(child_id as i32, libc::SIGKILL);
-                }
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &child_id.to_string()])
-                    .output();
-            }
-            Err(format!(
-                "External command timed out after {timeout_secs}s (PID {child_id}). \
-                 The input may be malformed or excessively large."
-            ))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err("Process thread disconnected unexpectedly".to_string())
-        }
-    }
+        .map_err(|e| NagisaError::from(format!("Failed to spawn process: {e}")))?;
+    wait_child_with_timeout(child, timeout_secs)
 }
 
 /// 外部コマンドのデフォルトタイムアウト（秒）。
 /// 悪意のあるPDFによる外部プロセスのハング（DoS）を防ぐ。
 pub const EXTERNAL_CMD_TIMEOUT_SECS: u64 = 120;
+
+/// PDFバイト列をパースする単一入口。失敗は構造化 `PdfParse` エラーになる。
+/// 各所の `Document::load_mem(..).map_err(|e| NagisaError::from(format!(..)))?`（`General` 埋没）
+/// をこれに置換し、構文破損と一般失敗の判別を可能にする。
+/// ページ範囲外エラーを構造化 `InvalidParameter` で生成する。
+/// フロントは専用の範囲外メッセージに変換する（素朴な General 化での文言退行を防止）。
+pub fn page_range_err(page_index: usize, total_pages: usize) -> crate::error::NagisaError {
+    crate::error::NagisaError::InvalidParameter(format!(
+        "Page index {page_index} out of range (total pages: {total_pages})"
+    ))
+}
+
+pub fn load_pdf(data: &[u8]) -> Result<Document, crate::error::NagisaError> {
+    Document::load_mem(data).map_err(|e| {
+        crate::error::NagisaError::PdfParse(format!("Failed to load PDF: {e}"))
+    })
+}
+
+/// True when an image XObject may be destructively re-encoded to JPEG:
+/// no transparency companions (/SMask, /Mask) and no print color spaces
+/// (DeviceCMYK, Separation) that lossy RGB recompression would destroy.
+/// Single source of truth shared by `downsample_images` (print_prod) and
+/// `compress_pdf_quality` (convert); previously duplicated with the latter
+/// missing the transparency guard.
+pub fn image_safe_for_lossy_recompress(dict: &Dictionary) -> bool {
+    if dict.has(b"SMask") || dict.has(b"Mask") {
+        return false;
+    }
+    if let Ok(Object::Name(name)) = dict.get(b"ColorSpace") {
+        if name == b"DeviceCMYK" || name == b"Separation" {
+            return false;
+        }
+    }
+    true
+}
+
+/// Composite alpha onto white for JPEG encoding (which has no alpha channel).
+/// A direct `to_rgb8()` turns transparent pixels black; shared by
+/// `images_to_pdf` and `compress_pdf_quality`.
+pub fn flatten_alpha_to_white(img: &image::DynamicImage) -> image::RgbImage {
+    if !img.color().has_alpha() {
+        return img.to_rgb8();
+    }
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let mut flat = image::RgbImage::new(w, h);
+    for (x, y, p) in rgba.enumerate_pixels() {
+        let a = f32::from(p[3]) / 255.0;
+        flat.put_pixel(
+            x,
+            y,
+            image::Rgb([
+                (f32::from(p[0]) * a + 255.0 * (1.0 - a)) as u8,
+                (f32::from(p[1]) * a + 255.0 * (1.0 - a)) as u8,
+                (f32::from(p[2]) * a + 255.0 * (1.0 - a)) as u8,
+            ]),
+        );
+    }
+    flat
+}
+
+/// 既に spawn 済みの子プロセスをタイムアウト付きで待機する。
+/// stdin 書き込み後に結果回収する経路（tesseract / openssl等）用。
+///
+/// 設計:
+/// - パイプは読取スレッドで draining するため、多弁な子がパイプ満杯で
+///   block して誤タイムアウトになることはない。
+/// - 完了ポーリングは `try_wait` のみ。待機スレッドは作らない。
+/// - kill は `Child` ハンドル経由（PID再利用競合なし・taskkill不要）。
+/// - kill 後は短い猶予で reap を試み、呼出側を無期限 block させない。
+///   kill が効かない病理的ケースでのみ読取スレッドが残留し得る。
+pub fn wait_child_with_timeout(
+    mut child: std::process::Child,
+    timeout_secs: u64,
+) -> Result<std::process::Output, NagisaError> {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    // パイプ詰まり deadlock 防止の draining 読取。子終了で EOF し即時完了する。
+    fn drain<T: std::io::Read + Send + 'static>(
+        mut io: T,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = io.read_to_end(&mut buf);
+            buf
+        })
+    }
+    let out_handle = stdout.map(drain);
+    let err_handle = stderr.map(drain);
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|e| NagisaError::from(format!("Process wait error: {e}")))?
+        {
+            Some(status) => break status,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    // 猶予付き reap: ゾンビ化を防ぐが呼出側は止めない
+                    let grace = Instant::now() + Duration::from_secs(5);
+                    while child.try_wait().ok().flatten().is_none() && Instant::now() < grace {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    return Err(NagisaError::from(format!(
+                        "External command timed out after {timeout_secs}s. \
+                         The input may be malformed or excessively large."
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    // 子の終了でパイプは EOF するため読取は即時完了する
+    let stdout = out_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let stderr = err_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
 
 /// Encode text string according to ISO 32000-1 §7.9.2.2.
 /// If all characters are ASCII (<= 0x7F), returns raw bytes.
@@ -122,11 +214,11 @@ pub(crate) fn append_page_content(
     doc: &mut Document,
     page_id: OID,
     new_content_id: OID,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     let page_obj = doc
         .objects
         .get_mut(&page_id)
-        .ok_or_else(|| "Page object not found".to_string())?;
+        .ok_or_else(|| NagisaError::from("Page object not found".to_string()))?;
     let page_dict = page_obj
         .as_dict_mut()
         .map_err(|_| "Page is not a dictionary".to_string())?;
@@ -215,10 +307,10 @@ pub(crate) fn resolve_page_resources(doc: &Document, page_id: OID) -> Dictionary
     Dictionary::new()
 }
 
-pub(crate) fn save_doc(doc: &mut Document) -> Result<Vec<u8>, String> {
+pub(crate) fn save_doc(doc: &mut Document) -> Result<Vec<u8>, NagisaError> {
     let mut buf = Vec::new();
     doc.save_to(&mut buf)
-        .map_err(|e| format!("Failed to save: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to save: {e}")))?;
     Ok(buf)
 }
 
@@ -247,6 +339,36 @@ pub(crate) fn get_page_dimensions(doc: &Document, page_id: OID) -> (f32, f32) {
         }
     }
     (595.0, 842.0)
+}
+
+/// ページの /Rotate（継承解決・正規化済み、{0,90,180,270}）を返す。
+/// 存在しない・不正な値は 0 とみなす（ISO 32000-1 §7.7.3.3 継承対応）。
+pub fn get_page_rotation(doc: &Document, page_id: OID) -> i32 {
+    let attrs = super::page_tree::materialize_inherited_page_attrs(doc, page_id);
+    let raw = attrs
+        .get(b"Rotate")
+        .ok()
+        .and_then(|o| match o {
+            Object::Integer(v) => Some(*v),
+            Object::Real(v) => Some(*v as i64),
+            _ => None,
+        })
+        .unwrap_or(0);
+    ((raw % 360 + 360) % 360) as i32
+}
+
+/// 表示用ビューポート（視覚寸法＋回転角）。90/270°では縦横が入れ替わる。
+/// レンダラ（pdftoppm / PDF.js）は回転適用済み画素を返すため、オーバーレイの
+/// 基準寸法は MediaBox ではなくこちらを使う。幾何計算用には
+/// `get_page_dimensions`（非回転のまま）を使い分けること。
+pub fn get_page_viewport(doc: &Document, page_id: OID) -> (f32, f32, i32) {
+    let (w, h) = get_page_dimensions(doc, page_id);
+    let r = get_page_rotation(doc, page_id);
+    if r == 90 || r == 270 {
+        (h, w, r)
+    } else {
+        (w, h, r)
+    }
 }
 
 #[allow(dead_code)]
@@ -344,23 +466,25 @@ pub(crate) fn ensure_page_root(doc: &mut Document) -> OID {
     pages_id
 }
 
-pub fn merge_pdfs(paths: &[String]) -> Result<Vec<u8>, String> {
+pub fn merge_pdfs(paths: &[String]) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::merge_pdfs_robust(paths)
 }
 
-pub fn delete_page_in_doc(doc: &mut Document, page_index: usize) -> Result<(), String> {
+pub fn delete_page_in_doc(doc: &mut Document, page_index: usize) -> Result<(), NagisaError> {
     if super::security::doc_has_cryptographic_signatures(doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let mut page_ids = super::page_tree::get_logical_page_ids(doc);
     if page_index >= page_ids.len() {
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "Page index {page_index} out of range (total pages: {})",
             page_ids.len()
-        ));
+        )));
     }
     if page_ids.len() <= 1 {
-        return Err("Cannot delete the only remaining page in the document".to_string());
+        return Err(NagisaError::from("Cannot delete the only remaining page in the document".to_string()));
     }
     let removed_pid = page_ids.remove(page_index);
     doc.objects.remove(&removed_pid);
@@ -369,7 +493,7 @@ pub fn delete_page_in_doc(doc: &mut Document, page_index: usize) -> Result<(), S
     Ok(())
 }
 
-pub fn delete_page(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
+pub fn delete_page(data: &[u8], page_index: usize) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::delete_page_robust(data, page_index)
 }
 
@@ -377,13 +501,15 @@ pub fn rotate_page_in_doc(
     doc: &mut Document,
     page_index: usize,
     degrees: i32,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     if super::security::doc_has_cryptographic_signatures(doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = super::page_tree::get_logical_page_ids(doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
     let page_id = page_ids[page_index];
     if let Some(Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&page_id) {
@@ -397,24 +523,26 @@ pub fn rotate_page_in_doc(
     Ok(())
 }
 
-pub fn rotate_page(data: &[u8], page_index: usize, degrees: i32) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn rotate_page(data: &[u8], page_index: usize, degrees: i32) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     rotate_page_in_doc(&mut doc, page_index, degrees)?;
     save_doc(&mut doc)
 }
 
-pub fn reorder_pages(data: &[u8], from_index: usize, to_index: usize) -> Result<Vec<u8>, String> {
+pub fn reorder_pages(data: &[u8], from_index: usize, to_index: usize) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::reorder_pages_robust(data, from_index, to_index)
 }
 
-pub fn extract_pages(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, String> {
+pub fn extract_pages(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::extract_pages_robust(data, indices)
 }
 
-pub fn duplicate_page(data: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
+pub fn duplicate_page(data: &[u8], page_index: usize) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::duplicate_page_robust(data, page_index)
 }
 
@@ -426,14 +554,16 @@ pub fn add_text(
     y: f64,
     size: f64,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -531,7 +661,7 @@ pub fn add_text(
     let content = lopdf::content::Content { operations };
     let content_bytes = content
         .encode()
-        .map_err(|e| format!("Failed to encode content: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to encode content: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -542,7 +672,7 @@ pub fn add_text(
     save_doc(&mut doc)
 }
 
-pub fn create_blank_pdf(width: f64, height: f64, page_count: usize) -> Result<Vec<u8>, String> {
+pub fn create_blank_pdf(width: f64, height: f64, page_count: usize) -> Result<Vec<u8>, NagisaError> {
     let mut doc = Document::with_version("1.7");
 
     let mut pages_dict = Dictionary::new();
@@ -590,18 +720,20 @@ pub fn add_image_to_page(
     y: f64,
     width: f64,
     height: f64,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     if super::security::doc_has_cryptographic_signatures(&doc) {
-        return Err(super::security::SIGNED_PDF_MUTATION_ERROR.to_string());
+        return Err(NagisaError::SignedPdfMutationBlocked(
+            super::security::SIGNED_PDF_MUTATION_ERROR.to_string(),
+        ));
     }
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let img =
-        image::load_from_memory(image_data).map_err(|e| format!("Failed to decode image: {e}"))?;
+        image::load_from_memory(image_data).map_err(|e| NagisaError::from(format!("Failed to decode image: {e}")))?;
     let rgb = img.to_rgb8();
     let img_width = rgb.width();
     let img_height = rgb.height();
@@ -617,7 +749,7 @@ pub fn add_image_to_page(
 
     let mut jpg_buf = std::io::Cursor::new(Vec::new());
     img.write_to(&mut jpg_buf, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("Failed to encode JPEG: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to encode JPEG: {e}")))?;
     let jpg_bytes = jpg_buf.into_inner();
 
     let stream = Stream::new(img_dict, jpg_bytes);
@@ -667,7 +799,7 @@ pub fn add_image_to_page(
     let content = lopdf::content::Content { operations };
     let content_bytes = content
         .encode()
-        .map_err(|e| format!("Failed to encode: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Failed to encode: {e}")))?;
 
     let mut content_stream = Stream::new(Dictionary::new(), content_bytes);
     content_stream
@@ -687,11 +819,11 @@ pub fn crop_page(
     y: f64,
     width: f64,
     height: f64,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
     let page_id = page_ids[page_index];
     if let Some(Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&page_id) {
@@ -706,4 +838,56 @@ pub fn crop_page(
         );
     }
     save_doc(&mut doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn wait_child_returns_output_on_success() {
+        let child = std::process::Command::new("echo")
+            .arg("hello")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn echo");
+        let out = wait_child_with_timeout(child, 10).expect("echo completes");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn wait_child_kills_on_timeout_without_hanging() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let start = std::time::Instant::now();
+        let err = wait_child_with_timeout(child, 1).unwrap_err();
+        // タイムアウトは速やかに返る（kill+5秒猶予以内）かつ分類はTimeout相当
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        assert!(err.message().contains("timed out"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_captures_large_stdout_without_deadlock() {
+        // パイプ満杯（64KB超）でも draining 読取で詰まらないこと
+        let output = run_command_with_timeout(
+            {
+                let mut c = std::process::Command::new("sh");
+                c.args(["-c", "yes | head -c 200000"]);
+                c
+            },
+            15,
+        )
+        .expect("large output completes");
+        assert!(output.status.success());
+        assert!(output.stdout.len() >= 200000);
+    }
 }

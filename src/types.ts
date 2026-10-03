@@ -135,6 +135,7 @@ export type NagisaBackendErrorType =
   | 'PasswordRequired'
   | 'InvalidPassword'
   | 'SignedPdfMutationBlocked'
+  | 'SessionNotFound'
   | 'ExternalToolMissing'
   | 'ExternalProcessError'
   | 'Timeout'

@@ -1,10 +1,11 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Object};
+use crate::error::NagisaError;
 
 // ===== ACCESSIBILITY CHECK =====
 
-pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, String> {
-    let doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, NagisaError> {
+    let doc = load_pdf(data)?;
 
     let page_ids = get_page_ids(&doc);
     let mut issues = Vec::new();
@@ -88,11 +89,16 @@ pub fn check_accessibility(data: &[u8]) -> Result<serde_json::Value, String> {
                 .and_then(|o| o.as_reference())
             {
                 let mut struct_queue = vec![struct_tree_ref];
+                // 循環 /K 参照を持つ細工PDFでの無限ループを遮断
+                let mut struct_visited = std::collections::HashSet::new();
                 let mut figures_without_alt = 0;
                 let mut table_element_count = 0;
                 let mut table_rows_found = 0;
 
                 while let Some(elem_id) = struct_queue.pop() {
+                    if !struct_visited.insert(elem_id) {
+                        continue;
+                    }
                     if let Some(Object::Dictionary(ref elem_dict)) = doc.objects.get(&elem_id) {
                         let struct_type = elem_dict
                             .get(b"S")
@@ -191,8 +197,8 @@ pub fn fix_accessibility_issues(
     data: &[u8],
     default_title: &str,
     default_lang: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
 
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         Ok(id) => id,

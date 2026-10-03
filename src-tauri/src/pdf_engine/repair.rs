@@ -1,12 +1,13 @@
 use super::common::*;
 use lopdf::{Dictionary, Document, Object};
+use crate::error::NagisaError;
 
 /// Repair corrupted, truncated, or broken-XRef PDF documents.
 /// Uses a fallback heuristic salvage approach:
 /// Scans the raw binary byte stream for `N M obj ... endobj` patterns,
 /// extracts surviving objects, reconstructs a healthy Catalog/Pages tree,
 /// and writes a pristine cross-reference table and trailer.
-pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     // 1. Try standard load first. If successful and valid, re-save with clean cross-references.
     if let Ok(mut doc) = Document::load_mem(data) {
         if !doc.get_pages().is_empty() {
@@ -75,7 +76,7 @@ pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     if salvaged_doc.objects.is_empty() {
-        return Err("No recoverable PDF objects could be salvaged from the file".to_string());
+        return Err(NagisaError::from("No recoverable PDF objects could be salvaged from the file".to_string()));
     }
 
     // 3. Reconstruct Pages tree if broken or missing

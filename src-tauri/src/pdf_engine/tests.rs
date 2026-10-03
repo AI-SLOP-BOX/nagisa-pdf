@@ -155,6 +155,873 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_deep_redact_consecutive_tj_advances_position() {
+        // BT / Tm(100,500) / (Hello)Tj / (Secret)Tj / ET:
+        // 旧実装は現在位置を進めず両Tjを同一座標と判定した。
+        // 修正後は2つ目のTj原点が前進し、矩形選択で個別に消去できる。
+        fn fixture() -> Vec<u8> {
+            let mut doc = Document::with_version("1.7");
+            let mut font_dict = Dictionary::new();
+            font_dict.set("Type", Object::Name(b"Font".to_vec()));
+            font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+            font_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+            let font_id = doc.add_object(Object::Dictionary(font_dict));
+            let mut fonts = Dictionary::new();
+            fonts.set("F1", Object::Reference(font_id));
+            let mut resources = Dictionary::new();
+            resources.set("Font", Object::Dictionary(fonts));
+            let content = "BT /F1 12 Tf 1 0 0 1 100 500 Tm (Hello) Tj (Secret) Tj ET";
+            let content_id = doc.add_object(Object::Stream(Stream::new(
+                Dictionary::new(),
+                content.as_bytes().to_vec(),
+            )));
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(595),
+                    Object::Integer(842),
+                ]),
+            );
+            page.set("Resources", Object::Dictionary(resources));
+            page.set("Contents", Object::Reference(content_id));
+            let page_id = doc.add_object(Object::Dictionary(page));
+            let mut pages = Dictionary::new();
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+            let pages_id = doc.add_object(Object::Dictionary(pages));
+            if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+                p.set("Parent", Object::Reference(pages_id));
+            }
+            let mut catalog = Dictionary::new();
+            catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+            catalog.set("Pages", Object::Reference(pages_id));
+            let cat_id = doc.add_object(Object::Dictionary(catalog));
+            doc.trailer.set("Root", Object::Reference(cat_id));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).expect("save fixture");
+            out
+        }
+        fn collect_tj(pdf: &[u8]) -> String {
+            let doc = Document::load_mem(pdf).unwrap();
+            let mut texts = Vec::new();
+            for (_, obj) in doc.objects.iter() {
+                if let Object::Stream(s) = obj {
+                    let bytes = s
+                        .decompressed_content()
+                        .unwrap_or_else(|_| s.content.clone());
+                    if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                        for op in c.operations {
+                            if op.operator == "Tj" {
+                                if let Some(Object::String(b, _)) = op.operands.first() {
+                                    texts.push(String::from_utf8_lossy(b).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            texts.join("|")
+        }
+        let buf = fixture();
+        let before = collect_tj(&buf);
+        assert!(
+            before.contains("Hello") && before.contains("Secret"),
+            "fixture前提: {before}"
+        );
+        // Hello終端は実測で約126.5。境界スライス重なりは遵守方向で除去される
+        // ため、矩形は明確な余白を取って配置する (x=135 -> Secretのみ消去)。
+        let out = deep_redact(&buf, 0, 135.0, 490.0, 50.0, 30.0, "#000000").expect("deep redact");
+        let joined = collect_tj(&out);
+        assert!(joined.contains("Hello"), "Helloは残るべき: {joined}");
+        assert!(!joined.contains("Secret"), "Secretは消去されるべき: {joined}");
+    }
+
+    #[test]
+    fn test_move_text_block_preserves_rotation_matrix() {
+        // 回転 Tm (0 1 -1 0 = 90度) のブロックを移動しても a/b/c/d が残ること。
+        // 旧実装は identity 行列で上書きし回転を失っていた。
+        fn fixture(content: &str) -> Vec<u8> {
+            let mut doc = Document::with_version("1.7");
+            let mut font_dict = Dictionary::new();
+            font_dict.set("Type", Object::Name(b"Font".to_vec()));
+            font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+            font_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+            let font_id = doc.add_object(Object::Dictionary(font_dict));
+            let mut fonts = Dictionary::new();
+            fonts.set("F1", Object::Reference(font_id));
+            let mut resources = Dictionary::new();
+            resources.set("Font", Object::Dictionary(fonts));
+            let content_id = doc.add_object(Object::Stream(Stream::new(
+                Dictionary::new(),
+                content.as_bytes().to_vec(),
+            )));
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(595),
+                    Object::Integer(842),
+                ]),
+            );
+            page.set("Resources", Object::Dictionary(resources));
+            page.set("Contents", Object::Reference(content_id));
+            let page_id = doc.add_object(Object::Dictionary(page));
+            let mut pages = Dictionary::new();
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+            let pages_id = doc.add_object(Object::Dictionary(pages));
+            if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+                p.set("Parent", Object::Reference(pages_id));
+            }
+            let mut catalog = Dictionary::new();
+            catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+            catalog.set("Pages", Object::Reference(pages_id));
+            let cat_id = doc.add_object(Object::Dictionary(catalog));
+            doc.trailer.set("Root", Object::Reference(cat_id));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).expect("save fixture");
+            out
+        }
+        let buf = fixture("BT /F1 12 Tf 0 1 -1 0 100 500 Tm (Vertical) Tj ET");
+        let out = move_text_block(&buf, 0, 0, 200.0, 600.0).expect("move");
+        let doc = Document::load_mem(&out).unwrap();
+        let mut found_tm = None;
+        let mut texts = Vec::new();
+        for (_, obj) in doc.objects.iter() {
+            if let Object::Stream(s) = obj {
+                let bytes = s
+                    .decompressed_content()
+                    .unwrap_or_else(|_| s.content.clone());
+                if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                    for op in c.operations {
+                        if op.operator == "Tm" && op.operands.len() >= 6 {
+                            let n = |o: &Object| -> f32 {
+                                match o {
+                                    Object::Real(v) => *v,
+                                    Object::Integer(v) => *v as f32,
+                                    _ => 999.0,
+                                }
+                            };
+                            found_tm = Some((
+                                n(&op.operands[0]),
+                                n(&op.operands[1]),
+                                n(&op.operands[2]),
+                                n(&op.operands[3]),
+                                n(&op.operands[4]),
+                                n(&op.operands[5]),
+                            ));
+                        }
+                        if op.operator == "Tj" {
+                            if let Some(Object::String(b, _)) = op.operands.first() {
+                                texts.push(String::from_utf8_lossy(b).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (a, b, c, d, e, f) = found_tm.expect("Tm must survive the move");
+        assert!(
+            a.abs() < 1e-6 && (b - 1.0).abs() < 1e-6 && (c + 1.0).abs() < 1e-6 && d.abs() < 1e-6,
+            "回転成分 a/b/c/d を保持すべき: {a} {b} {c} {d}"
+        );
+        assert!(
+            (e - 200.0).abs() < 1e-6 && (f - 600.0).abs() < 1e-6,
+            "平行移動成分のみ更新すべき: {e} {f}"
+        );
+        assert!(
+            texts.join("").contains("Vertical"),
+            "テキストは保持すべき: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn test_text_block_width_uses_real_font_widths() {
+        // /Widths=300 一律の狭幅フォントで "Hello"(12pt) は実幅 18pt。
+        // ヒューリスティクス(約33pt)ではなく実測に近い値を要求する。
+        let mut doc = Document::with_version("1.7");
+        let widths = Object::Array(vec![Object::Integer(300); 224]);
+        let widths_id = doc.add_object(widths);
+        let mut font_dict = Dictionary::new();
+        font_dict.set("Type", Object::Name(b"Font".to_vec()));
+        font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+        font_dict.set("BaseFont", Object::Name(b"Courier".to_vec()));
+        font_dict.set("FirstChar", Object::Integer(32));
+        font_dict.set("LastChar", Object::Integer(255));
+        font_dict.set("Widths", Object::Reference(widths_id));
+        let font_id = doc.add_object(Object::Dictionary(font_dict));
+        let mut fonts = Dictionary::new();
+        fonts.set("F1", Object::Reference(font_id));
+        let mut resources = Dictionary::new();
+        resources.set("Font", Object::Dictionary(fonts));
+        let content = "BT /F1 12 Tf 100 500 Td (Hello) Tj ET";
+        let content_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            content.as_bytes().to_vec(),
+        )));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(595),
+                Object::Integer(842),
+            ]),
+        );
+        page.set("Resources", Object::Dictionary(resources));
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let blocks = get_text_blocks_from_doc(&doc, 0).expect("blocks");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "Hello");
+        let w = blocks[0].width;
+        assert!(
+            (w - 18.0).abs() < 2.0,
+            "実幅18ptに近いべき（ヒューリスティクスは約33pt）: {w}"
+        );
+    }
+
+    #[test]
+    fn test_char_width_uses_embedded_ipaex_metrics() {
+        // '、' は旧固定係数 0.65 (7.8pt) ではなく IPAex 実幅 1000/1000em (12.0pt)。
+        let w = get_char_metric_width('\u{3001}', 12.0);
+        assert!(
+            (w - 12.0).abs() < 0.5,
+            "CJK約物は実フォント幅を使うべき: {w}"
+        );
+        // ASCII（Helvetica出力）は従来ヒューリスティクスを維持
+        let wi = get_char_metric_width('i', 12.0);
+        assert!(
+            (wi - 12.0 * 0.28).abs() < 1e-6,
+            "ASCII係数は不変: {wi}"
+        );
+        let wa = get_char_metric_width('あ', 10.0);
+        assert!((wa - 10.0).abs() < 0.5, "全角かな実幅: {wa}");
+    }
+
+    #[test]
+    fn test_edit_text_leaves_unmatched_tj_bytes_intact() {
+        // 検索対象外の TJ 文字列（WinAnsi 0xE9=é含む）はバイト同一で残るべき。
+        // 旧実装は無条件に from_utf8_lossy 再エンコードし 0xE9 を U+FFFD 化した。
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
+        // [(caf\xe9) 0 (late) 0 (XYZ)] TJ — バイナリ組み立てで 0xE9 を埋め込む
+        let mut ops: Vec<u8> = b"BT /F1 12 Tf 100 700 Td [".to_vec();
+        ops.extend_from_slice(b"(caf\xe9) 0 (late) 0 (XYZ)] TJ ET");
+        let content_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            ops,
+        )));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set("Parent", Object::Reference(pages_id));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(595),
+                Object::Integer(842),
+            ]),
+        );
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        if let Some(Object::Dictionary(pages)) = doc.objects.get_mut(&pages_id) {
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save fixture");
+
+        let out = edit_text(&buf, 0, "XYZ", "ABC", "", 0.0, "").expect("edit");
+        let doc2 = Document::load_mem(&out).unwrap();
+        let mut strings: Vec<Vec<u8>> = Vec::new();
+        for (_, obj) in doc2.objects.iter() {
+            if let Object::Stream(s) = obj {
+                let bytes = s
+                    .decompressed_content()
+                    .unwrap_or_else(|_| s.content.clone());
+                if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                    for op in c.operations {
+                        if op.operator == "TJ" {
+                            if let Some(Object::Array(arr)) = op.operands.first() {
+                                for item in arr {
+                                    if let Object::String(b, _) = item {
+                                        strings.push(b.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            strings.iter().any(|s| s == b"caf\xe9"),
+            "非対象バイト列は完全保持すべき",
+        );
+        assert!(
+            strings.iter().any(|s| s == b"ABC"),
+            "置換対象は置換されるべき",
+        );
+    }
+
+    #[test]
+    fn test_get_bookmarks_terminates_on_cyclic_outlines() {
+        // /Next 自己循環アウトラインのしおり取得はハングせず終わること。
+        let mut doc = Document::with_version("1.7");
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(595),
+                Object::Integer(842),
+            ]),
+        );
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let a_oid = (doc.objects.len() as u32 + 1, 0);
+        let mut item = Dictionary::new();
+        item.set(
+            "Title",
+            Object::String(b"Loop".to_vec(), lopdf::StringFormat::Literal),
+        );
+        item.set("Next", Object::Reference(a_oid));
+        let actual_a = doc.add_object(Object::Dictionary(item));
+        assert_eq!(actual_a, a_oid, "循環fixtureのOID前提");
+        let mut outlines = Dictionary::new();
+        outlines.set("First", Object::Reference(a_oid));
+        outlines.set("Last", Object::Reference(a_oid));
+        let outlines_id = doc.add_object(Object::Dictionary(outlines));
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        catalog.set("Outlines", Object::Reference(outlines_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+
+        let marks = get_bookmarks_from_doc(&doc).expect("bookmarks");
+        assert_eq!(marks.len(), 1, "循環ノードは1回だけ列挙すべき");
+    }
+
+    #[test]
+    fn test_merge_terminates_on_cyclic_outlines() {
+        // /Next が自己循環する細工アウトラインを含むPDFの結合は
+        // ハングせず終了しなければならない（visitedガードの回帰）。
+        fn pdf_with_self_cyclic_outline() -> Vec<u8> {
+            let mut doc = Document::with_version("1.7");
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(595),
+                    Object::Integer(842),
+                ]),
+            );
+            let content_id = doc.add_object(Object::Stream(Stream::new(
+                Dictionary::new(),
+                b"BT /F1 12 Tf 100 700 Td (Hi) Tj ET".to_vec(),
+            )));
+            page.set("Contents", Object::Reference(content_id));
+            let page_id = doc.add_object(Object::Dictionary(page));
+            let mut pages = Dictionary::new();
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+            let pages_id = doc.add_object(Object::Dictionary(pages));
+            if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+                p.set("Parent", Object::Reference(pages_id));
+            }
+            // アウトライン A: Next が自分自身を指す循環
+            // add_object は max_id+1 を採番するため次のIDは確定できる
+            let a_oid = (doc.objects.len() as u32 + 1, 0);
+            let mut item = Dictionary::new();
+            item.set(
+                "Title",
+                Object::String(b"Loop".to_vec(), lopdf::StringFormat::Literal),
+            );
+            item.set("Next", Object::Reference(a_oid));
+            let actual_a = doc.add_object(Object::Dictionary(item));
+            assert_eq!(actual_a, a_oid, "循環fixtureのOID前提");
+            let mut outlines = Dictionary::new();
+            outlines.set("Type", Object::Name(b"Outlines".to_vec()));
+            outlines.set("First", Object::Reference(a_oid));
+            outlines.set("Last", Object::Reference(a_oid));
+            outlines.set("Count", Object::Integer(1));
+            let outlines_id = doc.add_object(Object::Dictionary(outlines));
+            if let Some(Object::Dictionary(d)) = doc.objects.get_mut(&actual_a) {
+                d.set("Parent", Object::Reference(outlines_id));
+            }
+            let mut catalog = Dictionary::new();
+            catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+            catalog.set("Pages", Object::Reference(pages_id));
+            catalog.set("Outlines", Object::Reference(outlines_id));
+            let cat_id = doc.add_object(Object::Dictionary(catalog));
+            doc.trailer.set("Root", Object::Reference(cat_id));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).expect("save fixture");
+            out
+        }
+        let dir = std::env::temp_dir().join(format!("nagisa_cyclic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.pdf");
+        let b = dir.join("b.pdf");
+        let out_path = dir.join("merged.pdf");
+        std::fs::write(&a, pdf_with_self_cyclic_outline()).unwrap();
+        std::fs::write(&b, create_test_pdf(1)).unwrap();
+        let opts = MergeOptions {
+            keep_bookmarks: true,
+            ..MergeOptions::default()
+        };
+        batch_merge_pdfs_with_options(
+            &[
+                a.to_string_lossy().to_string(),
+                b.to_string_lossy().to_string(),
+            ],
+            &out_path.to_string_lossy(),
+            &opts,
+        )
+        .expect("cyclic outline merge must terminate");
+        let merged = std::fs::read(&out_path).unwrap();
+        assert!(!merged.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_images_to_pdf_composites_transparency_on_white() {
+        // 全画素透過のRGBA PNG → JPEG化後は白マット（黒潰れ禁止）。
+        // 旧実装は to_rgb8 直変換で透明画素を黒にしていた。
+        let dir = std::env::temp_dir().join(format!("nagisa_alpha_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("t.png");
+        let dst = dir.join("o.pdf");
+        let rgba = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 0]));
+        rgba
+            .save(&src)
+            .expect("write transparent fixture png");
+        images_to_pdf(
+            &[src.to_string_lossy().to_string()],
+            &dst.to_string_lossy(),
+        )
+        .expect("images_to_pdf");
+        let bytes = std::fs::read(&dst).unwrap();
+        let doc = Document::load_mem(&bytes).unwrap();
+        let mut jpeg: Option<Vec<u8>> = None;
+        for (_, obj) in doc.objects.iter() {
+            if let Object::Stream(s) = obj {
+                let is_dct = s
+                    .dict
+                    .get(b"Filter")
+                    .ok()
+                    .and_then(|f| f.as_name().ok())
+                    == Some(b"DCTDecode");
+                if is_dct {
+                    jpeg = Some(s.content.clone());
+                }
+            }
+        }
+        let jpeg = jpeg.expect("DCT image xobject");
+        let decoded = image::load_from_memory(&jpeg).expect("decode jpeg").to_rgb8();
+        // JPEGは非可逆のため完全な白(255)ではなく「明るい」ことを要求
+        for p in decoded.pixels() {
+            assert!(
+                p[0] > 200 && p[1] > 200 && p[2] > 200,
+                "透明画素は白マット化すべき（黒潰れ禁止）: {p:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_images_to_pdf_rejects_empty_input() {
+        let dir = std::env::temp_dir().join(format!("nagisa_empty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("o.pdf");
+        let err = images_to_pdf(&[], &dst.to_string_lossy()).unwrap_err();
+        assert!(!err.message().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_page_viewport_resolves_rotation() {
+        // /Rotate 90（直接＋親継承）は視覚寸法を入れ替えて返す。
+        fn fixture(rotate_on_page: bool) -> Vec<u8> {
+            let mut doc = Document::with_version("1.7");
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(595),
+                    Object::Integer(842),
+                ]),
+            );
+            if rotate_on_page {
+                page.set("Rotate", Object::Integer(90));
+            }
+            let page_id = doc.add_object(Object::Dictionary(page));
+            let mut pages = Dictionary::new();
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+            if !rotate_on_page {
+                pages.set("Rotate", Object::Integer(90));
+            }
+            let pages_id = doc.add_object(Object::Dictionary(pages));
+            if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+                p.set("Parent", Object::Reference(pages_id));
+            }
+            let mut catalog = Dictionary::new();
+            catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+            catalog.set("Pages", Object::Reference(pages_id));
+            let cat_id = doc.add_object(Object::Dictionary(catalog));
+            doc.trailer.set("Root", Object::Reference(cat_id));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).unwrap();
+            out
+        }
+        for direct in [true, false] {
+            let buf = fixture(direct);
+            let doc = Document::load_mem(&buf).unwrap();
+            let pid = get_page_ids(&doc)[0];
+            assert_eq!(get_page_rotation(&doc, pid), 90);
+            assert_eq!(get_page_viewport(&doc, pid), (842.0, 595.0, 90));
+            // 非回転幾何は不変
+            assert_eq!(get_page_dimensions(&doc, pid), (595.0, 842.0));
+        }
+        // 回転なしはそのまま
+        let plain = create_test_pdf(1);
+        let doc = Document::load_mem(&plain).unwrap();
+        let pid = get_page_ids(&doc)[0];
+        let (w, h, r) = get_page_viewport(&doc, pid);
+        assert_eq!(r, 0);
+        assert!(w > 0.0 && h > 0.0);
+    }
+
+    #[test]
+    fn test_deep_redact_removes_run_overlapping_rect() {
+        // 矩形左外から始まり矩形下に延びるランは除去されるべき。
+        // 旧起点判定では残り、不透明ボックス下に復元可能テキストが残った（偽装redact）。
+        fn fixture(content: &str) -> Vec<u8> {
+            let mut doc = Document::with_version("1.7");
+            let mut font_dict = Dictionary::new();
+            font_dict.set("Type", Object::Name(b"Font".to_vec()));
+            font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+            font_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+            let font_id = doc.add_object(Object::Dictionary(font_dict));
+            let mut fonts = Dictionary::new();
+            fonts.set("F1", Object::Reference(font_id));
+            let mut resources = Dictionary::new();
+            resources.set("Font", Object::Dictionary(fonts));
+            let content_id = doc.add_object(Object::Stream(Stream::new(
+                Dictionary::new(),
+                content.as_bytes().to_vec(),
+            )));
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(595),
+                    Object::Integer(842),
+                ]),
+            );
+            page.set("Resources", Object::Dictionary(resources));
+            page.set("Contents", Object::Reference(content_id));
+            let page_id = doc.add_object(Object::Dictionary(page));
+            let mut pages = Dictionary::new();
+            pages.set("Type", Object::Name(b"Pages".to_vec()));
+            pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+            pages.set("Count", Object::Integer(1));
+            let pages_id = doc.add_object(Object::Dictionary(pages));
+            if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+                p.set("Parent", Object::Reference(pages_id));
+            }
+            let mut catalog = Dictionary::new();
+            catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+            catalog.set("Pages", Object::Reference(pages_id));
+            let cat_id = doc.add_object(Object::Dictionary(catalog));
+            doc.trailer.set("Root", Object::Reference(cat_id));
+            let mut out = Vec::new();
+            doc.save_to(&mut out).expect("save fixture");
+            out
+        }
+        fn collect_tj(pdf: &[u8]) -> String {
+            let doc = Document::load_mem(pdf).unwrap();
+            let mut texts = Vec::new();
+            for (_, obj) in doc.objects.iter() {
+                if let Object::Stream(s) = obj {
+                    let bytes = s
+                        .decompressed_content()
+                        .unwrap_or_else(|_| s.content.clone());
+                    if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                        for op in c.operations {
+                            if op.operator == "Tj" {
+                                if let Some(Object::String(b, _)) = op.operands.first() {
+                                    texts.push(String::from_utf8_lossy(b).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            texts.join("|")
+        }
+        // "HelloWorld" 12pt @x=100: 実測幅は約55pt超で x=140 の矩形下に延びる
+        let buf = fixture("BT /F1 12 Tf 1 0 0 1 100 500 Tm (HelloWorld) Tj ET");
+        assert!(collect_tj(&buf).contains("HelloWorld"));
+        let out = deep_redact(&buf, 0, 140.0, 490.0, 20.0, 30.0, "#000000").expect("redact");
+        assert!(
+            !collect_tj(&out).contains("HelloWorld"),
+            "矩形と重なるランは起点が外でも除去すべき"
+        );
+        // 対照: 矩形がランに全く触れなければ保持される
+        let out2 = deep_redact(&buf, 0, 300.0, 490.0, 20.0, 30.0, "#000000").expect("redact");
+        assert!(
+            collect_tj(&out2).contains("HelloWorld"),
+            "非重なりランは保持すべき"
+        );
+    }
+
+    #[test]
+    fn test_compress_pdf_quality_preserves_smask_images() {
+        // /SMask 付き画像は不可逆JPEG再圧縮の対象外（透過破壊防止）。
+        // downsample_images と共通ガードに一本化されていること。
+        use std::io::Write;
+        let w: u32 = 8;
+        let h: u32 = 8;
+        let raw_rgb = vec![200u8; (w * h * 3) as usize];
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw_rgb).unwrap();
+        let flate_rgb = enc.finish().unwrap();
+        let raw_mask = vec![255u8; (w * h) as usize];
+        let mut enc2 = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc2.write_all(&raw_mask).unwrap();
+        let flate_mask = enc2.finish().unwrap();
+
+        let mut doc = Document::with_version("1.7");
+        let mut mask_dict = Dictionary::new();
+        mask_dict.set("Type", Object::Name(b"XObject".to_vec()));
+        mask_dict.set("Subtype", Object::Name(b"Image".to_vec()));
+        mask_dict.set("Width", Object::Integer(w as i64));
+        mask_dict.set("Height", Object::Integer(h as i64));
+        mask_dict.set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
+        mask_dict.set("BitsPerComponent", Object::Integer(8));
+        mask_dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        let mask_id = doc.add_object(Object::Stream(Stream::new(mask_dict, flate_mask)));
+
+        // Filter無しの生RGB（旧実装は無条件でJPEG再圧縮しSMaskを陳腐化させた）
+        let mut img_dict = Dictionary::new();
+        img_dict.set("Type", Object::Name(b"XObject".to_vec()));
+        img_dict.set("Subtype", Object::Name(b"Image".to_vec()));
+        img_dict.set("Width", Object::Integer(w as i64));
+        img_dict.set("Height", Object::Integer(h as i64));
+        img_dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+        img_dict.set("BitsPerComponent", Object::Integer(8));
+        img_dict.set("SMask", Object::Reference(mask_id));
+        let img_id = doc.add_object(Object::Stream(Stream::new(img_dict, raw_rgb.clone())));
+
+        let mut xobjs = Dictionary::new();
+        xobjs.set("Im0", Object::Reference(img_id));
+        let mut res = Dictionary::new();
+        res.set("XObject", Object::Dictionary(xobjs));
+        let content_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            b"q 8 0 0 8 0 0 cm /Im0 Do Q".to_vec(),
+        )));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(100),
+                Object::Integer(100),
+            ]),
+        );
+        page.set("Resources", Object::Dictionary(res));
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+
+        let out = compress_pdf_quality(&buf, 30).expect("compress");
+        let doc2 = Document::load_mem(&out).unwrap();
+        let mut saw_flate_image = false;
+        for (_, obj) in doc2.objects.iter() {
+            if let Object::Stream(s) = obj {
+                let is_image = s
+                    .dict
+                    .get(b"Subtype")
+                    .ok()
+                    .and_then(|v| v.as_name().ok())
+                    == Some(b"Image");
+                if is_image && s.dict.has(b"SMask") {
+                    assert!(
+                        s.dict.get(b"Filter").is_err(),
+                        "SMask画像は再圧縮禁止（Filter付与=JPEG化の痕跡）"
+                    );
+                    saw_flate_image = true;
+                }
+            }
+        }
+        assert!(saw_flate_image, "SMask画像が残っているべき");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_redact_area_preserves_compressed_content() {
+        // Flate圧縮ストリームを持つページに視覚墨消しを適用しても、
+        // 既存テキストが全損してはならない（旧実装は生バイトdecode失敗を
+        // 無言スキップし、黒四角だけの白紙ページを生成した）。
+        let mut doc = Document::with_version("1.7");
+        let mut font_dict = Dictionary::new();
+        font_dict.set("Type", Object::Name(b"Font".to_vec()));
+        font_dict.set("Subtype", Object::Name(b"Type1".to_vec()));
+        font_dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+        let font_id = doc.add_object(Object::Dictionary(font_dict));
+        let mut fonts = Dictionary::new();
+        fonts.set("F1", Object::Reference(font_id));
+        let mut resources = Dictionary::new();
+        resources.set("Font", Object::Dictionary(fonts));
+        let content = "BT /F1 12 Tf 100 700 Td (Survive) Tj ET";
+        // 真の Flate 圧縮ストリームを構築（set_plain_content は非圧縮のため不可）
+        let compressed = {
+            use std::io::Write;
+            let mut enc = flate2::write::ZlibEncoder::new(
+                Vec::new(),
+                flate2::Compression::default(),
+            );
+            enc.write_all(content.as_bytes()).expect("deflate fixture");
+            enc.finish().expect("finish deflate")
+        };
+        let mut sdict = Dictionary::new();
+        sdict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        let content_id = doc.add_object(Object::Stream(Stream::new(sdict, compressed)));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(595),
+                Object::Integer(842),
+            ]),
+        );
+        page.set("Resources", Object::Dictionary(resources));
+        page.set("Contents", Object::Reference(content_id));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        let pages_id = doc.add_object(Object::Dictionary(pages));
+        if let Some(Object::Dictionary(p)) = doc.objects.get_mut(&page_id) {
+            p.set("Parent", Object::Reference(pages_id));
+        }
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).expect("save fixture");
+
+        // テキスト(100,700)から離れた左下隅に黒四角
+        let out = redact_area(&buf, 0, 10.0, 10.0, 50.0, 50.0, "#000000").expect("redact_area");
+        let doc2 = Document::load_mem(&out).unwrap();
+        let mut texts = Vec::new();
+        let mut has_box = false;
+        for (_, obj) in doc2.objects.iter() {
+            if let Object::Stream(s) = obj {
+                let bytes = s
+                    .decompressed_content()
+                    .unwrap_or_else(|_| s.content.clone());
+                if let Ok(c) = lopdf::content::Content::decode(&bytes) {
+                    for op in c.operations {
+                        if op.operator == "Tj" {
+                            if let Some(Object::String(b, _)) = op.operands.first() {
+                                texts.push(String::from_utf8_lossy(b).to_string());
+                            }
+                        }
+                        if op.operator == "re" {
+                            has_box = true;
+                        }
+                    }
+                }
+            }
+        }
+        let joined = texts.join("|");
+        assert!(joined.contains("Survive"), "圧縮内容のテキストを保持すべき: {joined}");
+        assert!(has_box, "墨消し矩形は描画されるべき");
+    }
+
+    #[test]
+    #[allow(deprecated)]
     fn test_redact_area_preserves_other_content() {
         let pdf = create_test_pdf(1);
         // Initial PDF contains "Page 1"
@@ -1206,7 +2073,7 @@ mod tests {
         let err = deep_redact(&pdf, 0, 280.0, 250.0, 40.0, 50.0, "#000000")
             .expect_err("undecodable intersecting image must fail the redaction");
         assert!(
-            err.contains("画素を安全に消去できない") || err.contains("未対応"),
+            err.message().contains("画素を安全に消去できない") || err.message().contains("未対応"),
             "error must be honest about the limitation: {err}"
         );
     }
@@ -1508,11 +2375,11 @@ mod tests {
 
         // Wrong password is rejected with an honest message.
         let err = encrypt::decrypt_pdf(&encrypted, "wrong-password").unwrap_err();
-        assert!(err.contains("パスワード"), "wrong-password error: {err}");
+        assert!(err.message().contains("パスワード"), "wrong-password error: {err}");
 
         // Empty user password is refused at encrypt time.
         let err = encrypt::encrypt_pdf(&plain, "", "").unwrap_err();
-        assert!(err.contains("パスワード"), "empty-password error: {err}");
+        assert!(err.message().contains("パスワード"), "empty-password error: {err}");
 
         // Correct passwords (user and owner) restore the exact payloads.
         for pw in ["open-sesame", "owner-pw"] {
@@ -1531,7 +2398,7 @@ mod tests {
 
         // Re-encrypting an encrypted file is refused.
         let err = encrypt::encrypt_pdf(&encrypted, "x", "x").unwrap_err();
-        assert!(err.contains("既に暗号化"), "already-encrypted error: {err}");
+        assert!(err.message().contains("既に暗号化"), "already-encrypted error: {err}");
     }
 
     #[test]
@@ -1756,7 +2623,7 @@ mod tests {
         // Empty password refused.
         let err = batch_protect(&[path.to_str().unwrap().to_string()], "").unwrap_err();
         assert!(
-            err.contains("パスワード"),
+            err.message().contains("パスワード"),
             "empty password must be refused: {err}"
         );
 
@@ -3355,7 +4222,7 @@ mod tests {
         let no_url = crate::pdf_engine::security::add_timestamp(&pdf, "");
         assert!(no_url.is_err(), "empty TSA URL must be refused");
         assert!(
-            no_url.unwrap_err().contains("TSA"),
+            no_url.unwrap_err().message().contains("TSA"),
             "error must explain the TSA requirement"
         );
         // An unreachable TSA must fail the whole operation, not degrade into
@@ -5365,7 +6232,7 @@ mod tests {
             "Must reject modifying signed PDF to prevent ByteRange invalidation"
         );
         let err_msg = err_result.unwrap_err();
-        assert!(err_msg.contains("already contains cryptographically signed fields"));
+        assert!(err_msg.message().contains("already contains cryptographically signed fields"));
     }
 
     #[test]
@@ -5403,47 +6270,47 @@ mod tests {
         // 1. rotate_page must be blocked
         let res_rot = rotate_page(&signed_bytes, 0, 90);
         assert!(res_rot.is_err());
-        assert!(res_rot.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_rot.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 2. delete_page must be blocked
         let res_del = delete_page(&signed_bytes, 0);
         assert!(res_del.is_err());
-        assert!(res_del.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_del.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 3. reorder_pages must be blocked
         let res_reord = reorder_pages(&signed_bytes, 0, 1);
         assert!(res_reord.is_err());
-        assert!(res_reord.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_reord.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 4. duplicate_page must be blocked
         let res_dup = duplicate_page(&signed_bytes, 0);
         assert!(res_dup.is_err());
-        assert!(res_dup.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_dup.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 5. add_text must be blocked
         let res_add_txt = add_text(&signed_bytes, 0, "Blocked Text", 10.0, 10.0, 12.0, "#000000");
         assert!(res_add_txt.is_err());
-        assert!(res_add_txt.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_add_txt.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 6. edit_text must be blocked
         let res_edit_txt = edit_text(&signed_bytes, 0, "Test", "Replaced", "Helvetica", 12.0, "#000000");
         assert!(res_edit_txt.is_err());
-        assert!(res_edit_txt.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_edit_txt.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 7. edit_text_block must be blocked
         let res_edit_blk = crate::pdf_engine::text_block_ops::edit_text_block(&signed_bytes, 0, 0, "New Block");
         assert!(res_edit_blk.is_err());
-        assert!(res_edit_blk.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_edit_blk.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 8. move_text_block must be blocked
         let res_move_blk = crate::pdf_engine::text_block_ops::move_text_block(&signed_bytes, 0, 0, 20.0, 20.0);
         assert!(res_move_blk.is_err());
-        assert!(res_move_blk.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_move_blk.unwrap_err().message().contains("有効なデジタル署名"));
 
         // 9. delete_text_block must be blocked
         let res_del_blk = crate::pdf_engine::text_block_ops::delete_text_block(&signed_bytes, 0, 0);
         assert!(res_del_blk.is_err());
-        assert!(res_del_blk.unwrap_err().contains("有効なデジタル署名"));
+        assert!(res_del_blk.unwrap_err().message().contains("有効なデジタル署名"));
     }
 
     #[test]
@@ -6145,7 +7012,7 @@ mod tests {
         );
         let err = guard_not_signed(&buf).expect_err("redaction must be blocked on signed PDFs");
         assert!(
-            err.contains("署名"),
+            err.message().contains("署名"),
             "error must explain the signature conflict"
         );
     }

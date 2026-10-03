@@ -2,11 +2,17 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use crate::error::NagisaError;
+
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 // Soft memory limit for undo/redo snapshots per document.
 // Eviction drops oldest history when exceeded, but always preserves at least 1 undo state
 // so that single large documents (>512MB) do not immediately lose undo capability.
 const TARGET_HISTORY_MEMORY_PER_DOC: usize = 512 * 1024 * 1024; // 512MB target threshold
+// 全セッション合計の履歴バイト上限。32セッション × 512MB = 最大16GB の
+// OOM kill を防ぐためのグローバル天井。超過時は LRU 順で古いセッション
+// ごと追い出す（履歴だけ削っても文書数自体は残るため）。
+const GLOBAL_HISTORY_BUDGET: usize = 2 * 1024 * 1024 * 1024; // 2GB
 
 #[derive(Clone)]
 pub enum EditCommand {
@@ -60,9 +66,9 @@ impl DocumentSession {
     /// This prevents cache consistency bugs when modifying the document model.
     /// Even if the mutator returns Err, any partial modification to `doc` invalidates `cached_bytes`
     /// to eliminate phantom/stale cache risk.
-    pub fn mutate<F, R>(&mut self, f: F) -> Result<R, String>
+    pub fn mutate<F, R, E>(&mut self, f: F) -> Result<R, E>
     where
-        F: FnOnce(&mut lopdf::Document) -> Result<R, String>,
+        F: FnOnce(&mut lopdf::Document) -> Result<R, E>,
     {
         let res = f(&mut self.doc);
         self.dirty = true;
@@ -108,24 +114,26 @@ impl DocumentSession {
     }
 
     /// Ensure cached bytes are populated so subsequent readers can read without write lock.
-    pub fn ensure_cached_bytes(&mut self) -> Result<(), String> {
+    pub fn ensure_cached_bytes(&mut self) -> Result<(), NagisaError> {
         if self.cached_bytes.is_none() {
             let mut buf = Vec::new();
             self.doc
                 .save_to(&mut buf)
-                .map_err(|e| format!("Failed to serialize PDF: {e}"))?;
+                .map_err(|e| NagisaError::General(format!("Failed to serialize PDF: {e}")))?;
             self.cached_bytes = Some(buf);
         }
         Ok(())
     }
 
     /// Access cached or serialized bytes by reference without allocating or cloning the entire PDF buffer.
-    pub fn with_bytes<F, R>(&mut self, f: F) -> Result<R, String>
+    pub fn with_bytes<F, R>(&mut self, f: F) -> Result<R, NagisaError>
     where
-        F: FnOnce(&[u8]) -> Result<R, String>,
+        F: FnOnce(&[u8]) -> Result<R, NagisaError>,
     {
         self.ensure_cached_bytes()?;
-        let bytes = self.cached_bytes.as_ref().unwrap();
+        let bytes = self.cached_bytes.as_ref().ok_or_else(|| {
+            NagisaError::General("Failed to serialize PDF: cache unavailable".to_string())
+        })?;
         f(bytes.as_slice())
     }
 
@@ -137,11 +145,11 @@ impl DocumentSession {
         self.cached_bytes.as_deref().map(f)
     }
 
-    pub fn save_to_bytes(&mut self) -> Result<Vec<u8>, String> {
+    pub fn save_to_bytes(&mut self) -> Result<Vec<u8>, NagisaError> {
         self.with_bytes(|b| Ok(b.to_vec()))
     }
 
-    pub fn undo(&mut self) -> Result<bool, String> {
+    pub fn undo(&mut self) -> Result<bool, NagisaError> {
         let cmd = match self.undo_stack.back() {
             Some(c) => c.clone(),
             None => return Ok(false),
@@ -169,9 +177,13 @@ impl DocumentSession {
                 let mut current = Vec::new();
                 self.doc
                     .save_to(&mut current)
-                    .map_err(|e| format!("Failed to serialize current state during undo: {e}"))?;
-                let restored = lopdf::Document::load_mem(data)
-                    .map_err(|e| format!("Failed to restore snapshot: {e}"))?;
+                    .map_err(|e| NagisaError::from(format!("Failed to serialize current state during undo: {e}")))?;
+                let restored = crate::pdf_engine::load_pdf(data).map_err(|e| match e {
+                    NagisaError::PdfParse(msg) => {
+                        NagisaError::PdfParse(format!("Failed to restore snapshot: {msg}"))
+                    }
+                    other => other,
+                })?;
                 self.doc = restored;
                 EditCommand::FullSnapshot {
                     description,
@@ -181,7 +193,10 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from undo_stack to redo_stack
-        let popped = self.undo_stack.pop_back().unwrap();
+        let popped = self
+            .undo_stack
+            .pop_back()
+            .ok_or_else(|| NagisaError::General("Undo history was concurrently modified".to_string()))?;
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.total_history_bytes += redo_cmd.byte_size();
@@ -191,7 +206,7 @@ impl DocumentSession {
         Ok(true)
     }
 
-    pub fn redo(&mut self) -> Result<bool, String> {
+    pub fn redo(&mut self) -> Result<bool, NagisaError> {
         let cmd = match self.redo_stack.back() {
             Some(c) => c.clone(),
             None => return Ok(false),
@@ -219,9 +234,13 @@ impl DocumentSession {
                 let mut current = Vec::new();
                 self.doc
                     .save_to(&mut current)
-                    .map_err(|e| format!("Failed to serialize current state during redo: {e}"))?;
-                let restored = lopdf::Document::load_mem(data)
-                    .map_err(|e| format!("Failed to restore snapshot: {e}"))?;
+                    .map_err(|e| NagisaError::from(format!("Failed to serialize current state during redo: {e}")))?;
+                let restored = crate::pdf_engine::load_pdf(data).map_err(|e| match e {
+                    NagisaError::PdfParse(msg) => {
+                        NagisaError::PdfParse(format!("Failed to restore snapshot: {msg}"))
+                    }
+                    other => other,
+                })?;
                 self.doc = restored;
                 EditCommand::FullSnapshot {
                     description,
@@ -231,7 +250,10 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from redo_stack to undo_stack
-        let popped = self.redo_stack.pop_back().unwrap();
+        let popped = self
+            .redo_stack
+            .pop_back()
+            .ok_or_else(|| NagisaError::General("Redo history was concurrently modified".to_string()))?;
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.push_undo_internal(undo_cmd, false);
@@ -256,19 +278,23 @@ impl SessionManager {
         }
     }
 
-    pub fn create_session(&self, data: &[u8]) -> Result<String, String> {
-        let doc =
-            lopdf::Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+    pub fn create_session(&self, data: &[u8]) -> Result<String, NagisaError> {
+        let doc = crate::pdf_engine::load_pdf(data)?;
         let id = format!("doc_{}", SESSION_COUNTER.fetch_add(1, Ordering::SeqCst));
         let session = Arc::new(RwLock::new(DocumentSession::new(id.clone(), doc)));
 
-        let mut lock = self.sessions.write().map_err(|e| e.to_string())?;
-        let mut order = self.session_order.write().map_err(|e| e.to_string())?;
+        let mut lock = self.sessions.write()?;
+        let mut order = self.session_order.write()?;
 
-        // Evict oldest session if maximum active session limit is exceeded
+        // Evict oldest session if maximum active session limit is exceeded.
+        // True LRU position is maintained by get_session touching the order.
         while lock.len() >= MAX_ACTIVE_SESSIONS {
             if let Some(oldest_id) = order.pop_front() {
                 lock.remove(&oldest_id);
+            } else if let Some(any_id) = lock.keys().next().cloned() {
+                // order/sessions diverged: evict an arbitrary entry rather
+                // than silently exceeding the cap.
+                lock.remove(&any_id);
             } else {
                 break;
             }
@@ -276,26 +302,70 @@ impl SessionManager {
 
         lock.insert(id.clone(), session);
         order.push_back(id.clone());
+        drop(order);
+        drop(lock);
+        // 文書数上限とは別に履歴バイトの合計天井も守る（OOM kill 防止）。
+        self.enforce_global_budget();
         Ok(id)
     }
 
-    pub fn get_session(&self, id: &str) -> Result<Arc<RwLock<DocumentSession>>, String> {
-        let lock = self.sessions.read().map_err(|e| e.to_string())?;
-        lock.get(id)
-            .cloned()
-            .ok_or_else(|| format!("Session {id} not found"))
+    pub fn get_session(&self, id: &str) -> Result<Arc<RwLock<DocumentSession>>, NagisaError> {
+        let session = {
+            let lock = self.sessions.read()?;
+            lock.get(id).cloned().ok_or_else(|| {
+                NagisaError::SessionNotFound(format!("Session {id} not found or expired"))
+            })?
+        };
+        // LRU touch: recently used sessions survive eviction pressure.
+        // order更新の失敗は握り潰さず伝播させる（poison時は順序が古いまま
+        // FIFOに退化する黙示劣化を避ける）。
+        {
+            let mut order = self.session_order.write()?;
+            if let Some(pos) = order.iter().position(|item| item == id) {
+                order.remove(pos);
+            }
+            order.push_back(id.to_string());
+        }
+        Ok(session)
     }
 
-    pub fn close_session(&self, id: &str) -> bool {
-        let removed = if let Ok(mut lock) = self.sessions.write() {
-            lock.remove(id).is_some()
-        } else {
-            false
+    pub fn close_session(&self, id: &str) -> Result<bool, NagisaError> {
+        let mut lock = self.sessions.write()?;
+        let removed = lock.remove(id).is_some();
+        let mut order = self.session_order.write()?;
+        order.retain(|item| item != id);
+        Ok(removed)
+    }
+
+    /// 全セッションの履歴バイト合計（poison で読めない分は 0 扱い）。
+    fn total_history_bytes(&self) -> usize {
+        let lock = match self.sessions.read() {
+            Ok(l) => l,
+            Err(_) => return 0,
         };
-        if let Ok(mut order) = self.session_order.write() {
-            order.retain(|item| item != id);
+        lock.values()
+            .filter_map(|s| s.read().ok().map(|sess| sess.total_history_bytes))
+            .fold(0usize, |a, b| a.saturating_add(b))
+    }
+
+    /// グローバル予算超過時に LRU 順で古いセッションごと追い出す。
+    /// 履歴の部分削減ではなく文書単位の追い出しにするのは、中途半端な
+    /// 履歴破壊より「開き直し」の方がユーザーに伝わりやすいため。
+    /// create_session（文書追加時）と session_update_bytes 経路から呼ぶ。
+    pub fn enforce_global_budget(&self) {
+        while self.total_history_bytes() > GLOBAL_HISTORY_BUDGET {
+            let victim = self.session_order.write().ok().and_then(|mut order| order.pop_front());
+            match victim {
+                Some(id) => {
+                    if let Ok(mut lock) = self.sessions.write() {
+                        lock.remove(&id);
+                    } else {
+                        break;
+                    }
+                }
+                None => break,
+            }
         }
-        removed
     }
 }
 
@@ -539,14 +609,14 @@ mod tests {
         session.dirty = false;
 
         // mutate with closure that performs partial modification to doc and then fails with Err
-        let err_res: Result<(), String> = session.mutate(|doc| {
+        let err_res: Result<(), NagisaError> = session.mutate(|doc| {
             // Perform actual modification (change rotation in doc dictionary)
             let p_ids = doc.page_iter().collect::<Vec<_>>();
             let p0 = p_ids[0];
             if let Some(lopdf::Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&p0) {
                 dict.set("Rotate", lopdf::Object::Integer(180));
             }
-            Err("Partial failure during operation after modifying doc".to_string())
+            Err(NagisaError::from("Partial failure during operation after modifying doc".to_string()))
         });
         assert!(err_res.is_err());
 
@@ -743,7 +813,29 @@ mod tests {
 
         // Explicit close
         let last_id = ids.last().unwrap();
-        assert!(manager.close_session(last_id));
+        assert!(manager.close_session(last_id).expect("close succeeds"));
         assert!(manager.get_session(last_id).is_err());
+    }
+
+    #[test]
+    fn test_global_history_budget_evicts_oldest_sessions() {
+        let manager = SessionManager::new();
+        let pdf = dummy_pdf();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(manager.create_session(&pdf).expect("create"));
+        }
+        // 履歴を人為的に膨張（3GB > 2GB 予算）。get_session の LRU touch は
+        // 0,1,2 順なので順序は不変のまま先頭から追い出される。
+        for id in &ids {
+            let arc = manager.get_session(id).unwrap();
+            arc.write().unwrap().total_history_bytes = 1024 * 1024 * 1024;
+        }
+        manager.enforce_global_budget();
+        assert!(
+            manager.get_session(&ids[0]).is_err(),
+            "oldest session must be evicted over budget"
+        );
+        assert!(manager.get_session(&ids[2]).is_ok());
     }
 }

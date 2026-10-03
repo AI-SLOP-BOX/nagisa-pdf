@@ -1,5 +1,6 @@
 use super::common::get_page_ids;
 use lopdf::Document;
+use crate::error::NagisaError;
 
 fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack[from..]
@@ -90,14 +91,14 @@ fn header_version(data: &[u8]) -> String {
 ///
 /// Returns `Err` (never panics) when the document cannot be parsed, so callers
 /// can route to [`super::repair::repair_corrupt_pdf`] for salvage.
-pub fn inspect_pdf(data: &[u8]) -> Result<CompatibilityReport, String> {
+pub fn inspect_pdf(data: &[u8]) -> Result<CompatibilityReport, NagisaError> {
     let version = header_version(data);
     let mut report = CompatibilityReport {
         pdf_version: version,
         parseable: false,
         ..CompatibilityReport::default()
     };
-    let doc = Document::load_mem(data).map_err(|e| format!("PDFの解析に失敗しました: {e}"))?;
+    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     report.parseable = true;
     report.page_count = get_page_ids(&doc).len();
     report.has_xref_stream = find_subsequence(data, b"/Type /XRef", 0).is_some()

@@ -29,6 +29,7 @@
 //! pruning concern is covered end-to-end; the helper is exercised in tests.
 
 use std::collections::HashSet;
+use crate::error::NagisaError;
 
 use lopdf::{Document, Object, ObjectId};
 
@@ -122,7 +123,7 @@ fn gray_to_rgb(gray: &[u8]) -> Vec<u8> {
 /// Decode an image XObject stream into RGB8. Returns an honest error for
 /// formats that cannot be safely rewritten (JPX, CCITT, JBIG2, sub-8-bit
 /// components, exotic colour spaces).
-pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> {
+pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, NagisaError> {
     let width = stream
         .dict
         .get(b"Width")
@@ -145,7 +146,7 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
         .and_then(|o| o.as_i64().ok())
         .unwrap_or(8);
     if bpc != 8 {
-        return Err(format!("BitsPerComponent={bpc} は未対応です（8のみ対応）"));
+        return Err(NagisaError::from(format!("BitsPerComponent={bpc} は未対応です（8のみ対応）")));
     }
     if stream.dict.get(b"Decode").is_ok() {
         return Err("独自/Decode配列付きの画像は未対応です".into());
@@ -170,7 +171,7 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
             .or_else(|_| {
                 image::load_from_memory(&stream.decompressed_content().unwrap_or_default())
             })
-            .map_err(|e| format!("JPEG画像のデコードに失敗しました: {e}"))?;
+            .map_err(|e| NagisaError::from(format!("JPEG画像のデコードに失敗しました: {e}")))?;
         let rgb = img.to_rgb8();
         return Ok(DecodedImage {
             width: rgb.width(),
@@ -180,22 +181,22 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
     }
     if has(b"JPXDecode") || has(b"CCITTFaxDecode") || has(b"JBIG2Decode") {
         let f = filters.first().cloned().unwrap_or_default();
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "フィルタ /{} の画像は画素消去に未対応です（先に画像を平坦化してください）",
             String::from_utf8_lossy(&f)
-        ));
+        )));
     }
     if !filters.is_empty() && !has(b"FlateDecode") {
         let f = filters.first().cloned().unwrap_or_default();
-        return Err(format!(
+        return Err(NagisaError::from(format!(
             "フィルタ /{} は未対応です",
             String::from_utf8_lossy(&f)
-        ));
+        )));
     }
 
     let raw = stream
         .decompressed_content()
-        .map_err(|e| format!("画像ストリームの展開に失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("画像ストリームの展開に失敗しました: {e}")))?;
 
     match color_space_name(&stream.dict).as_deref() {
         Some(b"DeviceRGB") | Some(b"RGB") => {
@@ -221,10 +222,10 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> 
             })
         }
         Some(b"Indexed") | Some(b"I") => decode_indexed(&stream.dict, width, height, &raw),
-        Some(other) => Err(format!(
+        Some(other) => Err(NagisaError::from(format!(
             "カラースペース /{} の画像は画素消去に未対応です",
             String::from_utf8_lossy(other)
-        )),
+        ))),
         None => Err("ColorSpaceが指定されていない画像は未対応です".into()),
     }
 }
@@ -234,7 +235,7 @@ fn decode_indexed(
     width: u32,
     height: u32,
     raw: &[u8],
-) -> Result<DecodedImage, String> {
+) -> Result<DecodedImage, NagisaError> {
     let arr = match dict.get(b"ColorSpace").ok() {
         Some(Object::Array(arr)) => arr.clone(),
         _ => return Err("Indexedカラースペースの配列が不正です".into()),
@@ -527,7 +528,7 @@ fn rewrite_image_stream(
     bounds: (u32, u32, u32, u32),
     fill: (u8, u8, u8),
     keep_gray: bool,
-) -> Result<(), String> {
+) -> Result<(), NagisaError> {
     if fill_rgb_region(&mut data, w, h, bounds, fill) == 0 {
         return Ok(());
     }
@@ -557,14 +558,14 @@ fn rewrite_image_stream(
     stream.set_content(payload);
     stream
         .compress()
-        .map_err(|e| format!("画像の再圧縮に失敗しました: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("画像の再圧縮に失敗しました: {e}")))?;
     let len = stream.content.len() as i64;
     stream.dict.set("Length", Object::Integer(len));
     Ok(())
 }
 
 /// Decode a mask stream that may omit /ColorSpace (implicit DeviceGray).
-fn decode_mask_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, String> {
+fn decode_mask_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, NagisaError> {
     if stream.dict.get(b"ColorSpace").is_err() {
         let w = stream
             .dict
@@ -608,7 +609,7 @@ pub fn redact_placement(
     rect: (f64, f64, f64, f64),
     fill: (u8, u8, u8),
     margin: u32,
-) -> Result<usize, String> {
+) -> Result<usize, NagisaError> {
     let (snapshot, smask_id, mask_id) = {
         let Some(Object::Stream(s)) = doc.objects.get(&placement.oid) else {
             return Ok(0);
@@ -687,7 +688,7 @@ pub fn pixel_redact_page(
     rect: (f64, f64, f64, f64),
     fill: (u8, u8, u8),
     margin: u32,
-) -> Result<RasterRedactReport, String> {
+) -> Result<RasterRedactReport, NagisaError> {
     let placements = collect_page_image_placements(doc, page_id);
     let mut report = RasterRedactReport {
         placements: placements.len(),

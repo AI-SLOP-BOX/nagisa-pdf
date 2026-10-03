@@ -158,4 +158,49 @@ describe('useHistory', () => {
     expect(result.current.canUndo).toBe(true)
     expect(result.current.canRedo).toBe(false)
   })
+
+  it('バイト数上限を超えると最古から破棄しindexを補正する', () => {
+    // maxBytes=10: [1,2,3](3B) + [4,5,6,7,8](5B)=8B, +[9,0,1,2](4B)=12B>10 → 最古破棄
+    const { result } = renderHook(() => useHistory([1, 2, 3], 30, 10))
+
+    act(() => {
+      result.current.pushHistory([4, 5, 6, 7, 8])
+    })
+    expect(result.current.history).toEqual([
+      [1, 2, 3],
+      [4, 5, 6, 7, 8],
+    ])
+    expect(result.current.historyIndex).toBe(1)
+
+    act(() => {
+      result.current.pushHistory([9, 0, 1, 2])
+    })
+    expect(result.current.history).toEqual([
+      [4, 5, 6, 7, 8],
+      [9, 0, 1, 2],
+    ])
+    expect(result.current.historyIndex).toBe(1)
+    expect(result.current.data).toEqual([9, 0, 1, 2])
+    expect(result.current.canUndo).toBe(true)
+  })
+
+  it('バイト数上限後もundo/redoが一貫する', () => {
+    const { result } = renderHook(() => useHistory([1, 2, 3], 30, 10))
+
+    act(() => {
+      result.current.pushHistory([4, 5, 6, 7, 8])
+    })
+    act(() => {
+      result.current.pushHistory([9, 0, 1, 2])
+    })
+    act(() => {
+      result.current.undo()
+    })
+    expect(result.current.data).toEqual([4, 5, 6, 7, 8])
+    expect(result.current.historyIndex).toBe(0)
+    act(() => {
+      result.current.redo()
+    })
+    expect(result.current.data).toEqual([9, 0, 1, 2])
+  })
 })

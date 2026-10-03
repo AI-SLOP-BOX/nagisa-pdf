@@ -13,7 +13,7 @@ export interface PDFXReport {
 interface ToolsPDFXSectionProps {
   pdfData: number[] | null
   showToast: (msg: string) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }
 
 export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXSectionProps) {

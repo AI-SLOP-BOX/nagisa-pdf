@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DocumentService } from '../services/documentService'
 import { RotateIcon, TrashIcon } from './Icons'
 import { ConfirmDialog } from './AppDialog'
 import { notifyError } from '../utils/notify'
+import { usePageThumbnails } from '../hooks/usePageThumbnails'
 
 export interface SearchResult {
   page: number
@@ -118,21 +120,28 @@ export function BookmarksPanel({
 export function FormsPanel({
   fields,
   pdfData,
+  docId,
+  onPdfUpdate,
 }: {
   fields: FormField[]
   pdfData: number[]
+  docId?: string | null
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }) {
   const [values, setValues] = useState<Record<string, string>>({})
 
   const handleSave = async (fieldName: string) => {
     try {
-      await invoke('set_form_field', {
-        data: pdfData,
+      // invokeOp: ネイティブ時は session_exec（バイト転送なし）。
+      // 従来は保存後の表示更新が無く stale のままだったため onPdfUpdate で反映する。
+      const result = await DocumentService.invokeOp('set_form_field', docId, pdfData, {
         fieldName: fieldName,
         value: values[fieldName] || '',
       })
+      await onPdfUpdate?.(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
     } catch (err) {
       console.error('Failed to set field:', err)
+      notifyError(`フォーム「${fieldName}」の保存に失敗しました`, err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -180,52 +189,49 @@ export function FormsPanel({
 
 export function ThumbnailsPanel({
   pdfData,
+  docId,
   pageCount,
   currentPage,
   onGoToPage,
   onPdfUpdate,
 }: {
   pdfData: number[]
+  docId?: string | null
   pageCount: number
   currentPage: number
   onGoToPage: (page: number) => void
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }) {
-  const [thumbUrls, setThumbUrls] = useState<Map<number, string>>(new Map())
+  // 共有フックで遅延読込（可視範囲のみ・上限なし・URL寿命管理込み）
+  const { thumbnails: thumbUrls, requestPage } = usePageThumbnails({ pdfData, docId, pageCount })
+  const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null)
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   // 削除確認ダイアログに表示中のページindex（null で非表示）
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null)
-
+  // 生成済みURLの退避（アンマウント時の一括revoke用）
+  // 共有フックの遅延読込effectは下に定義
   useEffect(() => {
-    let isMounted = true
-    const loadThumbnails = async () => {
-      const maxToLoad = Math.min(pageCount, 40)
-      for (let i = 0; i < maxToLoad; i++) {
-        if (!isMounted) break
-        if (thumbUrls.has(i)) continue
-        try {
-          const png = await invoke<number[]>('render_page_to_png', {
-            data: pdfData,
-            pageIndex: i,
-            dpi: 54,
-          })
-          if (!isMounted) break
-          const blob = new Blob([new Uint8Array(png)], { type: 'image/png' })
-          const url = URL.createObjectURL(blob)
-          setThumbUrls(prev => new Map(prev).set(i, url))
-        } catch {
-          // ignore thumbnail fail
+    requestPage(currentPage)
+    if (typeof IntersectionObserver === 'undefined') {
+      for (let i = 0; i < pageCount; i++) requestPage(i)
+      return
+    }
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const idx = Number((entry.target as HTMLElement).dataset.pageIndex)
+            if (!Number.isNaN(idx)) requestPage(idx)
+          }
         }
-      }
-    }
-
-    loadThumbnails()
-    return () => {
-      isMounted = false
-    }
-  }, [pdfData, pageCount])
+      },
+      { rootMargin: '400px' },
+    )
+    for (const el of itemRefs.current.values()) observer.observe(el)
+    return () => observer.disconnect()
+  }, [pageCount, currentPage, requestPage])
 
   const handleRotate = async (e: React.MouseEvent, pageIdx: number) => {
     e.stopPropagation()
@@ -240,6 +246,7 @@ export function ThumbnailsPanel({
       onPdfUpdate(updated)
     } catch (err) {
       console.error('Rotate failed:', err)
+      notifyError('ページの回転に失敗しました', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -309,6 +316,7 @@ export function ThumbnailsPanel({
       onGoToPage(targetIdx)
     } catch (err) {
       console.error('Reorder failed:', err)
+      notifyError('ページの並べ替えに失敗しました', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -333,6 +341,11 @@ export function ThumbnailsPanel({
           return (
             <div
               key={idx}
+              data-page-index={idx}
+              ref={el => {
+                if (el) itemRefs.current.set(idx, el)
+                else itemRefs.current.delete(idx)
+              }}
               draggable
               onDragStart={e => handleDragStart(e, idx)}
               onDragOver={e => handleDragOver(e, idx)}

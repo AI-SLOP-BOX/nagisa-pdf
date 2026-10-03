@@ -45,14 +45,7 @@ cms = "0.2.3"
 spki = "0.7.3"
 const-oid = "0.9.6"
 x509-cert = "0.2.5"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.6", features = ["relax-sign-encoding", "relax-void-encoding", "disable-encoding-assertions"] }
-
-[target.'cfg(unix)'.dependencies]
-# #42: タイムアウト SIGKILL 用 (run_command_with_timeout)
-libc = "0.2"
-# PDF manipulation (unix/macOS/Linux; Windows needs the same set below)
+# PDF manipulation (all platforms; single source of truth — unix/windows duplicated before)
 lopdf = "0.35"
 flate2 = "1"
 # Image processing
@@ -63,15 +56,8 @@ ab_glyph = "0.2"
 epub-builder = "0.7"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
-[target.'cfg(windows)'.dependencies]
-# Windows build needs the same PDF/image/EPUB stack as unix
-lopdf = "0.35"
-flate2 = "1"
-image = "0.25"
-imageproc = "0.25"
-ab_glyph = "0.2"
-epub-builder = "0.7"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", features = ["relax-sign-encoding", "relax-void-encoding", "disable-encoding-assertions"] }
 
 [features]
 default = ["custom-protocol"]

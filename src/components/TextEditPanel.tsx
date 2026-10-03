@@ -18,7 +18,7 @@ export function TextEditPanel({
   docId?: string | null
   exec: PdfExec
   showToast: (msg: string) => void
-  onPdfUpdate: (data: number[]) => void
+  onPdfUpdate: (data: number[], opts?: { synced?: boolean }) => void
   selectedBlockFromCanvas?: TextBlock | null
   currentPage?: number
 }) {
@@ -51,12 +51,10 @@ export function TextEditPanel({
     }
   }, [selectedBlockFromCanvas])
 
-  const getCurrentBytes = useCallback(async (): Promise<number[] | null> => {
-    if (docId) {
-      return DocumentService.getSessionBytes(docId)
-    }
-    return pdfData
-  }, [docId, pdfData])
+  const getCurrentBytes = useCallback(
+    (): Promise<number[] | null> => DocumentService.getCurrentBytes(docId, pdfData),
+    [docId, pdfData],
+  )
 
   const reloadBlocks = useCallback(async (dataOrDocId?: number[] | string) => {
     try {
@@ -117,11 +115,9 @@ export function TextEditPanel({
             <Input value={editTextVal} onChange={setEditTextVal} placeholder="新しいテキスト" />
             <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
               <AccentBtn onClick={async () => {
-                const bytes = await getCurrentBytes()
-                if (!bytes) return
                 try {
-                  const result = await invoke<number[]>('edit_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock, newText: editTextVal })
-                  await onPdfUpdate(result)
+                  const result = await DocumentService.invokeOp('edit_text_block', docId, pdfData, { pageIndex: pageIndex, blockId: selectedBlock, newText: editTextVal })
+                  await onPdfUpdate(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                   await reloadBlocks(result)
                   showToast('テキストを更新しました')
                 } catch (err) { showToast(`エラー: ${err}`) }
@@ -129,11 +125,9 @@ export function TextEditPanel({
                 更新
               </AccentBtn>
               <AccentBtn onClick={async () => {
-                const bytes = await getCurrentBytes()
-                if (!bytes) return
                 try {
-                  const result = await invoke<number[]>('delete_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock })
-                  await onPdfUpdate(result)
+                  const result = await DocumentService.invokeOp('delete_text_block', docId, pdfData, { pageIndex: pageIndex, blockId: selectedBlock })
+                  await onPdfUpdate(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                   await reloadBlocks(result)
                   setSelectedBlock(null)
                   showToast('テキストを削除しました')

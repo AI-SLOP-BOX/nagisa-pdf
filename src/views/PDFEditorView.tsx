@@ -28,6 +28,8 @@ import { formatError } from '../utils/errorHandler'
 import { useT } from '../utils/i18n'
 
 import { DocumentService } from '../services/documentService'
+
+import { clearLatestBytes } from '../services/pdfRenderer'
 import { AnnotationService, UserAnnotation } from '../services/annotationService'
 import { usePDFEditorAnnotations } from '../hooks/usePDFEditorAnnotations'
 import { buildEditorCommandItems } from '../components/editorCommands'
@@ -50,6 +52,28 @@ const DEFAULT_ANNOTATION_COLOR = '#FF0000'
 const DEFAULT_STROKE_WIDTH = 2
 const DEFAULT_REDACT_COLOR = '#000000'
 
+// session_exec 対応op表。バックエンド commands_session.rs の
+// SESSION_EXEC_OPS と対にして保守すること。ここにある op は文書バイトを
+// IPC 越しに運ばず、Rust側メモリ内だけで処理される（巨大PDF対策）。
+// 未対応 op は旧バイト経路へフォールバックする。
+const SESSION_EXEC_OPS: ReadonlySet<string> = new Set([
+  'reorder_pages', 'duplicate_page', 'crop_page', 'extract_pages', 'merge_pdfs',
+  'add_bookmark_to_pdf', 'set_form_field', 'flatten_form', 'add_stamp',
+  'optimize_pdf', 'protect_pdf', 'convert_to_pdfa', 'convert_to_pdfx',
+  'convert_to_pdfx_standard', 'add_text', 'edit_text', 'edit_text_block',
+  'move_text_block', 'delete_text_block', 'reflow_text', 'change_text_color',
+  'change_font_size', 'replace_font', 'add_highlight', 'add_underline',
+  'add_sticky_note', 'add_rectangle', 'add_circle', 'add_line', 'add_watermark',
+  'remove_watermarks', 'add_annotation_reply', 'set_annotation_status',
+  'delete_annotation', 'convert_to_cmyk', 'flatten_transparency',
+  'flatten_content', 'downsample_images', 'remove_metadata', 'repair_corrupt_pdf',
+  'enhance_scanned_pdf', 'fix_accessibility_issues', 'embed_icc_profile',
+  'add_header_footer', 'add_bookmark', 'add_bates_number', 'add_page_numbers',
+  'add_digital_signature', 'embed_javascript', 'embed_font',
+  'compress_pdf_quality', 'redact_text', 'redact_text_deep', 'deep_redact',
+  'deep_redact_scanned_pdf', 'add_image_to_page',
+])
+
 export default function PDFEditorView({ currentView, onNavigateView, initialFile, initialTab, onOpenStart }: PDFEditorViewProps) {
   const { t } = useT()
   const { data: pdfData, setData: setPdfData, pushHistory, resetHistory, undo: fallbackUndo, redo: fallbackRedo, canUndo: fallbackCanUndo, canRedo: fallbackCanRedo } = useHistory(null, 30)
@@ -62,6 +86,9 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   const [revision, setRevision] = useState(0)
   const [sessionCanUndo, setSessionCanUndo] = useState(false)
   const [sessionCanRedo, setSessionCanRedo] = useState(false)
+  // 保存後に変更があれば true。閉じる前の取りこぼし防止用
+  // (beforeunload)。注釈オーバーレイは annotations.length で判定する。
+  const dirtyRef = useRef(false)
 
   const [fileName, setFileName] = useState('')
   const [pageCount, setPageCount] = useState(0)
@@ -128,6 +155,18 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     setSelectedEditTool,
     showSuccess,
   })
+
+  // 未保存の変更があるまま閉じようとしたら警告する（ブラウザ
+  // プレビューで有効。TauriウィンドウはOS側の確認に委ねる）。
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (pdfData && (dirtyRef.current || annotations.length > 0)) {
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [pdfData, annotations.length])
 
   // Refresh history capability status whenever revision or docId changes
   const refreshHistoryStatus = useCallback(async (activeId: string) => {
@@ -201,7 +240,9 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
       setRevision(r => r + 1)
       setPdfData(bytes)
       setFileName(name)
-      // New document ⇒ discard previous document's undo history and overlay annotations
+      // New document ⇒ discard previous document's undo history and overlay annotations.
+      // 最新バイト投機キャッシュも破棄し、browser-session経路が旧文書を誤読しないようにする。
+      clearLatestBytes()
       resetHistory(bytes)
       resetAnnotations()
       if (newDocId && !newDocId.startsWith('browser-session-')) {
@@ -210,6 +251,7 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         setSessionCanUndo(false)
         setSessionCanRedo(false)
       }
+      dirtyRef.current = false
       showSuccess(t().pdfLoaded)
     } catch (err) {
       showError(formatError(err, 'PDFの読み込みに失敗しました'))
@@ -275,15 +317,23 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         const burnedUint8 = await AnnotationService.applyAnnotations(bytesToSave, annotations)
         bytesToSave = Array.from(burnedUint8)
         setPdfData(bytesToSave)
-        pushHistory(bytesToSave)
         setRevision(r => r + 1)
+        // バックエンドがUndoを保持する場合はフロント履歴に二重化しない
+        // （全スナップショットの二重保持によるメモリ膨張を防止）。
+        // 同期失敗時はフロントが唯一の記録になるためpushする。
+        let backendOwnsUndo = false
         // Keep the Rust session in sync, otherwise the next exec/undo
         // operates on pre-burn bytes and annotations are lost (or burned twice).
         if (docId && !docId.startsWith('browser-session-')) {
-          await DocumentService.updateSessionBytes(docId, '注釈を画像化', bytesToSave)
-            .catch(err => console.warn('Failed to sync burned bytes to session:', err))
+          try {
+            await DocumentService.updateSessionBytes(docId, '注釈を画像化', bytesToSave)
+            backendOwnsUndo = true
+          } catch (err) {
+            console.warn('Failed to sync burned bytes to session:', err)
+          }
           await refreshHistoryStatus(docId)
         }
+        if (!backendOwnsUndo) pushHistory(bytesToSave)
         // Annotations are now flattened into the bytes — clear the overlay
         // so a second save does not burn them again (double burn-in bug).
         resetAnnotations()
@@ -302,6 +352,7 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         AnnotationService.downloadPdf(new Uint8Array(bytesToSave), fileName || 'edited_document.pdf')
       }
       showSuccess('PDFを保存しました（編集内容を反映）')
+      dirtyRef.current = false
       if (wasEncryptedSource) {
         showToast('⚠️ 元ファイルはパスワード保護されています。保存されるPDFは保護が解除された平文です')
       }
@@ -370,7 +421,10 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
   const canRedo = canRedoAnnotation || (hasNativeSession ? sessionCanRedo : fallbackCanRedo)
 
   const handlePrint = useCallback(async () => {
-    const target = (docId && !docId.startsWith('browser-session-')) ? docId : pdfData
+    // browser-session-* には Rust セッションが無いため session_print_pdf は
+    // SessionNotFound になる。ネイティブ時のみ docId、他は手元バイトで印刷する。
+    const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+    const target = nativeDocId ?? pdfData
     if (!target) return
     try {
       await DocumentService.printPdf(target)
@@ -474,10 +528,11 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
           const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
           if (currentBytes) {
             setPdfData(currentBytes)
-            pushHistory(currentBytes)
+            // バックエンドが差分Undoを保持済みのためフロント履歴は二重化しない
           }
           setRevision(r => r + 1)
           await refreshHistoryStatus(nativeDocId)
+          dirtyRef.current = true
           showSuccess(t().completed)
           return
         } else if (cmd === 'delete_page') {
@@ -486,15 +541,31 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
           const currentBytes = await DocumentService.getSessionBytes(nativeDocId).catch(() => null)
           if (currentBytes) {
             setPdfData(currentBytes)
-            pushHistory(currentBytes)
+            // バックエンドがFullSnapshotを保持済みのためフロント履歴は二重化しない
           }
           setPageCount(prev => Math.max(1, prev - 1))
           setCurrentPage(prev => Math.min(prev, Math.max(0, pageCount - 2)))
           setRevision(r => r + 1)
           await refreshHistoryStatus(nativeDocId)
+          dirtyRef.current = true
           showSuccess(t().completed)
           return
         }
+      }
+
+      // Session-native path: only small args JSON crosses IPC, document
+      // bytes stay in Rust memory (no number[] blowup on large PDFs).
+      // extract_pages replaces the session doc with the subset (same
+      // semantics as the legacy path) and stays undoable.
+      if (nativeDocId && SESSION_EXEC_OPS.has(cmd)) {
+        const result = await invoke<number[]>('session_exec', { docId: nativeDocId, op: cmd, args })
+        setPdfData(result)
+        // バックエンドがFullSnapshotを保持済みのためフロント履歴は二重化しない
+        setRevision(r => r + 1)
+        await refreshHistoryStatus(nativeDocId)
+        dirtyRef.current = true
+        showSuccess(t().completed)
+        return
       }
 
       // For standard command tools, run against current session bytes and update session in-place
@@ -508,8 +579,9 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         await refreshHistoryStatus(nativeDocId)
       } else {
         setRevision(r => r + 1)
+        pushHistory(result)
       }
-      pushHistory(result)
+      dirtyRef.current = true
       showSuccess(t().completed)
     } catch (err) {
       showError(formatError(err, 'コマンド実行に失敗しました'))
@@ -525,6 +597,10 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         // pixels, annotations and form fields in the area are physically
         // destroyed, not merely covered by an overlay box. That is why this
         // path uses deep_redact and asks for one explicit confirmation.
+        // COORDINATE CONTRACT: rect は domToPdf 由来の非回転ユーザー空間
+        // （左下原点）。回転ページではViewer寸法が回転適用済み画素とずれる
+        // ため別途回転対応が必要（現状未対応・将来案件）。mapAnnotationToPdf
+        // と同じ前提であり、回転対応時は両者を同時に直すこと。
         const confirmed = window.confirm(
           'この範囲の内容を完全消去します（テキスト・画像ピクセル・注釈・フォームフィールドが物理削除され、元に戻せません）。よろしいですか？',
         )
@@ -577,7 +653,21 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     if (!docId && !pdfData) return
     try {
       const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
-      const currentBytes = nativeDocId ? await DocumentService.getSessionBytes(nativeDocId) : (pdfData as number[])
+      if (nativeDocId) {
+        // Session-native: args のみ IPC 越し、バイト転送なし
+        const result = await invoke<number[]>('session_exec', {
+          docId: nativeDocId,
+          op: 'move_text_block',
+          args: { pageIndex: currentPage, blockId, newX, newY },
+        })
+        setPdfData(result)
+        setRevision(r => r + 1)
+        await refreshHistoryStatus(nativeDocId)
+        dirtyRef.current = true
+        showSuccess(t().textMoved(blockId, newX, newY))
+        return
+      }
+      const currentBytes = pdfData as number[]
       const result = await invoke<number[]>('move_text_block', {
         data: currentBytes,
         pageIndex: currentPage,
@@ -585,14 +675,9 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
         newX: newX,
         newY: newY,
       })
-      if (nativeDocId) {
-        await DocumentService.updateSessionBytes(nativeDocId, `Move text block #${blockId}`, result)
-        setRevision(r => r + 1)
-        await refreshHistoryStatus(nativeDocId)
-      } else {
-        setRevision(r => r + 1)
-      }
+      setRevision(r => r + 1)
       pushHistory(result)
+      dirtyRef.current = true
       showSuccess(t().textMoved(blockId, newX, newY))
     } catch (err) {
       showError(formatError(err, 'テキスト移動に失敗しました'))
@@ -614,21 +699,38 @@ export default function PDFEditorView({ currentView, onNavigateView, initialFile
     }
   }
 
-  // Handle PDF byte update from child components (Forms/TextEdit/Tools/Overlay) with session sync
-  const handlePdfUpdate = useCallback(async (data: number[]) => {
-    if (docId) {
-      try {
-        await DocumentService.updateSessionBytes(docId, 'Edit Document', data)
-        setRevision(r => r + 1)
-        await refreshHistoryStatus(docId)
-      } catch (err) {
-        console.error('Failed to sync updated bytes to session:', err)
-        showError(formatError(err, 'セッションの同期に失敗しました'))
-        throw err
+  // Handle PDF byte update from child components (Forms/TextEdit/Tools/Overlay) with session sync.
+  // opts.synced=true の場合は session_exec 側で FullSnapshot 済みのため
+  // 再同期しない（二重Undo防止）。表示更新・履歴状態は常に行う。
+  const handlePdfUpdate = useCallback(async (data: number[], opts?: { synced?: boolean }) => {
+    let backendOwnsUndo = false
+    // browser-session-* には Rust セッションが無い。docId の有無ではなく
+    // ネイティブ判定で分岐しないと、プレビュー時は毎回 SessionNotFound で
+    // エラーになる（従来のバグ）。
+    const nativeDocId = docId && !docId.startsWith('browser-session-') ? docId : null
+    if (nativeDocId) {
+      if (!opts?.synced) {
+        try {
+          await DocumentService.updateSessionBytes(nativeDocId, 'Edit Document', data)
+          backendOwnsUndo = true
+        } catch (err) {
+          console.error('Failed to sync updated bytes to session:', err)
+          showError(formatError(err, 'セッションの同期に失敗しました'))
+          throw err
+        }
+      } else {
+        backendOwnsUndo = true
       }
+      // 書き込んだバイトが最新表示になる。setPdfData しないと revision
+      // だけ上がって旧バイトを再描画する stale-view になる（従来のバグ）。
+      setPdfData(data)
+      setRevision(r => r + 1)
+      await refreshHistoryStatus(nativeDocId)
     }
-    pushHistory(data)
-  }, [docId, pushHistory, refreshHistoryStatus, showError])
+    // ネイティブ時はバックエンドがFullSnapshotを保持済みのため二重化しない
+    if (!backendOwnsUndo) pushHistory(data)
+    dirtyRef.current = true
+  }, [docId, pushHistory, refreshHistoryStatus, showError, setPdfData])
 
   // Command items for ⌘K Quick Launcher
   const commandItems = useMemo(() => {

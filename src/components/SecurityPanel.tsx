@@ -20,7 +20,7 @@ export function SecurityPanel({
   onInspectSignatures?: (sigs: SignatureInfo[]) => void
   pdfData: number[] | null
   docId?: string | null
-  onPdfUpdate?: (data: number[]) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }) {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -97,12 +97,27 @@ export function SecurityPanel({
   // Load the keychain certificates as soon as the panel is opened.
   useEffect(() => { void loadKeychainIdentities() }, [])
 
+  // browser-session-* には Rust セッションがない。docId の有無ではなく
+  // ネイティブ判定で分岐し、取得失敗時は送らず何もしない
+  // 保護のないプレビュー時の無音失敗を防止し、トーストで明示する。
+  const currentSessionBytes = async (): Promise<number[] | null> => {
+    if (docId && !docId.startsWith('browser-session-')) {
+      try {
+        return await DocumentService.getSessionBytes(docId)
+      } catch (err) {
+        showToast(`セッション読込エラー: ${err}`)
+        return null
+      }
+    }
+    return pdfData
+  }
+
   const handleKeychainSign = async () => {
     if (!selectedIdentity) {
       showToast('使用する証明書を選択してください')
       return
     }
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes || currentBytes.length === 0) {
       showToast('署名対象のPDFデータが見つかりません')
       return
@@ -153,7 +168,7 @@ export function SecurityPanel({
       showToast('トークン・証明書・PINを選択してください')
       return
     }
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes?.length) {
       showToast('署名対象のPDFデータが見つかりません')
       return
@@ -195,12 +210,22 @@ export function SecurityPanel({
     }
   }
 
+  // onPdfUpdate がない文脈での代替同期。未定義コマンドは呼ばない。
+  // 同期不能時は偽成功トーストを出さず例外化する（呼出側catchで表示）。
+  const syncUpdatedBytesFallback = async (bytes: number[]) => {
+    if (docId && !docId.startsWith('browser-session-')) {
+      await DocumentService.updateSessionBytes(docId, '署名・タイムスタンプを付与', bytes)
+      return
+    }
+    throw new Error('文書セッションが無いため変更を反映できません（再読み込みしてください）')
+  }
+
   const handleCmsSign = async () => {
     if (!p12Path) {
       showToast('.p12 または .pfx 証明書ファイルを選択してください')
       return
     }
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes || currentBytes.length === 0) {
       showToast('署名対象のPDFデータが見つかりません')
       return
@@ -222,7 +247,7 @@ export function SecurityPanel({
       if (onPdfUpdate) {
         onPdfUpdate(signedBytes)
       } else {
-        await exec('update_pdf', { data: signedBytes })
+        await syncUpdatedBytesFallback(signedBytes)
       }
       showToast('CMS暗号署名（PAdES互換）を付与しました')
       setP12Path(null)
@@ -238,7 +263,7 @@ export function SecurityPanel({
   // certificates advertise reachable URIs) as an additive incremental
   // update. Existing ByteRange signatures stay byte-for-byte valid.
   const handleStampLtv = async () => {
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes?.length) {
       showToast('PDFデータが見つかりません')
       return
@@ -255,7 +280,7 @@ export function SecurityPanel({
       if (onPdfUpdate) {
         onPdfUpdate(res.data)
       } else {
-        await exec('update_pdf', { data: res.data })
+        await syncUpdatedBytesFallback(res.data)
       }
       const parts = [
         `証明書${res.certificates_embedded}本`,
@@ -279,7 +304,7 @@ export function SecurityPanel({
       showToast('TSA URLが必要です（偽タイムスタンプは生成しません）')
       return
     }
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes?.length) {
       showToast('PDFデータが見つかりません')
       return
@@ -290,7 +315,7 @@ export function SecurityPanel({
       if (onPdfUpdate) {
         onPdfUpdate(stamped)
       } else {
-        await exec('update_pdf', { data: stamped })
+        await syncUpdatedBytesFallback(stamped)
       }
       setDocTsReport(null)
       showToast('RFC 3161文書タイムスタンプ（PAdES B-T）を付与しました')
@@ -304,7 +329,7 @@ export function SecurityPanel({
   // Recompute the ByteRange digest and compare it against the embedded
   // token's messageImprint — cryptographic verification, not metadata.
   const handleVerifyDocTimestamp = async () => {
-    const target = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const target = await currentSessionBytes()
     if (!target?.length) {
       showToast('PDFデータが見つかりません')
       return
@@ -328,7 +353,7 @@ export function SecurityPanel({
       showToast('パスワードを入力してください')
       return
     }
-    const currentBytes = docId ? await DocumentService.getSessionBytes(docId) : pdfData
+    const currentBytes = await currentSessionBytes()
     if (!currentBytes?.length) {
       showToast('PDFデータが見つかりません')
       return
@@ -351,7 +376,7 @@ export function SecurityPanel({
   }
 
   const handleVerify = async () => {
-    const target = docId || pdfData
+    const target = (docId && !docId.startsWith('browser-session-')) ? docId : pdfData
     if (!target) return
     try {
       const result = await DocumentService.verifySignatures(target)
@@ -373,7 +398,7 @@ export function SecurityPanel({
       <div className="inspector-card">
         <div className="inspector-card-header">
           <span>パスワード暗号化</span>
-          <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 600 }}>AES-128</span>
+          <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 600 }}>AES-256</span>
         </div>
         <div className="inspector-card-desc">PDF閲覧にパスワード保護を設定</div>
         <input

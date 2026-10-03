@@ -1,5 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
+use lopdf::{Dictionary, Object, Stream};
+use crate::error::NagisaError;
 
 // ===== WATERMARK =====
 
@@ -12,8 +13,8 @@ pub fn add_watermark(
     color: &str,
     all_pages: bool,
     page_indices: &[usize],
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     let (r, g, b) = parse_hex_color(color, (0.5, 0.5, 0.5));
@@ -122,7 +123,7 @@ pub fn add_watermark(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| format!("Encode error: {e}"))?;
+        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));
@@ -166,8 +167,8 @@ pub fn add_watermark(
     save_doc(&mut doc)
 }
 
-pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+pub fn remove_watermarks(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 
     // 1. Remove ISO 32000 /Watermark subtype Annotations from all pages
@@ -369,11 +370,11 @@ pub fn add_highlight(
     width: f64,
     height: f64,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (1.0, 1.0, 0.0));
@@ -438,11 +439,11 @@ pub fn add_underline(
     y: f64,
     width: f64,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (1.0, 0.0, 0.0));
@@ -505,11 +506,11 @@ pub fn add_sticky_note(
     y: f64,
     text: &str,
     color: &str,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (1.0, 1.0, 0.0));
@@ -597,11 +598,11 @@ pub fn add_rectangle(
     stroke_color: &str,
     fill_color: &str,
     stroke_width: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (sr, sg, sb) = parse_hex_color(stroke_color, (0.0, 0.0, 0.0));
@@ -643,7 +644,7 @@ pub fn add_rectangle(
     let ap_content = lopdf::content::Content { operations: ap_ops };
     let ap_bytes = ap_content
         .encode()
-        .map_err(|e| format!("Encode error: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));
@@ -715,11 +716,11 @@ pub fn add_circle(
     stroke_color: &str,
     fill_color: &str,
     stroke_width: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (sr, sg, sb) = parse_hex_color(stroke_color, (0.0, 0.0, 0.0));
@@ -810,7 +811,7 @@ pub fn add_circle(
     let ap_content = lopdf::content::Content { operations: ap_ops };
     let ap_bytes = ap_content
         .encode()
-        .map_err(|e| format!("Encode error: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));
@@ -880,11 +881,11 @@ pub fn add_line(
     y2: f64,
     color: &str,
     width: f32,
-) -> Result<Vec<u8>, String> {
-    let mut doc = Document::load_mem(data).map_err(|e| format!("Failed to load PDF: {e}"))?;
+) -> Result<Vec<u8>, NagisaError> {
+    let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
-        return Err("Page index out of range".into());
+        return Err(page_range_err(page_index, page_ids.len()));
     }
 
     let (r, g, b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -922,7 +923,7 @@ pub fn add_line(
     let ap_content = lopdf::content::Content { operations: ap_ops };
     let ap_bytes = ap_content
         .encode()
-        .map_err(|e| format!("Encode error: {e}"))?;
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut ap_dict = Dictionary::new();
     ap_dict.set("Type", Object::Name("XObject".into()));
