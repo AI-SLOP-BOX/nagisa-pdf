@@ -71,7 +71,8 @@ const SESSION_EXEC_OPS: ReadonlySet<string> = new Set([
   'add_header_footer', 'add_bookmark', 'add_bates_number', 'add_page_numbers',
   'add_digital_signature', 'embed_javascript', 'embed_font',
   'compress_pdf_quality', 'redact_text', 'redact_text_deep', 'deep_redact',
-  'deep_redact_scanned_pdf', 'add_image_to_page',
+  'deep_redact_scanned_pdf', 'add_image_to_page', 'add_form_field',
+  'add_calculated_field', 'import_xfdf', 'convert_fonts_to_outlines',
 ])
 
 export default function PDFEditorView({ currentView, onNavigateView, initialFile, initialTab, onOpenStart }: PDFEditorViewProps) {

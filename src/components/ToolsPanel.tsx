@@ -116,8 +116,8 @@ export function ToolsPanel({
     if (!bytes || outlineBusy) return
     setOutlineBusy(true)
     try {
-      const outlinedBytes = await invoke<number[]>('convert_fonts_to_outlines', { data: bytes })
-      await onPdfUpdate?.(outlinedBytes)
+      const outlinedBytes = await DocumentService.invokeOp('convert_fonts_to_outlines', docId, bytes, {})
+      await onPdfUpdate?.(outlinedBytes, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       showToast('全フォントのアウトライン化完了: 印刷用ベクターパスに変換されました')
     } catch (err) {
       showToast(`アウトライン化エラー: ${err}`)
@@ -192,6 +192,7 @@ export function ToolsPanel({
         pdfData={pdfData}
         docId={docId}
         showToast={showToast}
+        onPdfUpdate={onPdfUpdate}
       />
 
       <ToolsAdvancedEngineeringSection
@@ -249,13 +250,13 @@ export function ToolsPanel({
           if (!bytes) return
           const beforeBytes = bytes.length
           try {
-            const optimized = await invoke<number[]>('optimize_pdf', { data: bytes })
+            const optimized = await DocumentService.invokeOp('optimize_pdf', docId, bytes, {})
             const afterBytes = optimized.length
             const savedBytes = Math.max(0, beforeBytes - afterBytes)
             const percent = beforeBytes > 0 ? ((savedBytes / beforeBytes) * 100) : 0
             setOptResult({ beforeBytes, afterBytes, savedBytes, percent })
             if (onPdfUpdate) {
-              await onPdfUpdate(optimized)
+              await onPdfUpdate(optimized, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
             } else {
               exec('optimize_pdf', {})
             }
@@ -280,13 +281,13 @@ export function ToolsPanel({
           if (!bytes) return
           const beforeBytes = bytes.length
           try {
-            const compressed = await invoke<number[]>('compress_pdf_quality', { data: bytes, quality: compressQuality })
+            const compressed = await DocumentService.invokeOp('compress_pdf_quality', docId, bytes, { quality: compressQuality })
             const afterBytes = compressed.length
             const savedBytes = Math.max(0, beforeBytes - afterBytes)
             const percent = beforeBytes > 0 ? ((savedBytes / beforeBytes) * 100) : 0
             setOptResult({ beforeBytes, afterBytes, savedBytes, percent })
             if (onPdfUpdate) {
-              await onPdfUpdate(compressed)
+              await onPdfUpdate(compressed, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
             } else {
               exec('compress_pdf_quality', { quality: compressQuality })
             }
@@ -501,12 +502,14 @@ export function ToolsPanel({
 
       <ToolsPDFXSection
         pdfData={pdfData}
+        docId={docId}
         showToast={showToast}
         onPdfUpdate={onPdfUpdate}
       />
 
       <AccessibilitySection
         pdfData={pdfData}
+        docId={docId}
         accessReport={accessReport}
         setAccessReport={setAccessReport}
         onPdfUpdate={onPdfUpdate}

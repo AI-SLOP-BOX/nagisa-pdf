@@ -54,8 +54,8 @@ export function ToolsAdvancedEngineeringSection({
     if (!bytes || busy) return
     setBusy(true)
     try {
-      const repaired = await invoke<number[]>('repair_corrupt_pdf', { data: bytes })
-      await onPdfUpdate?.(repaired)
+      const repaired = await DocumentService.invokeOp('repair_corrupt_pdf', docId, bytes, {})
+      await onPdfUpdate?.(repaired, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       showToast('破損・XRef障害の自動修復が完了しました (PDF構造再構築済)')
     } catch (err) {
       showToast(`修復エラー: ${err}`)
@@ -69,8 +69,7 @@ export function ToolsAdvancedEngineeringSection({
     if (!bytes || busy) return
     setBusy(true)
     try {
-      const enhanced = await invoke<number[]>('enhance_scanned_pdf', {
-        data: bytes,
+      const enhanced = await DocumentService.invokeOp('enhance_scanned_pdf', docId, bytes, {
         options: {
           deskew,
           remove_bleedthrough: removeBleed,
@@ -78,7 +77,7 @@ export function ToolsAdvancedEngineeringSection({
           contrast_boost: 1.3,
         }
       })
-      await onPdfUpdate?.(enhanced)
+      await onPdfUpdate?.(enhanced, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       showToast('スキャン画像の美化処理完了 (傾き補正・裏写り除去適用)')
     } catch (err) {
       showToast(`スキャン美化エラー: ${err}`)

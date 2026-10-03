@@ -1,5 +1,6 @@
 import React from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DocumentService } from '../services/documentService'
 import { AccentBtn } from './UIControls'
 
 export interface AccessibilityReport {
@@ -12,6 +13,7 @@ export interface AccessibilityReport {
 
 interface AccessibilitySectionProps {
   pdfData: number[] | null
+  docId?: string | null
   accessReport: AccessibilityReport | null
   setAccessReport: (report: AccessibilityReport | null) => void
   onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
@@ -20,6 +22,7 @@ interface AccessibilitySectionProps {
 
 export const AccessibilitySection: React.FC<AccessibilitySectionProps> = ({
   pdfData,
+  docId,
   accessReport,
   setAccessReport,
   onPdfUpdate,
@@ -96,12 +99,11 @@ export const AccessibilitySection: React.FC<AccessibilitySectionProps> = ({
             onClick={async () => {
               if (!pdfData) return
               try {
-                const fixed = await invoke<number[]>('fix_accessibility_issues', {
-                  data: pdfData,
+                const fixed = await DocumentService.invokeOp('fix_accessibility_issues', docId, pdfData, {
                   defaultTitle: 'Accessible Document',
                   defaultLang: 'ja-JP',
                 })
-                onPdfUpdate?.(fixed)
+                onPdfUpdate?.(fixed, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                 setAccessReport(null)
                 showToast('アクセシビリティ補正完了: 言語・タイトル・フォームツールチップを設定しました')
               } catch (err) {

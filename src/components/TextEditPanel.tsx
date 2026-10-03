@@ -146,8 +146,8 @@ export function TextEditPanel({
               const bytes = await getCurrentBytes()
               if (!bytes) return
               try {
-                const result = await invoke<number[]>('move_text_block', { data: bytes, pageIndex: pageIndex, blockId: selectedBlock, newX: moveX, newY: moveY })
-                await onPdfUpdate(result)
+                const result = await DocumentService.invokeOp('move_text_block', docId, bytes, { pageIndex: pageIndex, blockId: selectedBlock, newX: moveX, newY: moveY })
+                await onPdfUpdate(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
                 await reloadBlocks(result)
                 showToast('テキストを移動しました')
               } catch (err) { showToast(`エラー: ${err}`) }

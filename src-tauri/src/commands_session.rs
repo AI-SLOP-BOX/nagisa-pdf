@@ -427,6 +427,10 @@ const SESSION_EXEC_OPS: &[&str] = &[
     "deep_redact",
     "deep_redact_scanned_pdf",
     "add_image_to_page",
+    "add_form_field",
+    "add_calculated_field",
+    "import_xfdf",
+    "convert_fonts_to_outlines",
 ];
 
 /// フロントの exec() から参照する対応表。未対応 op は旧バイト経路へ。
@@ -768,6 +772,31 @@ fn dispatch_session_op(
             session_arg(args, "width")?,
             session_arg(args, "height")?,
         ),
+        "add_form_field" => pdf_engine::add_form_field(
+            data,
+            page_index()?,
+            &session_arg::<String>(args, "fieldName")?,
+            &session_arg::<String>(args, "fieldType")?,
+            session_arg(args, "x")?,
+            session_arg(args, "y")?,
+            session_arg(args, "width")?,
+            session_arg(args, "height")?,
+            &session_arg::<String>(args, "defaultValue")?,
+        ),
+        "add_calculated_field" => pdf_engine::add_calculated_field(
+            data,
+            page_index()?,
+            &session_arg::<String>(args, "fieldName")?,
+            &session_arg::<String>(args, "formula")?,
+            session_arg(args, "x")?,
+            session_arg(args, "y")?,
+            session_arg(args, "width")?,
+            session_arg(args, "height")?,
+        ),
+        "import_xfdf" => {
+            pdf_engine::import_xfdf(data, &session_arg::<String>(args, "xfdfContent")?)
+        }
+        "convert_fonts_to_outlines" => pdf_engine::preflight::convert_fonts_to_outlines(data),
         other => Err(NagisaError::InvalidParameter(format!(
             "session_exec: unsupported op '{other}'"
         ))),

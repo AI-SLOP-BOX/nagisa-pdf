@@ -60,8 +60,7 @@ export function FormCreatorPanel({
     const bytes = await getCurrentBytes()
     if (!bytes) return
     try {
-      const result = await invoke<number[]>('add_form_field', {
-        data: bytes,
+      const result = await DocumentService.invokeOp('add_form_field', docId, bytes, {
         pageIndex: currentPage,
         fieldName: fieldName,
         fieldType: fieldType,
@@ -71,7 +70,7 @@ export function FormCreatorPanel({
         height,
         defaultValue: defaultValue,
       })
-      await onPdfUpdate(result)
+      await onPdfUpdate(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       await loadFields()
       showToast(`フィールド「${fieldName}」を追加しました`)
     } catch (err) {
@@ -83,8 +82,7 @@ export function FormCreatorPanel({
     const bytes = await getCurrentBytes()
     if (!bytes) return
     try {
-      const result = await invoke<number[]>('add_calculated_field', {
-        data: bytes,
+      const result = await DocumentService.invokeOp('add_calculated_field', docId, bytes, {
         pageIndex: currentPage,
         fieldName: calcFieldName,
         formula: calcFormula,
@@ -93,7 +91,7 @@ export function FormCreatorPanel({
         width: 150,
         height: 25,
       })
-      await onPdfUpdate(result)
+      await onPdfUpdate(result, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       await loadFields()
       showToast(`計算フィールド「${calcFieldName}」を追加しました`)
     } catch (err) {

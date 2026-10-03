@@ -154,7 +154,7 @@ describe('ToolsPreflightSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'PDF/A-1b へ変換' }))
 
-    await waitFor(() => expect(onPdfUpdate).toHaveBeenCalledWith([9, 9, 9]))
+    await waitFor(() => expect(onPdfUpdate).toHaveBeenCalledWith([9, 9, 9], undefined))
     expect(invokeMock).toHaveBeenCalledWith('convert_to_pdfa', { data: [1] })
     expect(showToast).toHaveBeenCalledWith('PDF/A-1b 長期保存形式へ変換しました')
     await screen.findByText('適合: PDF/A-1B (ISO 19005-1)')

@@ -92,8 +92,8 @@ export function ToolsPreflightSection({ pdfData, docId, showToast, onPdfUpdate }
     try {
       const bytes = await getCurrentBytes()
       if (!bytes) return
-      const converted = await invoke<number[]>('convert_to_pdfa', { data: bytes })
-      await onPdfUpdate?.(converted)
+      const converted = await DocumentService.invokeOp('convert_to_pdfa', docId, bytes, {})
+      await onPdfUpdate?.(converted, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
       showToast('PDF/A-1b 長期保存形式へ変換しました')
       // 変換直後に再検証して結果を更新
       const result = await invoke<PdfaReport>('validate_pdfa_compliance', {

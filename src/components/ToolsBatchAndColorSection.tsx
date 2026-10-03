@@ -12,6 +12,7 @@ interface ToolsBatchAndColorSectionProps {
   pdfData: number[] | null
   docId?: string | null
   showToast: (msg: string) => void
+  onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }
 
 export function ToolsBatchAndColorSection({
@@ -19,6 +20,7 @@ export function ToolsBatchAndColorSection({
   pdfData,
   docId,
   showToast,
+  onPdfUpdate,
 }: ToolsBatchAndColorSectionProps) {
   const [batchPaths, setBatchPaths] = useState<string[]>([])
   const [protectDialogOpen, setProtectDialogOpen] = useState(false)
@@ -127,7 +129,10 @@ export function ToolsBatchAndColorSection({
           if (file) {
             const text = await file.text()
             try {
-              await invoke<number[]>('import_xfdf', { data: bytes, xfdfContent: text })
+              // invokeOp: ネイティブ時は session_exec。従来は表示更新が無く
+              // stale のままだったため onPdfUpdate で反映する。
+              const imported = await DocumentService.invokeOp('import_xfdf', docId, bytes, { xfdfContent: text })
+              await onPdfUpdate?.(imported, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
               showToast('XFDFをインポートしました')
             } catch (err) { showToast(`エラー: ${err}`) }
           }

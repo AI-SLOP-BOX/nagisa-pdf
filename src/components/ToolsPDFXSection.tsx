@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DocumentService } from '../services/documentService'
 import { SectionTitle, AccentBtn } from './UIControls'
 
 export interface PDFXReport {
@@ -12,11 +13,12 @@ export interface PDFXReport {
 
 interface ToolsPDFXSectionProps {
   pdfData: number[] | null
+  docId?: string | null
   showToast: (msg: string) => void
   onPdfUpdate?: (data: number[], opts?: { synced?: boolean }) => void
 }
 
-export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXSectionProps) {
+export function ToolsPDFXSection({ pdfData, docId, showToast, onPdfUpdate }: ToolsPDFXSectionProps) {
   const [pdfxReport, setPdfxReport] = useState<PDFXReport | null>(null)
 
   return (
@@ -30,12 +32,11 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
           onClick={async () => {
             if (!pdfData) return
             try {
-              const res = await invoke<number[]>('convert_to_pdfx_standard', {
-                data: pdfData,
+              const res = await DocumentService.invokeOp('convert_to_pdfx_standard', docId, pdfData, {
                 standard: 'PDF/X-1a:2001',
                 outputIntent: 'Japan Color 2001 Coated'
               })
-              onPdfUpdate?.(res)
+              onPdfUpdate?.(res, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
               showToast('PDF/X-1a:2001 準拠変換完了 (CMYK/平坦化/TrimBox/OutputIntent適用)')
             } catch (err) {
               showToast(`PDF/X-1a変換エラー: ${err}`)
@@ -49,12 +50,11 @@ export function ToolsPDFXSection({ pdfData, showToast, onPdfUpdate }: ToolsPDFXS
           onClick={async () => {
             if (!pdfData) return
             try {
-              const res = await invoke<number[]>('convert_to_pdfx_standard', {
-                data: pdfData,
+              const res = await DocumentService.invokeOp('convert_to_pdfx_standard', docId, pdfData, {
                 standard: 'PDF/X-4:2010',
                 outputIntent: 'Japan Color 2001 Coated'
               })
-              onPdfUpdate?.(res)
+              onPdfUpdate?.(res, DocumentService.isNativeDoc(docId) ? { synced: true } : undefined)
               showToast('PDF/X-4:2010 準拠変換完了 (透明・RGB/OutputIntent適用)')
             } catch (err) {
               showToast(`PDF/X-4変換エラー: ${err}`)
