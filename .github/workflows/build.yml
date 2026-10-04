@@ -119,7 +119,27 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        # android-actions/setup-android@v3 shells out to `sdkmanager "tools"`,
+        # a package Google removed upstream, so the action always fails now.
+        # ubuntu-latest runners already ship an SDK at /usr/local/lib/android/sdk;
+        # accept licenses, top up the missing pieces (platform + NDK for the
+        # Rust android targets) instead of reinstalling the world.
+        run: |
+          export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+
+      - name: Setup Android linkers for Rust targets
+        run: |
+          NDK_LLVM="$ANDROID_SDK_ROOT/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_LLVM/aarch64-linux-android34-clang" >> $GITHUB_ENV
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK_LLVM/armv7a-linux-androideabi34-clang" >> $GITHUB_ENV
+          echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$NDK_LLVM/x86_64-linux-android34-clang" >> $GITHUB_ENV
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
