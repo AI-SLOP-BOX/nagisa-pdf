@@ -1,7 +1,7 @@
 use super::common::*;
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Object};
 use std::collections::HashSet;
-use crate::error::NagisaError;
 
 // ===== ANNOTATION MANAGEMENT =====
 

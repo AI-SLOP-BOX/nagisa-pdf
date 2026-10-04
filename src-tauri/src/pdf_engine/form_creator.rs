@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== INTERACTIVE FORM CREATION (ISO 32000 Compliant) =====
 

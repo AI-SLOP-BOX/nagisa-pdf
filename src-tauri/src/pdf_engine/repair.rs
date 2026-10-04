@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object};
 
 /// Repair corrupted, truncated, or broken-XRef PDF documents.
 /// Uses a fallback heuristic salvage approach:
@@ -76,7 +76,9 @@ pub fn repair_corrupt_pdf(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
     }
 
     if salvaged_doc.objects.is_empty() {
-        return Err(NagisaError::from("No recoverable PDF objects could be salvaged from the file".to_string()));
+        return Err(NagisaError::from(
+            "No recoverable PDF objects could be salvaged from the file".to_string(),
+        ));
     }
 
     // 3. Reconstruct Pages tree if broken or missing

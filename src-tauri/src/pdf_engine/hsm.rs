@@ -8,13 +8,13 @@
 //! * A machine without a connected token still works: slot enumeration returns
 //!   an empty list rather than erroring, so the UI degrades gracefully.
 
+use crate::error::NagisaError;
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::UserType;
 use cryptoki::types::AuthPin;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use crate::error::NagisaError;
 
 /// Candidate PKCS#11 module locations, in priority order.
 fn candidate_module_paths() -> Vec<PathBuf> {
@@ -161,7 +161,10 @@ pub fn list_pkcs11_slots() -> Result<Vec<Pkcs11Slot>, NagisaError> {
         Err(_) => return Ok(Vec::new()),
     };
     let mut result = Vec::new();
-    for slot in pkcs11.get_all_slots().map_err(|e| NagisaError::from(e.to_string()))? {
+    for slot in pkcs11
+        .get_all_slots()
+        .map_err(|e| NagisaError::from(e.to_string()))?
+    {
         let token_info = match pkcs11.get_token_info(slot) {
             Ok(v) => v,
             Err(_) => continue,
@@ -320,7 +323,9 @@ pub fn pkcs11_raw_sign(
         .map_err(|e| NagisaError::from(format!("秘密鍵の検索に失敗しました: {e}")))?
         .into_iter()
         .next()
-        .ok_or_else(|| NagisaError::from("選択した証明書に対応する署名鍵が見つかりません".to_string()))?;
+        .ok_or_else(|| {
+            NagisaError::from("選択した証明書に対応する署名鍵が見つかりません".to_string())
+        })?;
 
     session
         .sign(&cryptoki::mechanism::Mechanism::Sha256RsaPkcs, key, payload)

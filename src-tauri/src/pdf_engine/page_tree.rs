@@ -1,7 +1,7 @@
 use super::common::{load_pdf, save_doc, OID};
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Document, Object};
 use std::collections::{HashMap, HashSet};
-use crate::error::NagisaError;
 
 /// Attributes that can be inherited through intermediate `/Pages` nodes in a PDF Page Tree (ISO 32000-1 §7.7.3.3).
 pub const INHERITABLE_PAGE_ATTRS: &[&[u8]] = &[
@@ -322,7 +322,10 @@ fn remap_and_copy_children(
 /// Ensures each Page's `/Parent` points directly to the newly unified `/Pages` node,
 /// materializes all inherited properties (MediaBox, Resources, Rotate, CropBox, etc.)
 /// onto each page dictionary prior to flattening, and updates `/Count` to match the exact number of pages.
-pub fn rebuild_flat_page_tree(doc: &mut Document, ordered_page_ids: &[OID]) -> Result<(), NagisaError> {
+pub fn rebuild_flat_page_tree(
+    doc: &mut Document,
+    ordered_page_ids: &[OID],
+) -> Result<(), NagisaError> {
     let (_, pages_id) = ensure_catalog_and_pages_root(doc);
 
     // 1. Mandatory rule: Materialize inherited attributes onto each remaining page BEFORE severing the tree
@@ -365,8 +368,8 @@ pub fn rebuild_flat_page_tree(doc: &mut Document, ordered_page_ids: &[OID]) -> R
 /// - Deep copies the complete object graph reachable from each extracted page
 /// - Sets up clean, valid `/Kids` and `/Parent` relationships
 pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, NagisaError> {
-    let src_doc =
-        Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to load source PDF: {e}")))?;
+    let src_doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("Failed to load source PDF: {e}")))?;
     let src_page_ids = get_logical_page_ids(&src_doc);
 
     let mut dest_doc = Document::with_version("1.7");
@@ -398,7 +401,9 @@ pub fn extract_pages_robust(data: &[u8], indices: &[usize]) -> Result<Vec<u8>, N
     }
 
     if dest_page_ids.is_empty() {
-        return Err(NagisaError::from("No valid pages selected for extraction".to_string()));
+        return Err(NagisaError::from(
+            "No valid pages selected for extraction".to_string(),
+        ));
     }
 
     // 5. Finalize flat page tree
@@ -422,7 +427,8 @@ pub fn merge_pdfs_robust(paths: &[String]) -> Result<Vec<u8>, NagisaError> {
     let mut dest_page_ids = Vec::new();
 
     for path in paths {
-        let other_doc = Document::load(path).map_err(|e| NagisaError::from(format!("Failed to load {path}: {e}")))?;
+        let other_doc = Document::load(path)
+            .map_err(|e| NagisaError::from(format!("Failed to load {path}: {e}")))?;
         let other_page_ids = get_logical_page_ids(&other_doc);
 
         let mut id_map = HashMap::new();
@@ -500,7 +506,9 @@ pub fn delete_page_robust(data: &[u8], page_index: usize) -> Result<Vec<u8>, Nag
     }
 
     if page_ids.len() <= 1 {
-        return Err(NagisaError::from("Cannot delete the only remaining page in the document".to_string()));
+        return Err(NagisaError::from(
+            "Cannot delete the only remaining page in the document".to_string(),
+        ));
     }
 
     // Remove logical page

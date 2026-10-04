@@ -7,7 +7,7 @@ pub fn session_open_pdf(
     data: Vec<u8>,
     manager: tauri::State<'_, crate::session::SessionManager>,
 ) -> Result<String, NagisaError> {
-    manager.create_session(&data).map_err(NagisaError::from)
+    manager.create_session(&data)
 }
 
 #[tauri::command]
@@ -25,7 +25,7 @@ pub fn session_get_bytes(
 ) -> Result<Vec<u8>, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
-    session.save_to_bytes().map_err(NagisaError::from)
+    session.save_to_bytes()
 }
 
 #[tauri::command]
@@ -108,7 +108,7 @@ pub fn session_undo(
 ) -> Result<bool, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
-    session.undo().map_err(NagisaError::from)
+    session.undo()
 }
 
 #[tauri::command]
@@ -118,7 +118,7 @@ pub fn session_redo(
 ) -> Result<bool, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
-    session.redo().map_err(NagisaError::from)
+    session.redo()
 }
 
 #[tauri::command]
@@ -232,7 +232,7 @@ pub fn session_get_text_blocks(
 ) -> Result<Vec<pdf_engine::TextBlock>, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::get_text_blocks_from_doc(&session.doc, page_index).map_err(NagisaError::from)
+    pdf_engine::get_text_blocks_from_doc(&session.doc, page_index)
 }
 
 #[tauri::command]
@@ -242,7 +242,7 @@ pub fn session_get_metadata(
 ) -> Result<serde_json::Value, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::get_pdf_metadata_from_doc(&session.doc).map_err(NagisaError::from)
+    pdf_engine::get_pdf_metadata_from_doc(&session.doc)
 }
 
 #[tauri::command]
@@ -252,7 +252,7 @@ pub fn session_get_bookmarks(
 ) -> Result<Vec<serde_json::Value>, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::get_bookmarks_from_doc(&session.doc).map_err(NagisaError::from)
+    pdf_engine::get_bookmarks_from_doc(&session.doc)
 }
 
 #[tauri::command]
@@ -262,7 +262,7 @@ pub fn session_get_form_fields(
 ) -> Result<Vec<serde_json::Value>, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::get_form_fields_from_doc(&session.doc).map_err(NagisaError::from)
+    pdf_engine::get_form_fields_from_doc(&session.doc)
 }
 
 #[tauri::command]
@@ -273,7 +273,7 @@ pub fn session_search_text(
 ) -> Result<Vec<serde_json::Value>, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::search_text_in_doc(&session.doc, &query).map_err(NagisaError::from)
+    pdf_engine::search_text_in_doc(&session.doc, &query)
 }
 
 #[tauri::command]
@@ -294,16 +294,11 @@ pub async fn session_render_page_to_png(
         // 2. Perform CPU-heavy raster rendering concurrently under shared read lock
         let session = session_arc.read()?;
         session
-            .peek_cached_bytes(|bytes| {
-                pdf_engine::render_page_to_png(bytes, page_index, dpi).map_err(NagisaError::from)
-            })
-            .ok_or_else(|| {
-                NagisaError::General("Cached document buffer unavailable".to_string())
-            })?
+            .peek_cached_bytes(|bytes| pdf_engine::render_page_to_png(bytes, page_index, dpi))
+            .ok_or_else(|| NagisaError::General("Cached document buffer unavailable".to_string()))?
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -342,15 +337,11 @@ pub async fn session_render_color_separation(
                     highlight_tac,
                     tac_limit,
                 )
-                .map_err(NagisaError::from)
             })
-            .ok_or_else(|| {
-                NagisaError::General("Cached document buffer unavailable".to_string())
-            })?
+            .ok_or_else(|| NagisaError::General("Cached document buffer unavailable".to_string()))?
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -360,7 +351,7 @@ pub fn session_verify_signature(
 ) -> Result<serde_json::Value, NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let session = session_arc.read()?;
-    pdf_engine::verify_signature_in_doc(&session.doc).map_err(NagisaError::from)
+    pdf_engine::verify_signature_in_doc(&session.doc)
 }
 
 // ===== SESSION-NATIVE MUTATION DISPATCH (zero-IPC-byte exec) =====
@@ -438,7 +429,10 @@ pub fn is_session_exec_supported(op: &str) -> bool {
     SESSION_EXEC_OPS.contains(&op)
 }
 
-fn session_arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, NagisaError> {
+fn session_arg<T: serde::de::DeserializeOwned>(
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<T, NagisaError> {
     args.get(key)
         .ok_or_else(|| NagisaError::InvalidParameter(format!("session_exec: missing arg '{key}'")))
         .and_then(|v| {
@@ -458,9 +452,11 @@ fn dispatch_session_op(
 ) -> Result<Vec<u8>, NagisaError> {
     let page_index = || session_arg::<usize>(args, "pageIndex");
     match op {
-        "reorder_pages" => {
-            pdf_engine::reorder_pages(data, session_arg(args, "fromIndex")?, session_arg(args, "toIndex")?)
-        }
+        "reorder_pages" => pdf_engine::reorder_pages(
+            data,
+            session_arg(args, "fromIndex")?,
+            session_arg(args, "toIndex")?,
+        ),
         "duplicate_page" => pdf_engine::duplicate_page(data, page_index()?),
         "crop_page" => pdf_engine::crop_page(
             data,
@@ -505,9 +501,11 @@ fn dispatch_session_op(
             session_arg(args, "fontSize")?,
         ),
         "optimize_pdf" => pdf_engine::optimize_pdf(data),
-        "protect_pdf" => {
-            pdf_engine::encrypt::encrypt_pdf(data, &session_arg::<String>(args, "password")?, &session_arg::<String>(args, "password")?)
-        }
+        "protect_pdf" => pdf_engine::encrypt::encrypt_pdf(
+            data,
+            &session_arg::<String>(args, "password")?,
+            &session_arg::<String>(args, "password")?,
+        ),
         "convert_to_pdfa" => pdf_engine::convert_to_pdfa(data),
         "convert_to_pdfx" => {
             pdf_engine::convert_to_pdfx(data, &session_arg::<String>(args, "outputIntent")?)
@@ -707,9 +705,13 @@ fn dispatch_session_op(
             session_arg(args, "startNumber")?,
         ),
         "add_digital_signature" => {
-            let cert: Option<Vec<u8>> = args
-                .get("certificateData")
-                .and_then(|v| if v.is_null() { None } else { serde_json::from_value(v.clone()).ok() });
+            let cert: Option<Vec<u8>> = args.get("certificateData").and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    serde_json::from_value(v.clone()).ok()
+                }
+            });
             pdf_engine::add_digital_signature(
                 data,
                 page_index()?,
@@ -728,13 +730,11 @@ fn dispatch_session_op(
         "embed_font" => {
             let font_path: String = session_arg(args, "fontPath")?;
             let safe = super::commands_io::validate_safe_path(&font_path, false)?;
-            pdf_engine::embed_font(
-                data,
-                page_index()?,
-                safe.to_string_lossy().as_ref(),
-            )
+            pdf_engine::embed_font(data, page_index()?, safe.to_string_lossy().as_ref())
         }
-        "compress_pdf_quality" => pdf_engine::compress_pdf_quality(data, session_arg(args, "quality")?),
+        "compress_pdf_quality" => {
+            pdf_engine::compress_pdf_quality(data, session_arg(args, "quality")?)
+        }
         "redact_text" => pdf_engine::redact_text(
             data,
             &session_arg::<String>(args, "searchText")?,
@@ -801,7 +801,6 @@ fn dispatch_session_op(
             "session_exec: unsupported op '{other}'"
         ))),
     }
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -836,8 +835,7 @@ pub async fn session_exec(
     let desc = format!("Command {op}");
     let result = tokio::task::spawn_blocking(move || dispatch_session_op(&op, &current, &args))
         .await
-        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-        .map_err(NagisaError::from)?;
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))??;
     // 3. session_update_bytes と同一ファンネル（署名ガード＋FullSnapshot＋全体予算）。
     // 戻りは表示用に1往復だけ返す（旧3往復→1往復。アップロードはゼロ）。
     apply_session_bytes(&manager, &doc_id, desc, result)?;
@@ -853,9 +851,7 @@ pub fn session_print_pdf(
 ) -> Result<(), NagisaError> {
     let session_arc = manager.get_session(&doc_id)?;
     let mut session = session_arc.write()?;
-    session
-        .with_bytes(|bytes| pdf_engine::print_pdf(bytes).map_err(NagisaError::from))
-        .map_err(NagisaError::from)
+    session.with_bytes(pdf_engine::print_pdf)
 }
 
 #[cfg(test)]
@@ -951,8 +947,10 @@ mod tests {
         let pdf = tiny_pdf();
         let mut doc = lopdf::Document::load_mem(&pdf).unwrap();
         assert!(!pdf_engine::doc_has_password_encryption(&doc));
-        doc.trailer
-            .set("Encrypt", lopdf::Object::Dictionary(lopdf::Dictionary::new()));
+        doc.trailer.set(
+            "Encrypt",
+            lopdf::Object::Dictionary(lopdf::Dictionary::new()),
+        );
         assert!(pdf_engine::doc_has_password_encryption(&doc));
     }
 }

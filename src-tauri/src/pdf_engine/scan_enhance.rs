@@ -1,7 +1,7 @@
 use super::common::*;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Rgb, Rgba};
-use lopdf::{Document, Object, Stream};
 use crate::error::NagisaError;
+use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Rgb, Rgba};
+use lopdf::{Object, Stream};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ScanEnhanceOptions {
@@ -15,7 +15,10 @@ pub struct ScanEnhanceOptions {
 /// 1. Automatic deskew via horizontal projection profile analysis
 /// 2. Bleed-through and shadow removal via adaptive background normalization
 /// 3. Crisp text binarization (Sauvola-style adaptive windowing)
-pub fn enhance_scanned_pdf(data: &[u8], options: &ScanEnhanceOptions) -> Result<Vec<u8>, NagisaError> {
+pub fn enhance_scanned_pdf(
+    data: &[u8],
+    options: &ScanEnhanceOptions,
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 

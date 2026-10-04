@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Document, Object};
 use crate::error::NagisaError;
+use lopdf::{Document, Object};
 
 // ===== FONT & STYLING MANAGEMENT =====
 

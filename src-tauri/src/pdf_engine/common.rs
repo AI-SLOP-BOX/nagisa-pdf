@@ -1,5 +1,5 @@
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 pub type OID = (u32, u16);
 
@@ -52,9 +52,8 @@ pub fn page_range_err(page_index: usize, total_pages: usize) -> crate::error::Na
 }
 
 pub fn load_pdf(data: &[u8]) -> Result<Document, crate::error::NagisaError> {
-    Document::load_mem(data).map_err(|e| {
-        crate::error::NagisaError::PdfParse(format!("Failed to load PDF: {e}"))
-    })
+    Document::load_mem(data)
+        .map_err(|e| crate::error::NagisaError::PdfParse(format!("Failed to load PDF: {e}")))
 }
 
 /// True when an image XObject may be destructively re-encoded to JPEG:
@@ -114,15 +113,12 @@ pub fn wait_child_with_timeout(
     mut child: std::process::Child,
     timeout_secs: u64,
 ) -> Result<std::process::Output, NagisaError> {
-    use std::io::Read;
     use std::time::{Duration, Instant};
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // パイプ詰まり deadlock 防止の draining 読取。子終了で EOF し即時完了する。
-    fn drain<T: std::io::Read + Send + 'static>(
-        mut io: T,
-    ) -> std::thread::JoinHandle<Vec<u8>> {
+    fn drain<T: std::io::Read + Send + 'static>(mut io: T) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = io.read_to_end(&mut buf);
@@ -157,8 +153,12 @@ pub fn wait_child_with_timeout(
         }
     };
     // 子の終了でパイプは EOF するため読取は即時完了する
-    let stdout = out_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-    let stderr = err_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let stdout = out_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = err_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
     Ok(std::process::Output {
         status,
         stdout,
@@ -484,7 +484,9 @@ pub fn delete_page_in_doc(doc: &mut Document, page_index: usize) -> Result<(), N
         )));
     }
     if page_ids.len() <= 1 {
-        return Err(NagisaError::from("Cannot delete the only remaining page in the document".to_string()));
+        return Err(NagisaError::from(
+            "Cannot delete the only remaining page in the document".to_string(),
+        ));
     }
     let removed_pid = page_ids.remove(page_index);
     doc.objects.remove(&removed_pid);
@@ -534,7 +536,11 @@ pub fn rotate_page(data: &[u8], page_index: usize, degrees: i32) -> Result<Vec<u
     save_doc(&mut doc)
 }
 
-pub fn reorder_pages(data: &[u8], from_index: usize, to_index: usize) -> Result<Vec<u8>, NagisaError> {
+pub fn reorder_pages(
+    data: &[u8],
+    from_index: usize,
+    to_index: usize,
+) -> Result<Vec<u8>, NagisaError> {
     super::page_tree::reorder_pages_robust(data, from_index, to_index)
 }
 
@@ -672,7 +678,11 @@ pub fn add_text(
     save_doc(&mut doc)
 }
 
-pub fn create_blank_pdf(width: f64, height: f64, page_count: usize) -> Result<Vec<u8>, NagisaError> {
+pub fn create_blank_pdf(
+    width: f64,
+    height: f64,
+    page_count: usize,
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = Document::with_version("1.7");
 
     let mut pages_dict = Dictionary::new();
@@ -732,8 +742,8 @@ pub fn add_image_to_page(
         return Err(page_range_err(page_index, page_ids.len()));
     }
 
-    let img =
-        image::load_from_memory(image_data).map_err(|e| NagisaError::from(format!("Failed to decode image: {e}")))?;
+    let img = image::load_from_memory(image_data)
+        .map_err(|e| NagisaError::from(format!("Failed to decode image: {e}")))?;
     let rgb = img.to_rgb8();
     let img_width = rgb.width();
     let img_height = rgb.height();

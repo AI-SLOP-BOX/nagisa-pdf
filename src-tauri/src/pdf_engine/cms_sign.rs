@@ -4,6 +4,8 @@
 //! owns the security-critical PDF behavior: incremental updates, placeholder
 //! reservation, exact ByteRange finalization, digest binding, and verification.
 
+use crate::error::NagisaError;
+use crate::pdf_engine::common::load_pdf;
 use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
 use cms::content_info::{CmsVersion, ContentInfo};
 use cms::signed_data::{
@@ -17,8 +19,6 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use x509_cert::attr::{Attribute, Attributes};
 use x509_cert::Certificate;
-use crate::error::NagisaError;
-use crate::pdf_engine::common::load_pdf;
 
 pub const CMS_PLACEHOLDER_LEN: usize = 16384;
 const BYTERANGE_FIELD_PLACEHOLDER: i64 = 1111111111;
@@ -133,7 +133,8 @@ fn temp_workdir(prefix: &str) -> Result<std::path::PathBuf, NagisaError> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| NagisaError::from(format!("一時ディレクトリを作成できません: {e}")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NagisaError::from(format!("一時ディレクトリを作成できません: {e}")))?;
     Ok(dir)
 }
 fn pem_block(pem_bytes: &[u8], label: &str) -> Result<Vec<u8>, NagisaError> {
@@ -164,7 +165,8 @@ fn pem_block(pem_bytes: &[u8], label: &str) -> Result<Vec<u8>, NagisaError> {
     if bodies.is_empty() {
         return Err(NagisaError::from(format!("{label}が見つかりません")));
     }
-    base64_decode(&bodies.join("")).ok_or_else(|| NagisaError::from(format!("{label}の復号に失敗しました")))
+    base64_decode(&bodies.join(""))
+        .ok_or_else(|| NagisaError::from(format!("{label}の復号に失敗しました")))
 }
 
 fn base64_decode(input: &str) -> Option<Vec<u8>> {
@@ -329,7 +331,9 @@ fn integer_bytes(value: &[u8]) -> Vec<u8> {
 fn rsa_private_parts(der_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
     let root = parse_der(der_bytes)?;
     if root.tag != 0x30 {
-        return Err(NagisaError::from("RSA秘密鍵はSEQUENCEである必要があります".to_string()));
+        return Err(NagisaError::from(
+            "RSA秘密鍵はSEQUENCEである必要があります".to_string(),
+        ));
     }
     if root.children.len() >= 4 && root.children[0].tag == 0x02 {
         let modulus = integer_bytes(root.children[1].value);
@@ -342,13 +346,17 @@ fn rsa_private_parts(der_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NagisaError
     if root.children.len() == 3 && root.children[1].tag == 0x30 && root.children[2].tag == 0x04 {
         return rsa_private_parts(root.children[2].value);
     }
-    Err(NagisaError::from("RSA秘密鍵の形式を認識できません".to_string()))
+    Err(NagisaError::from(
+        "RSA秘密鍵の形式を認識できません".to_string(),
+    ))
 }
 
 fn rsa_public_parts(public_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
     let root = parse_der(public_der)?;
     if root.tag != 0x30 || root.children.len() != 2 {
-        return Err(NagisaError::from("RSA公開鍵は2要素のSEQUENCEである必要があります".to_string()));
+        return Err(NagisaError::from(
+            "RSA公開鍵は2要素のSEQUENCEである必要があります".to_string(),
+        ));
     }
     Ok((
         integer_bytes(root.children[0].value),
@@ -375,7 +383,9 @@ fn certificate_public_parts(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Nagis
         .find(|node| node.tag == 0x03)
         .ok_or_else(|| NagisaError::from("公開鍵が見つかりません".to_string()))?;
     if bits.value.is_empty() || bits.value[0] != 0 {
-        return Err(NagisaError::from("未対応の公開鍵パディングです".to_string()));
+        return Err(NagisaError::from(
+            "未対応の公開鍵パディングです".to_string(),
+        ));
     }
     rsa_public_parts(&bits.value[1..])
 }
@@ -612,8 +622,8 @@ pub fn append_incremental_update(
     if original_pdf.is_empty() {
         return Err(NagisaError::from("PDFが空です".to_string()));
     }
-    let original =
-        Document::load_mem(original_pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let original = Document::load_mem(original_pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let mut out = original_pdf.to_vec();
     if out.last() != Some(&b'\n') {
         out.push(b'\n');
@@ -633,7 +643,11 @@ pub fn append_incremental_update(
     rewrite_references(&mut trailer_object, &remap);
     let mut trailer = match trailer_object {
         Object::Dictionary(dict) => dict,
-        _ => return Err(NagisaError::from("trailerの再構成に失敗しました".to_string())),
+        _ => {
+            return Err(NagisaError::from(
+                "trailerの再構成に失敗しました".to_string(),
+            ))
+        }
     };
     for (key, value) in original.trailer.iter() {
         if key == b"Size" || key == b"Prev" {
@@ -784,8 +798,8 @@ fn build_signature_overlay(
     original_pdf: &[u8],
     seed: &SignatureFieldSeed,
 ) -> Result<(Document, OID), NagisaError> {
-    let original =
-        Document::load_mem(original_pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let original = Document::load_mem(original_pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let page_ids = crate::pdf_engine::get_page_ids(&original);
     if seed.page_index >= page_ids.len() {
         return Err(NagisaError::from("ページ番号が範囲外です".to_string()));
@@ -943,8 +957,9 @@ fn patch_byterange(
     let needle = format!(
         "/ByteRange [0 {BYTERANGE_FIELD_PLACEHOLDER} {BYTERANGE_FIELD_PLACEHOLDER} {BYTERANGE_FIELD_PLACEHOLDER} ]"
     );
-    let position = find_subslice(pdf, needle.as_bytes())
-        .ok_or_else(|| NagisaError::from("ByteRangeプレースホルダーが見つかりません".to_string()))?;
+    let position = find_subslice(pdf, needle.as_bytes()).ok_or_else(|| {
+        NagisaError::from("ByteRangeプレースホルダーが見つかりません".to_string())
+    })?;
     let format_field = |value: usize| -> Result<String, String> {
         let digits = value.to_string();
         if digits.len() > BYTERANGE_FIELD_WIDTH {
@@ -959,7 +974,9 @@ fn patch_byterange(
         format_field(second_len)?
     );
     if replacement.len() != needle.len() {
-        return Err(NagisaError::from("ByteRangeの置換長が一致しません".to_string()));
+        return Err(NagisaError::from(
+            "ByteRangeの置換長が一致しません".to_string(),
+        ));
     }
     pdf[position..position + needle.len()].copy_from_slice(replacement.as_bytes());
     Ok(())
@@ -997,9 +1014,14 @@ fn locate_placeholder(pdf: &[u8]) -> Result<(usize, usize), NagisaError> {
         }
         search_from = filter_pos + FILTER.len();
     }
-    Err(NagisaError::from("署名プレースホルダーを特定できません".to_string()))
+    Err(NagisaError::from(
+        "署名プレースホルダーを特定できません".to_string(),
+    ))
 }
-fn create_detached_cms(signed_bytes: &[u8], request: &CmsSignRequest) -> Result<Vec<u8>, NagisaError> {
+fn create_detached_cms(
+    signed_bytes: &[u8],
+    request: &CmsSignRequest,
+) -> Result<Vec<u8>, NagisaError> {
     let work = temp_workdir("nagisa_cms")?;
     let result = (|| {
         let key_path = work.join("key.pem");
@@ -1045,7 +1067,8 @@ fn create_detached_cms(signed_bytes: &[u8], request: &CmsSignRequest) -> Result<
             args.push(chain_path.to_string_lossy().to_string());
         }
         run_openssl(&args, None)?;
-        std::fs::read(&out_path).map_err(|e| NagisaError::from(format!("CMS署名の読み込みに失敗: {e}")))
+        std::fs::read(&out_path)
+            .map_err(|e| NagisaError::from(format!("CMS署名の読み込みに失敗: {e}")))
     })();
     let _ = std::fs::remove_dir_all(&work);
     result
@@ -1077,7 +1100,11 @@ pub fn list_keychain_identities() -> Result<Vec<KeychainIdentity>, NagisaError> 
         let output = Command::new("/usr/bin/security")
             .args(["find-identity", "-v"])
             .output()
-            .map_err(|e| NagisaError::from(format!("セキュリティフレームワークの起動に失敗しました: {e}")))?;
+            .map_err(|e| {
+                NagisaError::from(format!(
+                    "セキュリティフレームワークの起動に失敗しました: {e}"
+                ))
+            })?;
         let text = String::from_utf8_lossy(&output.stdout);
         let mut identities = Vec::new();
         for line in text.lines() {
@@ -1131,7 +1158,9 @@ fn create_detached_cms_with_keychain(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (signed_bytes, identity);
-        Err(NagisaError::from("キーチェーン署名は macOS でのみ利用できます".to_string()))
+        Err(NagisaError::from(
+            "キーチェーン署名は macOS でのみ利用できます".to_string(),
+        ))
     }
     #[cfg(target_os = "macos")]
     {
@@ -1160,7 +1189,11 @@ fn create_detached_cms_with_keychain(
                     &out_path.to_string_lossy(),
                 ])
                 .output()
-                .map_err(|e| NagisaError::from(format!("セキュリティフレームワークの署名に失敗しました: {e}")))?;
+                .map_err(|e| {
+                    NagisaError::from(format!(
+                        "セキュリティフレームワークの署名に失敗しました: {e}"
+                    ))
+                })?;
             if !output.status.success() {
                 return Err(NagisaError::from(format!(
                     "キーチェーン署名に失敗しました: {}",
@@ -1169,7 +1202,8 @@ fn create_detached_cms_with_keychain(
             }
             // `security cms` writes the detached CMS SignedData as raw DER,
             // which is exactly what the PDF /Contents slot expects.
-            std::fs::read(&out_path).map_err(|e| NagisaError::from(format!("CMS署名の読み込みに失敗: {e}")))
+            std::fs::read(&out_path)
+                .map_err(|e| NagisaError::from(format!("CMS署名の読み込みに失敗: {e}")))
         })();
         let _ = std::fs::remove_dir_all(&work);
         result
@@ -1181,7 +1215,8 @@ fn verify_detached_cms(signed_bytes: &[u8], cms_der: &[u8]) -> Result<bool, Nagi
     let result = (|| {
         let cms_path = work.join("token.der");
         let data_path = work.join("signed.bin");
-        std::fs::write(&cms_path, cms_der).map_err(|e| NagisaError::from(format!("CMSの書き込みに失敗: {e}")))?;
+        std::fs::write(&cms_path, cms_der)
+            .map_err(|e| NagisaError::from(format!("CMSの書き込みに失敗: {e}")))?;
         std::fs::write(&data_path, signed_bytes)
             .map_err(|e| NagisaError::from(format!("署名対象の書き込みに失敗: {e}")))?;
         let output = run_openssl(
@@ -1205,9 +1240,12 @@ fn verify_detached_cms(signed_bytes: &[u8], cms_der: &[u8]) -> Result<bool, Nagi
     result
 }
 fn signer_signed_attributes_der(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
-    let content =
-        ContentInfo::from_der(cms_der).map_err(|e| NagisaError::from(format!("CMSの解析に失敗しました: {e}")))?;
-    let signed_der = content.content.to_der().map_err(|e| NagisaError::from(e.to_string()))?;
+    let content = ContentInfo::from_der(cms_der)
+        .map_err(|e| NagisaError::from(format!("CMSの解析に失敗しました: {e}")))?;
+    let signed_der = content
+        .content
+        .to_der()
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let signed = SignedData::from_der(signed_der.as_slice())
         .map_err(|e| NagisaError::from(format!("CMS SignedDataの解析に失敗しました: {e}")))?;
     let signer = signed
@@ -1235,8 +1273,8 @@ fn signer_certificate_der(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
 }
 
 fn signer_certificate_der_asn1(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
-    let content =
-        ContentInfo::from_der(cms_der).map_err(|e| NagisaError::from(format!("CMSの解析に失敗しました: {e}")))?;
+    let content = ContentInfo::from_der(cms_der)
+        .map_err(|e| NagisaError::from(format!("CMSの解析に失敗しました: {e}")))?;
     let signed_der = content
         .content
         .to_der()
@@ -1247,7 +1285,9 @@ fn signer_certificate_der_asn1(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
         return Err(NagisaError::from("CMS署名者情報がありません".to_string()));
     };
     let SignerIdentifier::IssuerAndSerialNumber(identifier) = &signer.sid else {
-        return Err(NagisaError::from("SubjectKeyIdentifier形式のCMS署名者は未対応です".to_string()));
+        return Err(NagisaError::from(
+            "SubjectKeyIdentifier形式のCMS署名者は未対応です".to_string(),
+        ));
     };
     let Some(certificates) = signed.certificates else {
         return Err(NagisaError::from("CMS署名者証明書がありません".to_string()));
@@ -1262,7 +1302,9 @@ fn signer_certificate_der_asn1(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
             return cert.to_der().map_err(|e| NagisaError::from(e.to_string()));
         }
     }
-    Err(NagisaError::from("CMS署名者証明書がSignerInfoと一致しません".to_string()))
+    Err(NagisaError::from(
+        "CMS署名者証明書がSignerInfoと一致しません".to_string(),
+    ))
 }
 
 /// Extract every certificate embedded in a CMS blob.
@@ -1275,7 +1317,8 @@ fn signer_certificates_der(cms_der: &[u8]) -> Result<Vec<Vec<u8>>, NagisaError> 
     let result = (|| {
         let cms_path = work.join("token.der");
         let cert_path = work.join("signer.pem");
-        std::fs::write(&cms_path, cms_der).map_err(|e| NagisaError::from(format!("CMSの書き込みに失敗: {e}")))?;
+        std::fs::write(&cms_path, cms_der)
+            .map_err(|e| NagisaError::from(format!("CMSの書き込みに失敗: {e}")))?;
         let outcome = Command::new(openssl_binary())
             .args([
                 "cms",
@@ -1323,8 +1366,12 @@ fn cms_signature_value(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
 
 fn cms_signature_value_strict(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
     let content = ContentInfo::from_der(cms_der).map_err(|e| NagisaError::from(e.to_string()))?;
-    let signed_der = content.content.to_der().map_err(|e| NagisaError::from(e.to_string()))?;
-    let signed = SignedData::from_der(signed_der.as_slice()).map_err(|e| NagisaError::from(e.to_string()))?;
+    let signed_der = content
+        .content
+        .to_der()
+        .map_err(|e| NagisaError::from(e.to_string()))?;
+    let signed = SignedData::from_der(signed_der.as_slice())
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let signer = signed
         .signer_infos
         .0
@@ -1357,7 +1404,8 @@ fn cms_signature_value_ber(cms_der: &[u8]) -> Result<Vec<u8>, NagisaError> {
         }
         node.children.iter().find_map(find_signer_info)
     }
-    let signer = find_signer_info(&root).ok_or_else(|| NagisaError::from("CMS署名値を特定できません".to_string()))?;
+    let signer = find_signer_info(&root)
+        .ok_or_else(|| NagisaError::from("CMS署名値を特定できません".to_string()))?;
     let signature = signer.children.last().expect("checked by find_signer_info");
     Ok(signature.value.to_vec())
 }
@@ -1445,7 +1493,9 @@ pub fn sign_pdf_cms(request: &CmsSignRequest, original_pdf: &[u8]) -> Result<Vec
     let certificate_der = pem_block(&effective.certificate_pem, "CERTIFICATE")?;
     let (public_modulus, _) = certificate_public_parts(&certificate_der)?;
     if public_modulus != modulus {
-        return Err(NagisaError::from("秘密鍵と証明書の公開鍵が一致しません".to_string()));
+        return Err(NagisaError::from(
+            "秘密鍵と証明書の公開鍵が一致しません".to_string(),
+        ));
     }
     let tsa_url = effective.tsa_url.clone();
     finalize_pdf_signature(
@@ -1469,11 +1519,14 @@ pub fn sign_pdf_cms_with_keychain(
     tsa_url: Option<String>,
 ) -> Result<Vec<u8>, NagisaError> {
     if !signature_entries(
-        &Document::load_mem(original_pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?,
+        &Document::load_mem(original_pdf)
+            .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?,
     )
     .is_empty()
     {
-        return Err(NagisaError::from("このPDFには既存の暗号署名があります".to_string()));
+        return Err(NagisaError::from(
+            "このPDFには既存の暗号署名があります".to_string(),
+        ));
     }
     finalize_pdf_signature(original_pdf, seed, tsa_url, |signed_ranges| {
         create_detached_cms_with_keychain(signed_ranges, identity).map_err(|e| e.to_string())
@@ -1535,9 +1588,11 @@ fn create_detached_cms_with_pkcs11(
         oid: rfc5911::ID_CONTENT_TYPE,
         values: content_values,
     };
-    let attributes =
-        Attributes::try_from(vec![content_attr, digest_attr]).map_err(|e| NagisaError::from(e.to_string()))?;
-    let attrs_der = attributes.to_der().map_err(|e| NagisaError::from(e.to_string()))?;
+    let attributes = Attributes::try_from(vec![content_attr, digest_attr])
+        .map_err(|e| NagisaError::from(e.to_string()))?;
+    let attrs_der = attributes
+        .to_der()
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let signature = super::hsm::pkcs11_raw_sign(slot_id, certificate_id, pin, &attrs_der)?;
 
     let sha256 = AlgorithmIdentifierOwned {
@@ -1546,7 +1601,9 @@ fn create_detached_cms_with_pkcs11(
     };
     let rsa = AlgorithmIdentifierOwned {
         oid: rfc5912::RSA_ENCRYPTION,
-        parameters: Some(Any::new(der::Tag::Null, []).map_err(|e| NagisaError::from(e.to_string()))?),
+        parameters: Some(
+            Any::new(der::Tag::Null, []).map_err(|e| NagisaError::from(e.to_string()))?,
+        ),
     };
     let mut digest_algorithms = DigestAlgorithmIdentifiers::default();
     digest_algorithms
@@ -1570,7 +1627,10 @@ fn create_detached_cms_with_pkcs11(
         unsigned_attrs: None,
     };
     let mut signer_infos = SignerInfos(der::asn1::SetOfVec::default());
-    signer_infos.0.insert(signer).map_err(|e| NagisaError::from(e.to_string()))?;
+    signer_infos
+        .0
+        .insert(signer)
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     let signed_data = SignedData {
         version: CmsVersion::V1,
         digest_algorithms,
@@ -1582,8 +1642,11 @@ fn create_detached_cms_with_pkcs11(
         crls: None,
         signer_infos,
     };
-    let signed_der = signed_data.to_der().map_err(|e| NagisaError::from(e.to_string()))?;
-    let content = AnyRef::try_from(signed_der.as_slice()).map_err(|e| NagisaError::from(e.to_string()))?;
+    let signed_der = signed_data
+        .to_der()
+        .map_err(|e| NagisaError::from(e.to_string()))?;
+    let content =
+        AnyRef::try_from(signed_der.as_slice()).map_err(|e| NagisaError::from(e.to_string()))?;
     ContentInfo {
         content_type: rfc5911::ID_SIGNED_DATA,
         content: Any::from(content),
@@ -1660,13 +1723,16 @@ pub fn verify_pdf_cms_with_trust(
     signature_index: usize,
     trust_roots_pem: Option<&[u8]>,
 ) -> Result<CmsVerifyReport, NagisaError> {
-    let doc = Document::load_mem(pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let doc = Document::load_mem(pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let signatures = signature_entries(&doc);
     if signatures.is_empty() {
         return Err(NagisaError::from("暗号署名が見つかりません".to_string()));
     }
     if signature_index >= signatures.len() {
-        return Err(NagisaError::from(format!("署名番号{signature_index}は範囲外です")));
+        return Err(NagisaError::from(format!(
+            "署名番号{signature_index}は範囲外です"
+        )));
     }
     let (byterange, contents) = signatures[signature_index].clone();
     let signed = byterange_parts(pdf, &byterange)?;
@@ -1824,7 +1890,8 @@ pub fn extract_p12(
         let key_path = work.join("key.pem");
         let cert_path = work.join("cert.pem");
         let chain_path = work.join("chain.pem");
-        std::fs::write(&p12_path, p12_der).map_err(|e| NagisaError::from(format!("PKCS#12の書き込みに失敗: {e}")))?;
+        std::fs::write(&p12_path, p12_der)
+            .map_err(|e| NagisaError::from(format!("PKCS#12の書き込みに失敗: {e}")))?;
         let pass = format!("pass:{password}");
         run_openssl(
             &[
@@ -1868,10 +1935,10 @@ pub fn extract_p12(
             ],
             None,
         );
-        let key_pem =
-            std::fs::read(&key_path).map_err(|e| NagisaError::from(format!("PKCS#12鍵の読み込みに失敗: {e}")))?;
-        let cert_pem =
-            std::fs::read(&cert_path).map_err(|e| NagisaError::from(format!("PKCS#12証明書の読み込みに失敗: {e}")))?;
+        let key_pem = std::fs::read(&key_path)
+            .map_err(|e| NagisaError::from(format!("PKCS#12鍵の読み込みに失敗: {e}")))?;
+        let cert_pem = std::fs::read(&cert_path)
+            .map_err(|e| NagisaError::from(format!("PKCS#12証明書の読み込みに失敗: {e}")))?;
         let chain_pem = std::fs::read(&chain_path)
             .map(|bytes| pem_blocks_all(&bytes, "CERTIFICATE"))
             .unwrap_or_default();
@@ -2308,7 +2375,9 @@ pub(crate) fn timestamp_token_details(
             }
         }
         if imprint.is_empty() {
-            return Err(NagisaError::from("タイムスタンプのインプリントを解析できません".to_string()));
+            return Err(NagisaError::from(
+                "タイムスタンプのインプリントを解析できません".to_string(),
+            ));
         }
         let certs = all_certificates_pem(token_der);
         let tsa_subject = certs
@@ -2385,7 +2454,8 @@ pub fn append_dss_update(pdf: &[u8], material: &LtvMaterial) -> Result<Vec<u8>, 
     {
         return Err(NagisaError::from("LTVマテリアルが空です".to_string()));
     }
-    let original = Document::load_mem(pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let original = Document::load_mem(pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let root_id = original
         .trailer
         .get(b"Root")
@@ -2493,7 +2563,8 @@ pub(crate) fn add_document_timestamp_with(
     pdf: &[u8],
     token_provider: impl Fn(&[u8; 32]) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, NagisaError> {
-    let original = Document::load_mem(pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let original = Document::load_mem(pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let root_id = original
         .trailer
         .get(b"Root")
@@ -2562,10 +2633,9 @@ pub(crate) fn add_document_timestamp_with(
     let mut unsigned = append_incremental_update(pdf, overlay)?;
     let (placeholder_start, placeholder_len) = locate_placeholder(&unsigned)?;
     let second_offset = placeholder_start + placeholder_len;
-    let second_len = unsigned
-        .len()
-        .checked_sub(second_offset)
-        .ok_or_else(|| NagisaError::from("プレースホルダーがファイル末尾を超過しています".to_string()))?;
+    let second_len = unsigned.len().checked_sub(second_offset).ok_or_else(|| {
+        NagisaError::from("プレースホルダーがファイル末尾を超過しています".to_string())
+    })?;
     patch_byterange(&mut unsigned, placeholder_start, second_offset, second_len)?;
     let mut signed_ranges = unsigned[..placeholder_start].to_vec();
     signed_ranges.extend_from_slice(&unsigned[placeholder_start + placeholder_len..]);
@@ -2708,10 +2778,13 @@ pub struct LtvStampResult {
 /// /DSS incremental update. Purely additive: existing ByteRange
 /// signatures stay byte-for-byte valid.
 pub fn stamp_ltv_dss(pdf: &[u8]) -> Result<LtvStampResult, NagisaError> {
-    let doc = Document::load_mem(pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let doc = Document::load_mem(pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let entries = signature_entries(&doc);
     if entries.is_empty() {
-        return Err(NagisaError::from("LTV焼付け対象のCMS署名が見つかりません".to_string()));
+        return Err(NagisaError::from(
+            "LTV焼付け対象のCMS署名が見つかりません".to_string(),
+        ));
     }
     let mut material = LtvMaterial::default();
     let mut warnings = Vec::new();
@@ -2760,7 +2833,9 @@ pub fn stamp_ltv_dss(pdf: &[u8]) -> Result<LtvStampResult, NagisaError> {
     }
 
     if material.certificates_pem.is_empty() {
-        return Err(NagisaError::from("埋め込める証明書がありません".to_string()));
+        return Err(NagisaError::from(
+            "埋め込める証明書がありません".to_string(),
+        ));
     }
     if !any_revocation {
         warnings.push(
@@ -2785,10 +2860,13 @@ pub fn add_timestamp_to_signature(
     signature_index: usize,
     tsa_url: &str,
 ) -> Result<Vec<u8>, NagisaError> {
-    let doc = Document::load_mem(pdf).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let doc = Document::load_mem(pdf)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     let entries = signature_entries(&doc);
     if signature_index >= entries.len() {
-        return Err(NagisaError::from(format!("署名番号{signature_index}は範囲外です")));
+        return Err(NagisaError::from(format!(
+            "署名番号{signature_index}は範囲外です"
+        )));
     }
     let (_byterange, contents) = &entries[signature_index];
     let cms_der = raw_contents(contents)?;
@@ -2818,7 +2896,9 @@ pub fn add_timestamp_to_signature(
     out[placeholder_start..placeholder_start + placeholder_len].copy_from_slice(hex.as_bytes());
     let report = verify_pdf_cms_with_trust(&out, signature_index, None)?;
     if !report.digest_matches || !report.cms_signature_valid {
-        return Err(NagisaError::from("タイムスタンプ追加後の署名検証に失敗しました".to_string()));
+        return Err(NagisaError::from(
+            "タイムスタンプ追加後の署名検証に失敗しました".to_string(),
+        ));
     }
     Ok(out)
 }

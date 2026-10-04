@@ -25,7 +25,6 @@ pub fn add_digital_signature(
         &reason,
         certificate_data.as_deref(),
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -34,7 +33,6 @@ pub fn verify_signature(
     signature_index: usize,
 ) -> Result<serde_json::Value, NagisaError> {
     pdf_engine::verify_signature(&data, signature_index)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -86,7 +84,6 @@ pub async fn sign_pdf_cms(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -104,32 +101,32 @@ pub async fn verify_pdf_cms(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 /// Embed PAdES-LTV validation material (cert chains + CRL/OCSP when
 /// reachable) into the document catalog's /DSS as an additive update.
 #[tauri::command]
-pub async fn stamp_pdf_ltv(data: Vec<u8>) -> Result<pdf_engine::cms_sign::LtvStampResult, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::cms_sign::stamp_ltv_dss(&data)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+pub async fn stamp_pdf_ltv(
+    data: Vec<u8>,
+) -> Result<pdf_engine::cms_sign::LtvStampResult, NagisaError> {
+    tokio::task::spawn_blocking(move || pdf_engine::cms_sign::stamp_ltv_dss(&data))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 /// Apply a PAdES B-T style document timestamp: hashes the whole covered
 /// byte range, obtains a real RFC 3161 token from the given TSA and embeds
 /// it as /Perms/DocTimeStamp with a matching /ByteRange.
 #[tauri::command]
-pub async fn add_document_timestamp(data: Vec<u8>, tsa_url: String) -> Result<Vec<u8>, NagisaError> {
+pub async fn add_document_timestamp(
+    data: Vec<u8>,
+    tsa_url: String,
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::cms_sign::add_document_timestamp(&data, &tsa_url)
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 /// Cryptographically verify the document timestamp: recomputes the ByteRange
@@ -138,12 +135,9 @@ pub async fn add_document_timestamp(data: Vec<u8>, tsa_url: String) -> Result<Ve
 pub async fn verify_document_timestamp(
     data: Vec<u8>,
 ) -> Result<pdf_engine::security::TimestampResult, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::security::verify_timestamp(&data)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::security::verify_timestamp(&data))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 /// Remove password protection (requires the user or owner password).
@@ -151,7 +145,6 @@ pub async fn verify_document_timestamp(
 #[tauri::command]
 pub fn decrypt_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::encrypt::decrypt_pdf(&data, &password)
-        .map_err(NagisaError::from)
 }
 
 /// Detect password protection without decrypting anything (cheap parse).
@@ -165,7 +158,6 @@ pub fn inspect_compatibility(
     data: Vec<u8>,
 ) -> Result<pdf_engine::compatibility::CompatibilityReport, NagisaError> {
     pdf_engine::compatibility::inspect_pdf(&data)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -175,9 +167,9 @@ pub fn get_engine_health() -> Result<serde_json::Value, NagisaError> {
 
 /// Enumerate code-signing identities available in the OS keychain.
 #[tauri::command]
-pub fn list_keychain_identities() -> Result<Vec<pdf_engine::cms_sign::KeychainIdentity>, NagisaError> {
+pub fn list_keychain_identities() -> Result<Vec<pdf_engine::cms_sign::KeychainIdentity>, NagisaError>
+{
     pdf_engine::cms_sign::list_keychain_identities()
-        .map_err(NagisaError::from)
 }
 
 /// Sign a PDF using a private key that never leaves the OS keychain.
@@ -198,7 +190,11 @@ pub fn sign_pdf_with_keychain(
     let identity = identities
         .iter()
         .find(|i| i.nickname == identity_nickname || i.common_name == identity_nickname)
-        .ok_or_else(|| NagisaError::from(format!("証明書「{identity_nickname}」がキーチェーンに見つかりません")))?
+        .ok_or_else(|| {
+            NagisaError::from(format!(
+                "証明書「{identity_nickname}」がキーチェーンに見つかりません"
+            ))
+        })?
         .clone();
 
     let seed = pdf_engine::cms_sign::SignatureFieldSeed {
@@ -218,14 +214,12 @@ pub fn sign_pdf_with_keychain(
     };
 
     pdf_engine::cms_sign::sign_pdf_cms_with_keychain(&data, seed, &identity, tsa_url)
-        .map_err(NagisaError::from)
 }
 
 /// List PKCS#11 signing certificate/key pairs without requiring the token PIN.
 #[tauri::command]
 pub fn list_pkcs11_slots() -> Result<Vec<pdf_engine::hsm::Pkcs11Slot>, NagisaError> {
     pdf_engine::hsm::list_pkcs11_slots()
-        .map_err(NagisaError::from)
 }
 
 /// Sign a PDF with a selected PKCS#11 identity. The PIN is used only for the
@@ -270,14 +264,16 @@ pub fn sign_pdf_with_pkcs11(
         pin,
         tsa_url,
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn embed_font(data: Vec<u8>, page_index: usize, font_path: String) -> Result<Vec<u8>, NagisaError> {
+pub fn embed_font(
+    data: Vec<u8>,
+    page_index: usize,
+    font_path: String,
+) -> Result<Vec<u8>, NagisaError> {
     let safe_path = super::commands_io::validate_safe_path(&font_path, false)?;
     pdf_engine::embed_font(&data, page_index, &safe_path.to_string_lossy())
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -303,7 +299,6 @@ pub fn add_form_field(
         height,
         &default_value,
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -327,45 +322,35 @@ pub fn add_calculated_field(
         width,
         height,
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub fn export_xfdf(data: Vec<u8>) -> Result<String, NagisaError> {
     pdf_engine::export_xfdf(&data)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub fn import_xfdf(data: Vec<u8>, xfdf_content: String) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::import_xfdf(&data, &xfdf_content)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub async fn repair_pdf(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::repair_pdf(&data)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::repair_pdf(&data))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
 pub fn unlock_pdf(data: Vec<u8>, password: String) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::unlock_pdf(&data, &password)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub async fn compress_pdf_quality(data: Vec<u8>, quality: u8) -> Result<Vec<u8>, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::compress_pdf_quality(&data, quality)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::compress_pdf_quality(&data, quality))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -376,11 +361,13 @@ pub fn add_page_numbers(
     start_number: usize,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_page_numbers(&data, &position, font_size, start_number)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn create_action_wizard(name: String, steps: Vec<serde_json::Value>) -> Result<String, NagisaError> {
+pub fn create_action_wizard(
+    name: String,
+    steps: Vec<serde_json::Value>,
+) -> Result<String, NagisaError> {
     let action_steps: Vec<pdf_engine::ActionStep> = steps
         .iter()
         .map(|s| pdf_engine::ActionStep {
@@ -393,29 +380,26 @@ pub fn create_action_wizard(name: String, steps: Vec<serde_json::Value>) -> Resu
         })
         .collect();
     pdf_engine::create_action_wizard(&name, &action_steps)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn execute_action_wizard(data: Vec<u8>, wizard_json: String) -> Result<Vec<u8>, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::execute_action_wizard(&data, &wizard_json)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+pub async fn execute_action_wizard(
+    data: Vec<u8>,
+    wizard_json: String,
+) -> Result<Vec<u8>, NagisaError> {
+    tokio::task::spawn_blocking(move || pdf_engine::execute_action_wizard(&data, &wizard_json))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
 pub fn aggregate_form_data(pdf_paths: Vec<String>) -> Result<serde_json::Value, NagisaError> {
     pdf_engine::aggregate_form_data(&pdf_paths)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub fn embed_javascript(data: Vec<u8>, script: String) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::embed_javascript(&data, &script)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -424,23 +408,22 @@ pub fn add_bookmark_tree(
     bookmarks: Vec<serde_json::Value>,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_bookmark_tree(&data, &bookmarks)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn visual_diff(data1: Vec<u8>, data2: Vec<u8>, output_path: String) -> Result<(), NagisaError> {
+pub async fn visual_diff(
+    data1: Vec<u8>,
+    data2: Vec<u8>,
+    output_path: String,
+) -> Result<(), NagisaError> {
     let safe_output = super::commands_io::validate_safe_path(&output_path, true)?;
     let safe_output = safe_output.to_string_lossy().to_string();
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::visual_diff(&data1, &data2, &safe_output)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::visual_diff(&data1, &data2, &safe_output))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
 pub fn list_digital_ids() -> Result<Vec<pdf_engine::DigitalID>, NagisaError> {
     pdf_engine::list_digital_ids()
-        .map_err(NagisaError::from)
 }

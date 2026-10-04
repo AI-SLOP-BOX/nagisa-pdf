@@ -11,9 +11,9 @@
 //! qpdf → decrypt here, and encrypt here → `qpdf --check/--decrypt`), so the
 //! implementation is checked against an independent, battle-tested producer.
 
+use crate::error::NagisaError;
 use lopdf::{Document, Object, StringFormat};
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use crate::error::NagisaError;
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
@@ -81,7 +81,11 @@ fn encrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), NagisaError> {
             .encrypt_block(GenericArray::from_mut_slice(block)),
         32 => Aes256::new(GenericArray::from_slice(key))
             .encrypt_block(GenericArray::from_mut_slice(block)),
-        n => return Err(NagisaError::from(format!("AES key length {n} is not 128 or 256 bits"))),
+        n => {
+            return Err(NagisaError::from(format!(
+                "AES key length {n} is not 128 or 256 bits"
+            )))
+        }
     }
     Ok(())
 }
@@ -92,7 +96,11 @@ fn decrypt_block(key: &[u8], block: &mut [u8; 16]) -> Result<(), NagisaError> {
             .decrypt_block(GenericArray::from_mut_slice(block)),
         32 => Aes256::new(GenericArray::from_slice(key))
             .decrypt_block(GenericArray::from_mut_slice(block)),
-        n => return Err(NagisaError::from(format!("AES key length {n} is not 128 or 256 bits"))),
+        n => {
+            return Err(NagisaError::from(format!(
+                "AES key length {n} is not 128 or 256 bits"
+            )))
+        }
     }
     Ok(())
 }
@@ -214,12 +222,17 @@ fn encode_password(password: &str) -> Vec<u8> {
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], NagisaError> {
     let mut buf = [0u8; N];
-    getrandom::getrandom(&mut buf).map_err(|e| NagisaError::from(format!("乱数生成に失敗しました: {e}")))?;
+    getrandom::getrandom(&mut buf)
+        .map_err(|e| NagisaError::from(format!("乱数生成に失敗しました: {e}")))?;
     Ok(buf)
 }
 
 /// Algorithm 3.8: U (48 bytes: hash + validation salt + key salt) and UE.
-fn build_u(revision: i64, password: &[u8], file_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
+fn build_u(
+    revision: i64,
+    password: &[u8],
+    file_key: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), NagisaError> {
     let salts = random_bytes::<16>()?;
     let (val_salt, key_salt) = (&salts[0..8], &salts[8..16]);
     let h = calculate_hash(revision, password, val_salt, &[]);
@@ -414,7 +427,8 @@ pub fn encrypt_pdf_with_permissions(
                 .into(),
         );
     }
-    let mut doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
+    let mut doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
     if doc.is_encrypted() {
         return Err("このPDFは既に暗号化されています".into());
     }
@@ -498,7 +512,8 @@ pub fn is_encrypted(data: &[u8]) -> bool {
 /// R=2..=4 (RC4 / AESV2, delegated to lopdf). Already-plaintext input is
 /// returned unchanged.
 pub fn decrypt_pdf(data: &[u8], password: &str) -> Result<Vec<u8>, NagisaError> {
-    let mut doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
+    let mut doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("PDF解析に失敗しました: {e}")))?;
     if !doc.is_encrypted() {
         return Ok(data.to_vec());
     }

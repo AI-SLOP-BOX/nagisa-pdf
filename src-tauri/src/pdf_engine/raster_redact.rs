@@ -28,8 +28,8 @@
 //! Note: `deep_redact` already runs lopdf's `prune_objects` pass, so the
 //! pruning concern is covered end-to-end; the helper is exercised in tests.
 
-use std::collections::HashSet;
 use crate::error::NagisaError;
+use std::collections::HashSet;
 
 use lopdf::{Document, Object, ObjectId};
 
@@ -146,7 +146,9 @@ pub fn decode_image_rgb(stream: &lopdf::Stream) -> Result<DecodedImage, NagisaEr
         .and_then(|o| o.as_i64().ok())
         .unwrap_or(8);
     if bpc != 8 {
-        return Err(NagisaError::from(format!("BitsPerComponent={bpc} は未対応です（8のみ対応）")));
+        return Err(NagisaError::from(format!(
+            "BitsPerComponent={bpc} は未対応です（8のみ対応）"
+        )));
     }
     if stream.dict.get(b"Decode").is_ok() {
         return Err("独自/Decode配列付きの画像は未対応です".into());

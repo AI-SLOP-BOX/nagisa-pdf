@@ -300,7 +300,10 @@ pub fn ocr_with_layout(
 
 // ===== SEARCHABLE PDF GENERATOR =====
 
-pub fn create_searchable_pdf_from_scanned(data: &[u8], language: &str) -> Result<Vec<u8>, NagisaError> {
+pub fn create_searchable_pdf_from_scanned(
+    data: &[u8],
+    language: &str,
+) -> Result<Vec<u8>, NagisaError> {
     let tmp_dir = std::env::temp_dir().join(format!("searchable_pdf_{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| NagisaError::from(e.to_string()))?;
 

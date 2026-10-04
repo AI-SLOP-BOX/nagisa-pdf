@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Object, Stream};
 
 // ===== WATERMARK =====
 
@@ -123,7 +123,9 @@ pub fn add_watermark(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+        let content_bytes = content
+            .encode()
+            .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

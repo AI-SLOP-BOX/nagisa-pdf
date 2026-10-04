@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Object, Stream};
 
 // ===== TEXT EDITING & REFLOW =====
 
@@ -359,7 +359,8 @@ pub fn embed_font(data: &[u8], page_index: usize, font_path: &str) -> Result<Vec
     }
 
     // Read font file
-    let font_data = std::fs::read(font_path).map_err(|e| NagisaError::from(format!("Failed to read font: {e}")))?;
+    let font_data = std::fs::read(font_path)
+        .map_err(|e| NagisaError::from(format!("Failed to read font: {e}")))?;
     let font_file_len = font_data.len();
 
     let font_name = std::path::Path::new(font_path)

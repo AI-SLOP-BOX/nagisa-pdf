@@ -2,7 +2,10 @@ use super::*;
 
 // ===== FILE I/O & BATCH PROCESSING TAURI COMMANDS =====
 
-pub(crate) fn validate_safe_path(path_str: &str, for_write: bool) -> Result<std::path::PathBuf, NagisaError> {
+pub(crate) fn validate_safe_path(
+    path_str: &str,
+    for_write: bool,
+) -> Result<std::path::PathBuf, NagisaError> {
     let path = std::path::Path::new(path_str);
     if path_str.trim().is_empty() {
         return Err(NagisaError::InvalidParameter(
@@ -99,7 +102,7 @@ pub fn get_pdf_file_info(path: String) -> Result<serde_json::Value, NagisaError>
     let safe_path = validate_safe_path(&path, false)?;
     let bytes = std::fs::read(&safe_path)
         .map_err(|e| NagisaError::Io(format!("Failed to read file: {e}")))?;
-    pdf_engine::get_pdf_metadata(&bytes).map_err(NagisaError::from)
+    pdf_engine::get_pdf_metadata(&bytes)
 }
 
 #[tauri::command]
@@ -128,7 +131,6 @@ pub async fn batch_merge_pdfs(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -148,7 +150,6 @@ pub async fn batch_add_watermark(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -159,12 +160,9 @@ pub async fn batch_protect(
     for p in &paths {
         validate_safe_path(p, false)?;
     }
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::batch_protect(&paths, &password)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::batch_protect(&paths, &password))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -172,12 +170,9 @@ pub async fn batch_optimize(paths: Vec<String>) -> Result<Vec<Vec<u8>>, NagisaEr
     for p in &paths {
         validate_safe_path(p, false)?;
     }
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::batch_optimize(&paths)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::batch_optimize(&paths))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 // ===== CONVERSIONS & EXPORT TAURI COMMANDS =====
@@ -196,7 +191,6 @@ pub async fn pdf_to_images(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -208,23 +202,17 @@ pub async fn images_to_pdf(
         validate_safe_path(p, false)?;
     }
     validate_safe_path(&output_path, true)?;
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::images_to_pdf(&image_paths, &output_path)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::images_to_pdf(&image_paths, &output_path))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
 pub async fn html_to_pdf(html_content: String, output_path: String) -> Result<(), NagisaError> {
     validate_safe_path(&output_path, true)?;
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::html_to_pdf(&html_content, &output_path)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::html_to_pdf(&html_content, &output_path))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -249,7 +237,6 @@ pub async fn pdf_to_word(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -272,7 +259,6 @@ pub async fn pdf_to_excel(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -293,7 +279,6 @@ pub async fn pdf_to_powerpoint(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -305,12 +290,9 @@ pub async fn create_pdf_portfolio(
         validate_safe_path(p, false)?;
     }
     validate_safe_path(&output_path, true)?;
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::create_pdf_portfolio(&file_paths, &output_path)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::create_pdf_portfolio(&file_paths, &output_path))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -322,7 +304,6 @@ pub fn add_header_footer(
     margin: f32,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_header_footer(&data, &header_text, &footer_text, font_size, margin)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -331,7 +312,7 @@ pub fn add_bookmark(
     title: String,
     page_index: usize,
 ) -> Result<Vec<u8>, NagisaError> {
-    pdf_engine::add_bookmark(&data, &title, page_index).map_err(NagisaError::from)
+    pdf_engine::add_bookmark(&data, &title, page_index)
 }
 
 #[tauri::command]
@@ -343,5 +324,4 @@ pub fn add_bates_number(
     margin: f32,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_bates_number(&data, &prefix, start_number, font_size, margin)
-        .map_err(NagisaError::from)
 }

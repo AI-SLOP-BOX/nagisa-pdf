@@ -1,8 +1,8 @@
 use super::common::*;
 use super::*;
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Document, Object, Stream};
 use sha2::{Digest, Sha256};
-use crate::error::NagisaError;
 
 // ===== BATCH PROCESSING =====
 
@@ -181,10 +181,10 @@ pub fn batch_merge_pdfs_with_options(
 
     for (idx, path) in paths.iter().enumerate() {
         let name = path_display_name(path);
-        let bytes =
-            std::fs::read(path).map_err(|e| NagisaError::from(format!("ファイルを読み込めません: {name}: {e}")))?;
-        let mut doc =
-            Document::load_mem(&bytes).map_err(|e| NagisaError::from(format!("PDFを開けません: {name}: {e}")))?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("ファイルを読み込めません: {name}: {e}")))?;
+        let mut doc = Document::load_mem(&bytes)
+            .map_err(|e| NagisaError::from(format!("PDFを開けません: {name}: {e}")))?;
 
         let encrypted = doc.trailer.has(b"Encrypt");
         if encrypted {
@@ -247,7 +247,8 @@ pub fn batch_merge_pdfs_with_options(
         merged = add_bookmark_tree(&merged, &all_bookmarks)?;
     }
 
-    std::fs::write(output_path, merged).map_err(|e| NagisaError::from(format!("Failed to write output: {e}")))
+    std::fs::write(output_path, merged)
+        .map_err(|e| NagisaError::from(format!("Failed to write output: {e}")))
 }
 
 pub fn batch_add_watermark(
@@ -260,7 +261,8 @@ pub fn batch_add_watermark(
 ) -> Result<Vec<Vec<u8>>, NagisaError> {
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
+        let data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
         let watermarked =
             add_watermark(&data, text, opacity, rotation, font_size, color, true, &[])?;
         results.push(watermarked);
@@ -274,7 +276,8 @@ pub fn batch_protect(paths: &[String], password: &str) -> Result<Vec<Vec<u8>>, N
     }
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
+        let data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let encrypted = crate::pdf_engine::encrypt::encrypt_pdf(&data, password, password)
             .map_err(|e| NagisaError::from(format!("{path}: {e}")))?;
         results.push(encrypted);
@@ -285,7 +288,8 @@ pub fn batch_protect(paths: &[String], password: &str) -> Result<Vec<Vec<u8>>, N
 pub fn batch_optimize(paths: &[String]) -> Result<Vec<Vec<u8>>, NagisaError> {
     let mut results = Vec::new();
     for path in paths {
-        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
+        let data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {}: {e}", path)))?;
         let optimized = optimize_pdf(&data)?;
         results.push(optimized);
     }
@@ -464,7 +468,8 @@ pub fn validate_pdfa_compliance(
     data: &[u8],
     target_conformance: &str,
 ) -> Result<PdfaValidationReport, NagisaError> {
-    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
+    let doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
 
     let conformance = match target_conformance.to_ascii_uppercase().as_str() {
         "A" | "A1" | "A2" => "A",
@@ -562,7 +567,12 @@ pub fn validate_pdfa_compliance(
     // 3. OutputIntent with GTS_PDFA1 subtype and an embedded ICC profile.
     let root_id = match doc.trailer.get(b"Root").and_then(|o| o.as_reference()) {
         Ok(id) => id,
-        Err(e) => return Err(NagisaError::from(format!("PDF Root Catalog not found: {}", e))),
+        Err(e) => {
+            return Err(NagisaError::from(format!(
+                "PDF Root Catalog not found: {}",
+                e
+            )))
+        }
     };
 
     let mut has_pdfa_intent = false;
@@ -766,7 +776,13 @@ pub fn validate_pdfa_compliance(
             has_transparency = true;
         }
         // ExtGState with opacity < 1.0 (/CA or /ca)
-        if dict.get(b"Type").ok().and_then(|t| t.as_name().ok()).map(|n| n == b"ExtGState").unwrap_or(false) {
+        if dict
+            .get(b"Type")
+            .ok()
+            .and_then(|t| t.as_name().ok())
+            .map(|n| n == b"ExtGState")
+            .unwrap_or(false)
+        {
             if let Ok(ca) = dict.get(b"ca").and_then(|o| o.as_float()) {
                 if ca < 0.999 {
                     has_transparency = true;
@@ -977,7 +993,9 @@ pub fn add_header_footer(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+        let content_bytes = content
+            .encode()
+            .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));
@@ -1179,7 +1197,9 @@ pub fn add_bates_number(
         ];
 
         let content = lopdf::content::Content { operations };
-        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+        let content_bytes = content
+            .encode()
+            .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

@@ -1,7 +1,7 @@
 use super::common::*;
 use super::reflow::get_char_metric_width;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TextBlock {
@@ -518,7 +518,9 @@ pub fn edit_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -720,7 +722,9 @@ pub fn move_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -837,7 +841,9 @@ pub fn delete_text_block(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));

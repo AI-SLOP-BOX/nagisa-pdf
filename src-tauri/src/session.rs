@@ -9,9 +9,9 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 // Eviction drops oldest history when exceeded, but always preserves at least 1 undo state
 // so that single large documents (>512MB) do not immediately lose undo capability.
 const TARGET_HISTORY_MEMORY_PER_DOC: usize = 512 * 1024 * 1024; // 512MB target threshold
-// 全セッション合計の履歴バイト上限。32セッション × 512MB = 最大16GB の
-// OOM kill を防ぐためのグローバル天井。超過時は LRU 順で古いセッション
-// ごと追い出す（履歴だけ削っても文書数自体は残るため）。
+                                                                // 全セッション合計の履歴バイト上限。32セッション × 512MB = 最大16GB の
+                                                                // OOM kill を防ぐためのグローバル天井。超過時は LRU 順で古いセッション
+                                                                // ごと追い出す（履歴だけ削っても文書数自体は残るため）。
 const GLOBAL_HISTORY_BUDGET: usize = 2 * 1024 * 1024 * 1024; // 2GB
 
 #[derive(Clone)]
@@ -175,9 +175,11 @@ impl DocumentSession {
                 ref data,
             } => {
                 let mut current = Vec::new();
-                self.doc
-                    .save_to(&mut current)
-                    .map_err(|e| NagisaError::from(format!("Failed to serialize current state during undo: {e}")))?;
+                self.doc.save_to(&mut current).map_err(|e| {
+                    NagisaError::from(format!(
+                        "Failed to serialize current state during undo: {e}"
+                    ))
+                })?;
                 let restored = crate::pdf_engine::load_pdf(data).map_err(|e| match e {
                     NagisaError::PdfParse(msg) => {
                         NagisaError::PdfParse(format!("Failed to restore snapshot: {msg}"))
@@ -193,10 +195,9 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from undo_stack to redo_stack
-        let popped = self
-            .undo_stack
-            .pop_back()
-            .ok_or_else(|| NagisaError::General("Undo history was concurrently modified".to_string()))?;
+        let popped = self.undo_stack.pop_back().ok_or_else(|| {
+            NagisaError::General("Undo history was concurrently modified".to_string())
+        })?;
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.total_history_bytes += redo_cmd.byte_size();
@@ -232,9 +233,11 @@ impl DocumentSession {
                 ref data,
             } => {
                 let mut current = Vec::new();
-                self.doc
-                    .save_to(&mut current)
-                    .map_err(|e| NagisaError::from(format!("Failed to serialize current state during redo: {e}")))?;
+                self.doc.save_to(&mut current).map_err(|e| {
+                    NagisaError::from(format!(
+                        "Failed to serialize current state during redo: {e}"
+                    ))
+                })?;
                 let restored = crate::pdf_engine::load_pdf(data).map_err(|e| match e {
                     NagisaError::PdfParse(msg) => {
                         NagisaError::PdfParse(format!("Failed to restore snapshot: {msg}"))
@@ -250,10 +253,9 @@ impl DocumentSession {
         };
 
         // Once successful, commit transition from redo_stack to undo_stack
-        let popped = self
-            .redo_stack
-            .pop_back()
-            .ok_or_else(|| NagisaError::General("Redo history was concurrently modified".to_string()))?;
+        let popped = self.redo_stack.pop_back().ok_or_else(|| {
+            NagisaError::General("Redo history was concurrently modified".to_string())
+        })?;
         self.total_history_bytes = self.total_history_bytes.saturating_sub(popped.byte_size());
 
         self.push_undo_internal(undo_cmd, false);
@@ -354,7 +356,11 @@ impl SessionManager {
     /// create_session（文書追加時）と session_update_bytes 経路から呼ぶ。
     pub fn enforce_global_budget(&self) {
         while self.total_history_bytes() > GLOBAL_HISTORY_BUDGET {
-            let victim = self.session_order.write().ok().and_then(|mut order| order.pop_front());
+            let victim = self
+                .session_order
+                .write()
+                .ok()
+                .and_then(|mut order| order.pop_front());
             match victim {
                 Some(id) => {
                     if let Ok(mut lock) = self.sessions.write() {
@@ -616,7 +622,9 @@ mod tests {
             if let Some(lopdf::Object::Dictionary(ref mut dict)) = doc.objects.get_mut(&p0) {
                 dict.set("Rotate", lopdf::Object::Integer(180));
             }
-            Err(NagisaError::from("Partial failure during operation after modifying doc".to_string()))
+            Err(NagisaError::from(
+                "Partial failure during operation after modifying doc".to_string(),
+            ))
         });
         assert!(err_res.is_err());
 
@@ -797,18 +805,26 @@ mod tests {
 
         let mut ids = Vec::new();
         for _ in 0..MAX_ACTIVE_SESSIONS + 5 {
-            let id = manager.create_session(&pdf).expect("Session creation should succeed");
+            let id = manager
+                .create_session(&pdf)
+                .expect("Session creation should succeed");
             ids.push(id);
         }
 
         // The first 5 sessions should have been evicted
         for id in &ids[..5] {
-            assert!(manager.get_session(id).is_err(), "Old session {id} should have been evicted");
+            assert!(
+                manager.get_session(id).is_err(),
+                "Old session {id} should have been evicted"
+            );
         }
 
         // The remaining MAX_ACTIVE_SESSIONS should exist
         for id in &ids[5..] {
-            assert!(manager.get_session(id).is_ok(), "Active session {id} should exist");
+            assert!(
+                manager.get_session(id).is_ok(),
+                "Active session {id} should exist"
+            );
         }
 
         // Explicit close

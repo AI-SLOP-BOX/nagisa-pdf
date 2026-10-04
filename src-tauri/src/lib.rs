@@ -69,7 +69,6 @@ pub fn run() {
             protect_pdf,
             compare_pdfs,
             convert_to_pdfa,
-
             // Text & Font Editing
             add_text,
             add_image_to_page,
@@ -84,7 +83,6 @@ pub fn run() {
             edit_text,
             get_text_positions,
             reflow_text,
-
             // Annotations & Markup
             add_highlight,
             add_underline,
@@ -98,7 +96,6 @@ pub fn run() {
             add_annotation_reply,
             set_annotation_status,
             delete_annotation,
-
             // File I/O, Batch & Conversion
             read_file_bytes,
             get_pdf_file_info,
@@ -118,7 +115,6 @@ pub fn run() {
             add_header_footer,
             add_bookmark,
             add_bates_number,
-
             // OCR, Scanner & Redaction
             process_scanned_images,
             ocr_files,
@@ -133,7 +129,6 @@ pub fn run() {
             redact_text_deep,
             sanitize_document,
             convert_fonts_to_outlines,
-
             // Production, Color & Standards
             convert_to_pdfx,
             convert_to_pdfx_standard,
@@ -156,7 +151,6 @@ pub fn run() {
             repair_corrupt_pdf,
             enhance_scanned_pdf,
             compare_pdf_documents,
-
             // Advanced Signature, Form, & Wizards
             add_digital_signature,
             verify_signature,
@@ -189,7 +183,6 @@ pub fn run() {
             add_bookmark_tree,
             visual_diff,
             list_digital_ids,
-
             // Session Management
             session_open_pdf,
             session_close,

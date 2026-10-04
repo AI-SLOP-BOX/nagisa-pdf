@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Object};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Object};
 
 // ===== ACCESSIBILITY CHECK =====
 

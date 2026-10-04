@@ -1,6 +1,6 @@
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::collections::{BTreeMap, HashMap};
-use crate::error::NagisaError;
 
 /// Representation of a parsed TrueType font for embedding and CID mapping.
 pub struct ParsedTrueTypeFont {

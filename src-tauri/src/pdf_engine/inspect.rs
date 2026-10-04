@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== BATCH PROCESSING & PAGE FORMATTING (Separated to batch_ops.rs) =====
 pub use super::batch_ops::*;
@@ -72,8 +72,10 @@ pub struct CompareResult {
 }
 
 pub fn compare_pdfs(data1: &[u8], data2: &[u8]) -> Result<CompareResult, NagisaError> {
-    let doc1 = Document::load_mem(data1).map_err(|e| NagisaError::from(format!("Failed to load PDF1: {e}")))?;
-    let doc2 = Document::load_mem(data2).map_err(|e| NagisaError::from(format!("Failed to load PDF2: {e}")))?;
+    let doc1 = Document::load_mem(data1)
+        .map_err(|e| NagisaError::from(format!("Failed to load PDF1: {e}")))?;
+    let doc2 = Document::load_mem(data2)
+        .map_err(|e| NagisaError::from(format!("Failed to load PDF2: {e}")))?;
 
     let pages1 = get_page_ids(&doc1);
     let pages2 = get_page_ids(&doc2);
@@ -139,7 +141,10 @@ pub fn get_page_count_from_data(data: &[u8]) -> Result<usize, NagisaError> {
     Ok(get_page_ids(&doc).len())
 }
 
-pub fn get_page_dimensions_from_data(data: &[u8], page_index: usize) -> Result<(f32, f32), NagisaError> {
+pub fn get_page_dimensions_from_data(
+    data: &[u8],
+    page_index: usize,
+) -> Result<(f32, f32), NagisaError> {
     let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
@@ -150,7 +155,10 @@ pub fn get_page_dimensions_from_data(data: &[u8], page_index: usize) -> Result<(
 
 /// 表示用ビューポート（視覚寸法＋回転角）を返す。IPC のページ寸法は
 /// 回転適用済みのこちらを使い、オーバーレイとレンダー画素を一致させる。
-pub fn get_page_viewport_from_data(data: &[u8], page_index: usize) -> Result<(f32, f32, i32), NagisaError> {
+pub fn get_page_viewport_from_data(
+    data: &[u8],
+    page_index: usize,
+) -> Result<(f32, f32, i32), NagisaError> {
     let doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
     if page_index >= page_ids.len() {
@@ -159,7 +167,11 @@ pub fn get_page_viewport_from_data(data: &[u8], page_index: usize) -> Result<(f3
     Ok(get_page_viewport(&doc, page_ids[page_index]))
 }
 
-pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Vec<u8>, NagisaError> {
+pub fn render_page_to_png(
+    data: &[u8],
+    page_index: usize,
+    dpi: u32,
+) -> Result<Vec<u8>, NagisaError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -169,7 +181,8 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
     let temp_pdf = temp_dir.join(format!("nagisa_{pid}_{id}.pdf"));
     let temp_prefix = temp_dir.join(format!("nagisa_page_{pid}_{id}"));
 
-    std::fs::write(&temp_pdf, data).map_err(|e| NagisaError::from(format!("Failed to write temp PDF: {e}")))?;
+    std::fs::write(&temp_pdf, data)
+        .map_err(|e| NagisaError::from(format!("Failed to write temp PDF: {e}")))?;
 
     let output = find_tool_command("pdftoppm")
         .args([
@@ -221,10 +234,11 @@ pub fn render_page_to_png(data: &[u8], page_index: usize, dpi: u32) -> Result<Ve
         }
     }
 
-    let png_path = found_file
-        .ok_or_else(|| NagisaError::from("Failed to locate rendered PNG output from pdftoppm".to_string()))?;
-    let png_data =
-        std::fs::read(&png_path).map_err(|e| NagisaError::from(format!("Failed to read rendered PNG: {e}")))?;
+    let png_path = found_file.ok_or_else(|| {
+        NagisaError::from("Failed to locate rendered PNG output from pdftoppm".to_string())
+    })?;
+    let png_data = std::fs::read(&png_path)
+        .map_err(|e| NagisaError::from(format!("Failed to read rendered PNG: {e}")))?;
     let _ = std::fs::remove_file(&png_path);
 
     Ok(png_data)
@@ -315,7 +329,10 @@ pub fn extract_all_text(data: &[u8]) -> Result<Vec<String>, NagisaError> {
         .collect())
 }
 
-pub fn search_text_in_doc(doc: &Document, query: &str) -> Result<Vec<serde_json::Value>, NagisaError> {
+pub fn search_text_in_doc(
+    doc: &Document,
+    query: &str,
+) -> Result<Vec<serde_json::Value>, NagisaError> {
     let page_ids = get_page_ids(doc);
     let mut results = Vec::new();
 
@@ -807,7 +824,9 @@ pub fn add_stamp(
     ];
 
     let content = lopdf::content::Content { operations };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -867,7 +886,8 @@ pub fn print_pdf(data: &[u8]) -> Result<(), NagisaError> {
         uniq
     ));
 
-    std::fs::write(&temp_pdf, data).map_err(|e| NagisaError::from(format!("Failed to write temp: {e}")))?;
+    std::fs::write(&temp_pdf, data)
+        .map_err(|e| NagisaError::from(format!("Failed to write temp: {e}")))?;
 
     // 10分後に残っていたら消す（印刷スプーラ読込後の残留対策）。
     // スプーラ未読の稀なケースでは印刷失敗になり得るが、残留全文書よりまし。

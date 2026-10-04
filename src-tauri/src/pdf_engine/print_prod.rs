@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== COLOR MANAGEMENT (CMYK) =====
 
@@ -294,7 +294,11 @@ pub fn embed_icc_profile(data: &[u8], profile_name: &str) -> Result<Vec<u8>, Nag
 
 // ===== ADVANCED PDF OPTIMIZATION =====
 
-pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Vec<u8>, NagisaError> {
+pub fn downsample_images(
+    data: &[u8],
+    target_dpi: u32,
+    quality: u8,
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = load_pdf(data)?;
 
     let mut images_to_update: Vec<OID> = Vec::new();
@@ -328,7 +332,6 @@ pub fn downsample_images(data: &[u8], target_dpi: u32, quality: u8) -> Result<Ve
                     _ => None,
                 })
                 .unwrap_or(100);
-
 
             let height = stream
                 .dict
@@ -524,7 +527,9 @@ pub fn flatten_content(data: &[u8]) -> Result<Vec<u8>, NagisaError> {
             let content = lopdf::content::Content {
                 operations: all_operations,
             };
-            let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+            let content_bytes = content
+                .encode()
+                .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
             let mut stream = Stream::new(Dictionary::new(), content_bytes);
             stream.dict.set("Type", Object::Name("Content".into()));

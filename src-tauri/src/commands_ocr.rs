@@ -21,11 +21,13 @@ pub async fn process_scanned_images(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn ocr_files(paths: Vec<String>, language: String) -> Result<serde_json::Value, NagisaError> {
+pub async fn ocr_files(
+    paths: Vec<String>,
+    language: String,
+) -> Result<serde_json::Value, NagisaError> {
     let safe_paths: Vec<String> = paths
         .iter()
         .map(|p| {
@@ -39,7 +41,6 @@ pub async fn ocr_files(paths: Vec<String>, language: String) -> Result<serde_jso
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -47,24 +48,22 @@ pub async fn ocr_image_blocks(
     image_bytes: Vec<u8>,
     language: String,
 ) -> Result<Vec<ocr_engine::OCRLineBlock>, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        ocr_engine::ocr_image_blocks(&image_bytes, &language)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || ocr_engine::ocr_image_blocks(&image_bytes, &language))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
-pub async fn create_epub(text: String, output_path: String, title: String) -> Result<(), NagisaError> {
+pub async fn create_epub(
+    text: String,
+    output_path: String,
+    title: String,
+) -> Result<(), NagisaError> {
     let safe_output = super::commands_io::validate_safe_path(&output_path, true)?;
     let safe_output = safe_output.to_string_lossy().to_string();
-    tokio::task::spawn_blocking(move || {
-        ocr_engine::create_epub(&text, &safe_output, &title)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || ocr_engine::create_epub(&text, &safe_output, &title))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -87,7 +86,6 @@ pub async fn create_searchable_pdf(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 // ===== REDACTION COMMANDS =====
@@ -96,10 +94,13 @@ pub async fn create_searchable_pdf(
 // デコード経路の回帰を guard する。
 
 #[tauri::command]
-pub fn redact_text(data: Vec<u8>, search_text: String, replacement: String) -> Result<Vec<u8>, NagisaError> {
+pub fn redact_text(
+    data: Vec<u8>,
+    search_text: String,
+    replacement: String,
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::redact::guard_not_signed(&data)?;
     pdf_engine::redact_text(&data, &search_text, &replacement)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -118,7 +119,6 @@ pub async fn deep_redact(
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -130,47 +130,40 @@ pub async fn deep_redact_scanned_pdf(
 ) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || -> Result<Vec<u8>, NagisaError> {
         pdf_engine::redact::guard_not_signed(&data)?;
-        let (bytes, _hits) = ocr_engine::deep_redact_scanned_all(
-            &data,
-            &search_text,
-            &language,
-            &color,
-        )
-        .map_err(NagisaError::from)?;
+        let (bytes, _hits) =
+            ocr_engine::deep_redact_scanned_all(&data, &search_text, &language, &color)?;
         Ok(bytes)
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn redact_text_deep(data: Vec<u8>, search_text: String, color: String) -> Result<Vec<u8>, NagisaError> {
+pub async fn redact_text_deep(
+    data: Vec<u8>,
+    search_text: String,
+    color: String,
+) -> Result<Vec<u8>, NagisaError> {
     tokio::task::spawn_blocking(move || {
         pdf_engine::redact::guard_not_signed(&data)?;
         pdf_engine::redact_text_deep(&data, &search_text, &color)
     })
     .await
     .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub async fn sanitize_document(data: Vec<u8>) -> Result<(Vec<u8>, pdf_engine::SanitizeSummary), NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::sanitize_document(&data)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+pub async fn sanitize_document(
+    data: Vec<u8>,
+) -> Result<(Vec<u8>, pdf_engine::SanitizeSummary), NagisaError> {
+    tokio::task::spawn_blocking(move || pdf_engine::sanitize_document(&data))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }
 
 #[tauri::command]
 pub async fn convert_fonts_to_outlines(data: Vec<u8>) -> Result<Vec<u8>, NagisaError> {
-    tokio::task::spawn_blocking(move || {
-        pdf_engine::convert_fonts_to_outlines(&data)
-    })
-    .await
-    .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
-    .map_err(NagisaError::from)
+    tokio::task::spawn_blocking(move || pdf_engine::convert_fonts_to_outlines(&data))
+        .await
+        .map_err(|e| NagisaError::General(format!("Task failed: {e}")))?
 }

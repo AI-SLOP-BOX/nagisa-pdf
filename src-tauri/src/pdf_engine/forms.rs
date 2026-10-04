@@ -1,7 +1,7 @@
 use super::common::*;
 use super::*;
-use lopdf::{Dictionary, Object};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Object};
 
 // ===== ADVANCED FORM =====
 
@@ -834,7 +834,8 @@ pub fn aggregate_form_data(pdf_paths: &[String]) -> Result<serde_json::Value, Na
     let mut all_data = Vec::new();
 
     for path in pdf_paths {
-        let data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
+        let data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let fields = get_form_fields(&data)?;
 
         let mut file_data = serde_json::Map::new();

@@ -1,6 +1,6 @@
 use super::common::*;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 // ===== DIGITAL SIGNATURE =====
 
@@ -211,7 +211,8 @@ pub fn check_cryptographic_signature_presence(data: &[u8]) -> Result<bool, Nagis
 
 /// ドキュメントオブジェクトから暗号署名の有無を検査する内部ヘルパー。
 /// ByteRange エントリ（PAdES/PKCS#7）を持つ /Sig フィールドを探す。
-pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {    for obj in doc.objects.values() {
+pub fn doc_has_cryptographic_signatures(doc: &Document) -> bool {
+    for obj in doc.objects.values() {
         if let Object::Dictionary(dict) = obj {
             // /FT /Sig かつ /ByteRange を持つ → 暗号的に署名されたフィールド
             let is_sig_field = dict.get(b"FT").ok().and_then(|o| o.as_name().ok()) == Some(b"Sig");
@@ -378,7 +379,10 @@ pub fn verify_signature_in_doc(doc: &Document) -> Result<serde_json::Value, Nagi
     }))
 }
 
-pub fn verify_signature(data: &[u8], signature_index: usize) -> Result<serde_json::Value, NagisaError> {
+pub fn verify_signature(
+    data: &[u8],
+    signature_index: usize,
+) -> Result<serde_json::Value, NagisaError> {
     let doc = load_pdf(data)?;
     let val = verify_signature_in_doc(&doc)?;
 

@@ -155,7 +155,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_deep_redact_consecutive_tj_advances_position() {
         // BT / Tm(100,500) / (Hello)Tj / (Secret)Tj / ET:
         // 旧実装は現在位置を進めず両Tjを同一座標と判定した。
@@ -210,7 +209,7 @@ mod tests {
         fn collect_tj(pdf: &[u8]) -> String {
             let doc = Document::load_mem(pdf).unwrap();
             let mut texts = Vec::new();
-            for (_, obj) in doc.objects.iter() {
+            for obj in doc.objects.values() {
                 if let Object::Stream(s) = obj {
                     let bytes = s
                         .decompressed_content()
@@ -239,7 +238,10 @@ mod tests {
         let out = deep_redact(&buf, 0, 135.0, 490.0, 50.0, 30.0, "#000000").expect("deep redact");
         let joined = collect_tj(&out);
         assert!(joined.contains("Hello"), "Helloは残るべき: {joined}");
-        assert!(!joined.contains("Secret"), "Secretは消去されるべき: {joined}");
+        assert!(
+            !joined.contains("Secret"),
+            "Secretは消去されるべき: {joined}"
+        );
     }
 
     #[test]
@@ -297,7 +299,7 @@ mod tests {
         let doc = Document::load_mem(&out).unwrap();
         let mut found_tm = None;
         let mut texts = Vec::new();
-        for (_, obj) in doc.objects.iter() {
+        for obj in doc.objects.values() {
             if let Object::Stream(s) = obj {
                 let bytes = s
                     .decompressed_content()
@@ -417,10 +419,7 @@ mod tests {
         );
         // ASCII（Helvetica出力）は従来ヒューリスティクスを維持
         let wi = get_char_metric_width('i', 12.0);
-        assert!(
-            (wi - 12.0 * 0.28).abs() < 1e-6,
-            "ASCII係数は不変: {wi}"
-        );
+        assert!((wi - 12.0 * 0.28).abs() < 1e-6, "ASCII係数は不変: {wi}");
         let wa = get_char_metric_width('あ', 10.0);
         assert!((wa - 10.0).abs() < 0.5, "全角かな実幅: {wa}");
     }
@@ -434,10 +433,7 @@ mod tests {
         // [(caf\xe9) 0 (late) 0 (XYZ)] TJ — バイナリ組み立てで 0xE9 を埋め込む
         let mut ops: Vec<u8> = b"BT /F1 12 Tf 100 700 Td [".to_vec();
         ops.extend_from_slice(b"(caf\xe9) 0 (late) 0 (XYZ)] TJ ET");
-        let content_id = doc.add_object(Object::Stream(Stream::new(
-            Dictionary::new(),
-            ops,
-        )));
+        let content_id = doc.add_object(Object::Stream(Stream::new(Dictionary::new(), ops)));
         let mut page = Dictionary::new();
         page.set("Type", Object::Name(b"Page".to_vec()));
         page.set("Parent", Object::Reference(pages_id));
@@ -468,7 +464,7 @@ mod tests {
         let out = edit_text(&buf, 0, "XYZ", "ABC", "", 0.0, "").expect("edit");
         let doc2 = Document::load_mem(&out).unwrap();
         let mut strings: Vec<Vec<u8>> = Vec::new();
-        for (_, obj) in doc2.objects.iter() {
+        for obj in doc2.objects.values() {
             if let Object::Stream(s) = obj {
                 let bytes = s
                     .decompressed_content()
@@ -641,32 +637,25 @@ mod tests {
         let src = dir.join("t.png");
         let dst = dir.join("o.pdf");
         let rgba = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 0]));
-        rgba
-            .save(&src)
-            .expect("write transparent fixture png");
-        images_to_pdf(
-            &[src.to_string_lossy().to_string()],
-            &dst.to_string_lossy(),
-        )
-        .expect("images_to_pdf");
+        rgba.save(&src).expect("write transparent fixture png");
+        images_to_pdf(&[src.to_string_lossy().to_string()], &dst.to_string_lossy())
+            .expect("images_to_pdf");
         let bytes = std::fs::read(&dst).unwrap();
         let doc = Document::load_mem(&bytes).unwrap();
         let mut jpeg: Option<Vec<u8>> = None;
-        for (_, obj) in doc.objects.iter() {
+        for obj in doc.objects.values() {
             if let Object::Stream(s) = obj {
-                let is_dct = s
-                    .dict
-                    .get(b"Filter")
-                    .ok()
-                    .and_then(|f| f.as_name().ok())
-                    == Some(b"DCTDecode");
+                let is_dct =
+                    s.dict.get(b"Filter").ok().and_then(|f| f.as_name().ok()) == Some(b"DCTDecode");
                 if is_dct {
                     jpeg = Some(s.content.clone());
                 }
             }
         }
         let jpeg = jpeg.expect("DCT image xobject");
-        let decoded = image::load_from_memory(&jpeg).expect("decode jpeg").to_rgb8();
+        let decoded = image::load_from_memory(&jpeg)
+            .expect("decode jpeg")
+            .to_rgb8();
         // JPEGは非可逆のため完全な白(255)ではなく「明るい」ことを要求
         for p in decoded.pixels() {
             assert!(
@@ -798,7 +787,7 @@ mod tests {
         fn collect_tj(pdf: &[u8]) -> String {
             let doc = Document::load_mem(pdf).unwrap();
             let mut texts = Vec::new();
-            for (_, obj) in doc.objects.iter() {
+            for obj in doc.objects.values() {
                 if let Object::Stream(s) = obj {
                     let bytes = s
                         .decompressed_content()
@@ -842,7 +831,7 @@ mod tests {
         let raw_rgb = vec![200u8; (w * h * 3) as usize];
         let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&raw_rgb).unwrap();
-        let flate_rgb = enc.finish().unwrap();
+        let _flate_rgb = enc.finish().unwrap();
         let raw_mask = vec![255u8; (w * h) as usize];
         let mut enc2 = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         enc2.write_all(&raw_mask).unwrap();
@@ -911,14 +900,10 @@ mod tests {
         let out = compress_pdf_quality(&buf, 30).expect("compress");
         let doc2 = Document::load_mem(&out).unwrap();
         let mut saw_flate_image = false;
-        for (_, obj) in doc2.objects.iter() {
+        for obj in doc2.objects.values() {
             if let Object::Stream(s) = obj {
-                let is_image = s
-                    .dict
-                    .get(b"Subtype")
-                    .ok()
-                    .and_then(|v| v.as_name().ok())
-                    == Some(b"Image");
+                let is_image =
+                    s.dict.get(b"Subtype").ok().and_then(|v| v.as_name().ok()) == Some(b"Image");
                 if is_image && s.dict.has(b"SMask") {
                     assert!(
                         s.dict.get(b"Filter").is_err(),
@@ -951,10 +936,8 @@ mod tests {
         // 真の Flate 圧縮ストリームを構築（set_plain_content は非圧縮のため不可）
         let compressed = {
             use std::io::Write;
-            let mut enc = flate2::write::ZlibEncoder::new(
-                Vec::new(),
-                flate2::Compression::default(),
-            );
+            let mut enc =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
             enc.write_all(content.as_bytes()).expect("deflate fixture");
             enc.finish().expect("finish deflate")
         };
@@ -996,7 +979,7 @@ mod tests {
         let doc2 = Document::load_mem(&out).unwrap();
         let mut texts = Vec::new();
         let mut has_box = false;
-        for (_, obj) in doc2.objects.iter() {
+        for obj in doc2.objects.values() {
             if let Object::Stream(s) = obj {
                 let bytes = s
                     .decompressed_content()
@@ -1016,7 +999,10 @@ mod tests {
             }
         }
         let joined = texts.join("|");
-        assert!(joined.contains("Survive"), "圧縮内容のテキストを保持すべき: {joined}");
+        assert!(
+            joined.contains("Survive"),
+            "圧縮内容のテキストを保持すべき: {joined}"
+        );
         assert!(has_box, "墨消し矩形は描画されるべき");
     }
 
@@ -2375,11 +2361,17 @@ mod tests {
 
         // Wrong password is rejected with an honest message.
         let err = encrypt::decrypt_pdf(&encrypted, "wrong-password").unwrap_err();
-        assert!(err.message().contains("パスワード"), "wrong-password error: {err}");
+        assert!(
+            err.message().contains("パスワード"),
+            "wrong-password error: {err}"
+        );
 
         // Empty user password is refused at encrypt time.
         let err = encrypt::encrypt_pdf(&plain, "", "").unwrap_err();
-        assert!(err.message().contains("パスワード"), "empty-password error: {err}");
+        assert!(
+            err.message().contains("パスワード"),
+            "empty-password error: {err}"
+        );
 
         // Correct passwords (user and owner) restore the exact payloads.
         for pw in ["open-sesame", "owner-pw"] {
@@ -2398,7 +2390,10 @@ mod tests {
 
         // Re-encrypting an encrypted file is refused.
         let err = encrypt::encrypt_pdf(&encrypted, "x", "x").unwrap_err();
-        assert!(err.message().contains("既に暗号化"), "already-encrypted error: {err}");
+        assert!(
+            err.message().contains("既に暗号化"),
+            "already-encrypted error: {err}"
+        );
     }
 
     #[test]
@@ -6232,7 +6227,9 @@ mod tests {
             "Must reject modifying signed PDF to prevent ByteRange invalidation"
         );
         let err_msg = err_result.unwrap_err();
-        assert!(err_msg.message().contains("already contains cryptographically signed fields"));
+        assert!(err_msg
+            .message()
+            .contains("already contains cryptographically signed fields"));
     }
 
     #[test]
@@ -6270,47 +6267,92 @@ mod tests {
         // 1. rotate_page must be blocked
         let res_rot = rotate_page(&signed_bytes, 0, 90);
         assert!(res_rot.is_err());
-        assert!(res_rot.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_rot
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 2. delete_page must be blocked
         let res_del = delete_page(&signed_bytes, 0);
         assert!(res_del.is_err());
-        assert!(res_del.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_del
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 3. reorder_pages must be blocked
         let res_reord = reorder_pages(&signed_bytes, 0, 1);
         assert!(res_reord.is_err());
-        assert!(res_reord.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_reord
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 4. duplicate_page must be blocked
         let res_dup = duplicate_page(&signed_bytes, 0);
         assert!(res_dup.is_err());
-        assert!(res_dup.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_dup
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 5. add_text must be blocked
-        let res_add_txt = add_text(&signed_bytes, 0, "Blocked Text", 10.0, 10.0, 12.0, "#000000");
+        let res_add_txt = add_text(
+            &signed_bytes,
+            0,
+            "Blocked Text",
+            10.0,
+            10.0,
+            12.0,
+            "#000000",
+        );
         assert!(res_add_txt.is_err());
-        assert!(res_add_txt.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_add_txt
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 6. edit_text must be blocked
-        let res_edit_txt = edit_text(&signed_bytes, 0, "Test", "Replaced", "Helvetica", 12.0, "#000000");
+        let res_edit_txt = edit_text(
+            &signed_bytes,
+            0,
+            "Test",
+            "Replaced",
+            "Helvetica",
+            12.0,
+            "#000000",
+        );
         assert!(res_edit_txt.is_err());
-        assert!(res_edit_txt.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_edit_txt
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 7. edit_text_block must be blocked
-        let res_edit_blk = crate::pdf_engine::text_block_ops::edit_text_block(&signed_bytes, 0, 0, "New Block");
+        let res_edit_blk =
+            crate::pdf_engine::text_block_ops::edit_text_block(&signed_bytes, 0, 0, "New Block");
         assert!(res_edit_blk.is_err());
-        assert!(res_edit_blk.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_edit_blk
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 8. move_text_block must be blocked
-        let res_move_blk = crate::pdf_engine::text_block_ops::move_text_block(&signed_bytes, 0, 0, 20.0, 20.0);
+        let res_move_blk =
+            crate::pdf_engine::text_block_ops::move_text_block(&signed_bytes, 0, 0, 20.0, 20.0);
         assert!(res_move_blk.is_err());
-        assert!(res_move_blk.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_move_blk
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
 
         // 9. delete_text_block must be blocked
         let res_del_blk = crate::pdf_engine::text_block_ops::delete_text_block(&signed_bytes, 0, 0);
         assert!(res_del_blk.is_err());
-        assert!(res_del_blk.unwrap_err().message().contains("有効なデジタル署名"));
+        assert!(res_del_blk
+            .unwrap_err()
+            .message()
+            .contains("有効なデジタル署名"));
     }
 
     #[test]

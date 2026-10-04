@@ -8,7 +8,6 @@ pub fn get_text_blocks(
     page_index: usize,
 ) -> Result<Vec<pdf_engine::TextBlock>, NagisaError> {
     pdf_engine::get_text_blocks(&data, page_index)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -19,7 +18,6 @@ pub fn edit_text_block(
     new_text: String,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::edit_text_block(&data, page_index, block_id, &new_text)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -31,7 +29,6 @@ pub fn move_text_block(
     new_y: f32,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::move_text_block(&data, page_index, block_id, new_x, new_y)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -41,19 +38,20 @@ pub fn delete_text_block(
     block_id: usize,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::delete_text_block(&data, page_index, block_id)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
 pub fn get_fonts(data: Vec<u8>) -> Result<Vec<serde_json::Value>, NagisaError> {
     pdf_engine::get_fonts(&data)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
-pub fn replace_font(data: Vec<u8>, old_font: String, new_font: String) -> Result<Vec<u8>, NagisaError> {
+pub fn replace_font(
+    data: Vec<u8>,
+    old_font: String,
+    new_font: String,
+) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::replace_font(&data, &old_font, &new_font)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -64,7 +62,6 @@ pub fn change_text_color(
     new_color: String,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::change_text_color(&data, page_index, &old_color, &new_color)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -75,7 +72,6 @@ pub fn change_font_size(
     new_size: f32,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::change_font_size(&data, page_index, old_size, new_size)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -97,7 +93,6 @@ pub fn edit_text(
         font_size,
         &color,
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -106,7 +101,6 @@ pub fn get_text_positions(
     page_index: usize,
 ) -> Result<Vec<serde_json::Value>, NagisaError> {
     pdf_engine::get_text_positions(&data, page_index)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -132,7 +126,6 @@ pub fn reflow_text(
         line_height,
         &color,
     )
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -146,7 +139,6 @@ pub fn add_text(
     color: String,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_text(&data, page_index, &text, x, y, size, &color)
-        .map_err(NagisaError::from)
 }
 
 #[tauri::command]
@@ -160,6 +152,4 @@ pub fn add_image_to_page(
     height: f64,
 ) -> Result<Vec<u8>, NagisaError> {
     pdf_engine::add_image_to_page(&data, page_index, &image_data, x, y, width, height)
-        .map_err(NagisaError::from)
 }
-

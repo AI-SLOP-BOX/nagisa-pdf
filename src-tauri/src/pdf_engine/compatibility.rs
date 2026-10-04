@@ -1,6 +1,6 @@
 use super::common::get_page_ids;
-use lopdf::Document;
 use crate::error::NagisaError;
+use lopdf::Document;
 
 fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack[from..]
@@ -98,7 +98,8 @@ pub fn inspect_pdf(data: &[u8]) -> Result<CompatibilityReport, NagisaError> {
         parseable: false,
         ..CompatibilityReport::default()
     };
-    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
+    let doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("PDFの解析に失敗しました: {e}")))?;
     report.parseable = true;
     report.page_count = get_page_ids(&doc).len();
     report.has_xref_stream = find_subsequence(data, b"/Type /XRef", 0).is_some()

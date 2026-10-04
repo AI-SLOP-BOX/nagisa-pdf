@@ -1,9 +1,9 @@
 use super::common::*;
 use super::*;
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::io::Write;
 use zip::write::SimpleFileOptions;
-use crate::error::NagisaError;
 
 /// #45 是正: OOXML XML文字列のサニタイザー。
 ///
@@ -76,8 +76,10 @@ fn ocr_text_for_pages(
             )));
         }
         for (idx, &p) in candidates.iter().enumerate() {
-            let (text, _, _, _) = crate::ocr_engine::run_tesseract(&imgs[idx], "jpn+eng")
-                .map_err(|e| NagisaError::from(format!("OCRに失敗しました（{}ページ目）: {e}", p + 1)))?;
+            let (text, _, _, _) =
+                crate::ocr_engine::run_tesseract(&imgs[idx], "jpn+eng").map_err(|e| {
+                    NagisaError::from(format!("OCRに失敗しました（{}ページ目）: {e}", p + 1))
+                })?;
             if !text.trim().is_empty() {
                 out.insert(p, text);
             }
@@ -335,7 +337,8 @@ pub fn pdf_to_word_ex(
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
+    zip.write_all(rels.as_bytes())
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. word/document.xml with intelligent paragraph flow reconstruction
     zip.start_file("word/document.xml", options)
@@ -626,7 +629,8 @@ pub fn pdf_to_word_ex(
         for (name, bytes) in &media {
             zip.start_file(format!("word/media/{name}"), options)
                 .map_err(|e| NagisaError::from(e.to_string()))?;
-            zip.write_all(bytes).map_err(|e| NagisaError::from(e.to_string()))?;
+            zip.write_all(bytes)
+                .map_err(|e| NagisaError::from(e.to_string()))?;
         }
     }
 
@@ -703,7 +707,8 @@ pub fn pdf_to_excel_ex(
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
+    zip.write_all(rels.as_bytes())
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. xl/_rels/workbook.xml.rels
     zip.start_file("xl/_rels/workbook.xml.rels", options)
@@ -1015,7 +1020,8 @@ pub fn pdf_to_powerpoint_ex(
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>"#;
-    zip.write_all(rels.as_bytes()).map_err(|e| NagisaError::from(e.to_string()))?;
+    zip.write_all(rels.as_bytes())
+        .map_err(|e| NagisaError::from(e.to_string()))?;
 
     // 3. ppt/_rels/presentation.xml.rels
     zip.start_file("ppt/_rels/presentation.xml.rels", options)
@@ -1073,7 +1079,8 @@ pub fn pdf_to_powerpoint_ex(
             if let Ok(img_bytes) = std::fs::read(img_path) {
                 zip.start_file(format!("ppt/media/{img_filename}"), options)
                     .map_err(|e| NagisaError::from(e.to_string()))?;
-                zip.write_all(&img_bytes).map_err(|e| NagisaError::from(e.to_string()))?;
+                zip.write_all(&img_bytes)
+                    .map_err(|e| NagisaError::from(e.to_string()))?;
             }
         }
 
@@ -1228,7 +1235,8 @@ pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into());
 
-        let file_data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
+        let file_data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
         let file_size = file_data.len() as i64;
 
         let mut embed_dict = Dictionary::new();
@@ -1356,7 +1364,8 @@ pub fn create_pdf_portfolio(file_paths: &[String], output_path: &str) -> Result<
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    doc.save_to(&mut buf)
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }

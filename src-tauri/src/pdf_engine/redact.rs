@@ -1,9 +1,9 @@
 use super::common::*;
 use super::font_unicode::parse_tounicode_cmap;
 use super::page_tree::materialize_inherited_page_attrs;
+use crate::error::NagisaError;
 use lopdf::{Dictionary, Document, Object, Stream};
 use std::collections::HashMap;
-use crate::error::NagisaError;
 
 #[derive(Clone, Default)]
 struct FontInfo {
@@ -177,7 +177,9 @@ pub fn redact_area(
     operations.push(lopdf::content::Operation::new("Q", vec![]));
 
     let content = lopdf::content::Content { operations };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -197,7 +199,11 @@ pub fn redact_area(
     save_doc(&mut doc)
 }
 
-pub fn redact_text(data: &[u8], search_text: &str, replacement: &str) -> Result<Vec<u8>, NagisaError> {
+pub fn redact_text(
+    data: &[u8],
+    search_text: &str,
+    replacement: &str,
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc).clone();
 
@@ -748,8 +754,7 @@ pub fn deep_redact(
                                 );
                             }
                             // 除去時も位置は進める（後続opの座標追跡を壊さない）
-                            let remove =
-                                in_text && text_run_hits(current_x, adv, current_y);
+                            let remove = in_text && text_run_hits(current_x, adv, current_y);
                             current_x += adv;
                             if remove {
                                 // このテキスト操作を完全に除去する
@@ -784,8 +789,7 @@ pub fn deep_redact(
                                     }
                                 }
                             }
-                            let remove =
-                                in_text && text_run_hits(current_x, adv, current_y);
+                            let remove = in_text && text_run_hits(current_x, adv, current_y);
                             current_x += adv;
                             if remove {
                                 continue;
@@ -805,8 +809,7 @@ pub fn deep_redact(
                                     h_scale,
                                 );
                             }
-                            let remove =
-                                in_text && text_run_hits(current_x, adv, current_y);
+                            let remove = in_text && text_run_hits(current_x, adv, current_y);
                             current_x += adv;
                             current_y -= leading;
                             if remove {
@@ -835,8 +838,7 @@ pub fn deep_redact(
                                     );
                                 }
                             }
-                            let remove =
-                                in_text && text_run_hits(current_x, adv, current_y);
+                            let remove = in_text && text_run_hits(current_x, adv, current_y);
                             current_x += adv;
                             current_y -= leading;
                             if remove {
@@ -888,7 +890,9 @@ pub fn deep_redact(
     let content = lopdf::content::Content {
         operations: new_operations,
     };
-    let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+    let content_bytes = content
+        .encode()
+        .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
     let mut stream = Stream::new(Dictionary::new(), content_bytes);
     stream.dict.set("Type", Object::Name("Content".into()));
@@ -1057,7 +1061,11 @@ pub fn deep_redact(
 
 // ===== REDACTION WITH TEXT SEARCH =====
 
-pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<Vec<u8>, NagisaError> {
+pub fn redact_text_deep(
+    data: &[u8],
+    search_text: &str,
+    color: &str,
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = load_pdf(data)?;
 
     let (_r, _g, _b) = parse_hex_color(color, (0.0, 0.0, 0.0));
@@ -1199,7 +1207,9 @@ pub fn redact_text_deep(data: &[u8], search_text: &str, color: &str) -> Result<V
         let content = lopdf::content::Content {
             operations: new_operations,
         };
-        let content_bytes = content.encode().map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
+        let content_bytes = content
+            .encode()
+            .map_err(|e| NagisaError::from(format!("Encode error: {e}")))?;
 
         let mut stream = Stream::new(Dictionary::new(), content_bytes);
         stream.dict.set("Type", Object::Name("Content".into()));

@@ -1,6 +1,6 @@
+use crate::error::NagisaError;
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb, RgbImage};
-use crate::error::NagisaError;
 
 pub fn process_scanned_images(
     paths: &[String],
@@ -9,7 +9,9 @@ pub fn process_scanned_images(
     dpi: u32,
 ) -> Result<Vec<u8>, crate::error::NagisaError> {
     if paths.is_empty() {
-        return Err(crate::error::NagisaError::InvalidParameter("No images provided for scan processing".to_string()));
+        return Err(crate::error::NagisaError::InvalidParameter(
+            "No images provided for scan processing".to_string(),
+        ));
     }
 
     let mut doc = lopdf::Document::with_version("1.7");
@@ -17,7 +19,8 @@ pub fn process_scanned_images(
     let mut kids = Vec::new();
 
     for path in paths {
-        let img = image::open(path).map_err(|e| NagisaError::from(format!("Failed to open {path}: {e}")))?;
+        let img = image::open(path)
+            .map_err(|e| NagisaError::from(format!("Failed to open {path}: {e}")))?;
 
         let mut result = img;
         if correct_perspective {

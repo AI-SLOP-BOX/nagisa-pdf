@@ -2,8 +2,8 @@ use super::common::*;
 use super::*;
 use lopdf::{Dictionary, Document, Object, Stream};
 // #42: タイムアウト付き外部コマンド実行
-use crate::pdf_engine::common::{run_command_with_timeout, EXTERNAL_CMD_TIMEOUT_SECS};
 use crate::error::NagisaError;
+use crate::pdf_engine::common::{run_command_with_timeout, EXTERNAL_CMD_TIMEOUT_SECS};
 
 /// #46 是正: 一時ディレクトリの RAII ガード。
 ///
@@ -267,8 +267,10 @@ pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), Na
     let mut kids = Vec::new();
 
     for path in image_paths {
-        let img_data = std::fs::read(path).map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
-        let img = image::load_from_memory(&img_data).map_err(|e| NagisaError::from(e.to_string()))?;
+        let img_data = std::fs::read(path)
+            .map_err(|e| NagisaError::from(format!("Failed to read {path}: {e}")))?;
+        let img =
+            image::load_from_memory(&img_data).map_err(|e| NagisaError::from(e.to_string()))?;
         // JPEG にアルファチャネルは存在しないため白マット合成（共通ヘルパー）
         let rgb = flatten_alpha_to_white(&img);
         let (width, height) = rgb.dimensions();
@@ -360,7 +362,8 @@ pub fn images_to_pdf(image_paths: &[String], output_path: &str) -> Result<(), Na
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    doc.save_to(&mut buf)
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }
@@ -559,7 +562,10 @@ pub(crate) fn extract_text_from_html(html: &str) -> String {
 }
 
 /// Helper: Generate a valid multi-page PDF document from plain text
-pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Result<(), NagisaError> {
+pub(crate) fn generate_pdf_from_plain_text(
+    text: &str,
+    output_path: &str,
+) -> Result<(), NagisaError> {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.add_object(Object::Dictionary(Dictionary::new()));
 
@@ -728,7 +734,8 @@ pub(crate) fn generate_pdf_from_plain_text(text: &str, output_path: &str) -> Res
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
+    doc.save_to(&mut buf)
+        .map_err(|e| NagisaError::from(e.to_string()))?;
     std::fs::write(output_path, buf).map_err(|e| NagisaError::from(e.to_string()))?;
     Ok(())
 }
@@ -1065,8 +1072,8 @@ pub fn create_action_wizard(name: &str, steps: &[ActionStep]) -> Result<String, 
 }
 
 pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, NagisaError> {
-    let wizard: ActionWizard =
-        serde_json::from_str(wizard_json).map_err(|e| NagisaError::from(format!("Invalid wizard JSON: {e}")))?;
+    let wizard: ActionWizard = serde_json::from_str(wizard_json)
+        .map_err(|e| NagisaError::from(format!("Invalid wizard JSON: {e}")))?;
 
     let mut current_data = data.to_vec();
 
@@ -1164,8 +1171,9 @@ pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, 
                     .get("rotation")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(90) as i32;
-                let mut temp_doc = Document::load_mem(&current_data)
-                    .map_err(|e| NagisaError::from(format!("Failed to parse PDF for rotation: {e}")))?;
+                let mut temp_doc = Document::load_mem(&current_data).map_err(|e| {
+                    NagisaError::from(format!("Failed to parse PDF for rotation: {e}"))
+                })?;
                 let page_count = get_page_count(&temp_doc);
                 for p in 0..page_count {
                     super::common::rotate_page_in_doc(&mut temp_doc, p, rotation)?;
@@ -1182,7 +1190,10 @@ pub fn execute_action_wizard(data: &[u8], wizard_json: &str) -> Result<Vec<u8>, 
                 current_data = super::scan_enhance::enhance_scanned_pdf(&current_data, &options)?;
             }
             _ => {
-                return Err(NagisaError::from(format!("Unknown action: {}", step.action_type)));
+                return Err(NagisaError::from(format!(
+                    "Unknown action: {}",
+                    step.action_type
+                )));
             }
         }
     }
@@ -1340,7 +1351,10 @@ fn build_outline_nodes(
     (node_ids, total_count)
 }
 
-pub fn add_bookmark_tree(data: &[u8], bookmarks: &[serde_json::Value]) -> Result<Vec<u8>, NagisaError> {
+pub fn add_bookmark_tree(
+    data: &[u8],
+    bookmarks: &[serde_json::Value],
+) -> Result<Vec<u8>, NagisaError> {
     let mut doc = load_pdf(data)?;
     let page_ids = get_page_ids(&doc);
 

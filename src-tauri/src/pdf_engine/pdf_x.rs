@@ -1,7 +1,7 @@
 use super::common::*;
 use super::page_tree::materialize_inherited_page_attrs;
-use lopdf::{Dictionary, Document, Object, Stream};
 use crate::error::NagisaError;
+use lopdf::{Dictionary, Document, Object, Stream};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PdfxValidationReport {
@@ -18,7 +18,8 @@ pub fn validate_pdfx_compliance(
     data: &[u8],
     target_standard: &str,
 ) -> Result<PdfxValidationReport, NagisaError> {
-    let doc = Document::load_mem(data).map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
+    let doc = Document::load_mem(data)
+        .map_err(|e| NagisaError::from(format!("Failed to parse PDF: {e}")))?;
 
     let is_x1a = target_standard.to_lowercase().contains("x-1a")
         || target_standard.to_lowercase().contains("x1a");
@@ -374,8 +375,7 @@ pub fn convert_to_pdfx_standard(
         data.to_vec()
     };
 
-    let mut doc =
-        load_pdf(&prepared_data)?;
+    let mut doc = load_pdf(&prepared_data)?;
 
     let standard_id = if is_x1a {
         "PDF/X-1a:2001"

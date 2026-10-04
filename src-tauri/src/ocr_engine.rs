@@ -197,15 +197,17 @@ pub fn run_tesseract(
     })?;
 
     if !output.status.success() {
-        return Err(NagisaError::from(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(NagisaError::from(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
     }
 
     let tsv_content = String::from_utf8_lossy(&output.stdout);
     Ok(parse_tsv_words(&tsv_content))
 }
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::error::NagisaError;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct AutoCleanupDir(pub std::path::PathBuf);
 
@@ -229,7 +231,8 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Nagis
             .unwrap_or(0)
     );
     let dir = std::env::temp_dir().join(unique_name);
-    std::fs::create_dir_all(&dir).map_err(|e| NagisaError::from(format!("Failed to create temp dir: {e}")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NagisaError::from(format!("Failed to create temp dir: {e}")))?;
     let cleanup_guard = AutoCleanupDir(dir.clone());
 
     let prefix = dir.join("page").to_string_lossy().to_string();
@@ -249,10 +252,16 @@ fn pdf_to_images(pdf_path: &Path) -> Result<(AutoCleanupDir, Vec<String>), Nagis
         },
         crate::pdf_engine::common::EXTERNAL_CMD_TIMEOUT_SECS,
     )
-    .map_err(|e| NagisaError::from(format!("Failed to run pdftoppm (install: brew install poppler): {e}")))?;
+    .map_err(|e| {
+        NagisaError::from(format!(
+            "Failed to run pdftoppm (install: brew install poppler): {e}"
+        ))
+    })?;
 
     if !cmd.status.success() {
-        return Err(NagisaError::from(String::from_utf8_lossy(&cmd.stderr).to_string()));
+        return Err(NagisaError::from(
+            String::from_utf8_lossy(&cmd.stderr).to_string(),
+        ));
     }
 
     let mut images = Vec::new();
@@ -273,11 +282,13 @@ pub fn create_epub(text: &str, output_path: &str, title: &str) -> Result<(), Nag
     use epub_builder::ZipLibrary;
     use std::fs::File;
 
-    let mut file = File::create(output_path).map_err(|e| NagisaError::from(format!("Failed to create file: {e}")))?;
+    let mut file = File::create(output_path)
+        .map_err(|e| NagisaError::from(format!("Failed to create file: {e}")))?;
 
-    let zip = ZipLibrary::new().map_err(|e| NagisaError::from(format!("Failed to create zip library: {e}")))?;
-    let mut builder =
-        EpubBuilder::new(zip).map_err(|e| NagisaError::from(format!("Failed to create EPUB builder: {e}")))?;
+    let zip = ZipLibrary::new()
+        .map_err(|e| NagisaError::from(format!("Failed to create zip library: {e}")))?;
+    let mut builder = EpubBuilder::new(zip)
+        .map_err(|e| NagisaError::from(format!("Failed to create EPUB builder: {e}")))?;
 
     builder
         .metadata("title", title)
@@ -381,7 +392,8 @@ pub fn create_searchable_pdf(
 
     if !original_paths.is_empty() {
         for (page_idx, path) in original_paths.iter().enumerate() {
-            let img = image::open(path).map_err(|e| NagisaError::from(format!("Failed to open image {path}: {e}")))?;
+            let img = image::open(path)
+                .map_err(|e| NagisaError::from(format!("Failed to open image {path}: {e}")))?;
             let rgb = img.to_rgb8();
             let (width, height) = rgb.dimensions();
             let pt_w = (width as f32 * 72.0 / 300.0).max(1.0);
@@ -522,7 +534,9 @@ pub fn create_searchable_pdf(
             }
 
             let content = Content { operations };
-            let content_bytes = content.encode().map_err(|e| NagisaError::from(e.to_string()))?;
+            let content_bytes = content
+                .encode()
+                .map_err(|e| NagisaError::from(e.to_string()))?;
             let content_id = doc.add_object(Object::Stream(Stream::new(
                 Dictionary::new(),
                 content_bytes,
@@ -605,7 +619,9 @@ pub fn create_searchable_pdf(
             }
 
             let content = Content { operations };
-            let content_bytes = content.encode().map_err(|e| NagisaError::from(e.to_string()))?;
+            let content_bytes = content
+                .encode()
+                .map_err(|e| NagisaError::from(e.to_string()))?;
             let content_id = doc.add_object(Object::Stream(Stream::new(
                 Dictionary::new(),
                 content_bytes,
@@ -650,13 +666,18 @@ pub fn create_searchable_pdf(
     doc.trailer.set("Root", Object::Reference(catalog_id));
 
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| NagisaError::from(e.to_string()))?;
-    std::fs::write(output_path, &buf).map_err(|e| NagisaError::from(format!("Failed to write file: {e}")))?;
+    doc.save_to(&mut buf)
+        .map_err(|e| NagisaError::from(e.to_string()))?;
+    std::fs::write(output_path, &buf)
+        .map_err(|e| NagisaError::from(format!("Failed to write file: {e}")))?;
 
     Ok(())
 }
 
-pub fn ocr_image_blocks(image_bytes: &[u8], language: &str) -> Result<Vec<OCRLineBlock>, NagisaError> {
+pub fn ocr_image_blocks(
+    image_bytes: &[u8],
+    language: &str,
+) -> Result<Vec<OCRLineBlock>, NagisaError> {
     use std::io::Write;
 
     let tess_lang = match language {
