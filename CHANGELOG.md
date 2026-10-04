@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-04
+
 ### Added
 - Structured IPC errors: all `commands_*` (151 cmds), `pdf_engine`, `ocr_engine`, `session` now return `NagisaError` (`{ type, details }`); frontend already handles both shapes, no UI breakage
 - `NagisaError::SessionNotFound`, `From<lopdf::Error>`/`From<PoisonError>`, `message()` accessor, `load_pdf()`/`page_range_err()` helpers
